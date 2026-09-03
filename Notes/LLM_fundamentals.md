@@ -1,8 +1,8 @@
 ## What is an LLM?
 
-Is a neural network trained on massive amounts of text data to predict the next token sequence - given all the previous tokens, what comes next? - 
+It is a neural network trained on massive amounts of text data to predict the next token in a sequence - given all the previous tokens, what comes next? - 
 
-- **Model weights** - billions of numerical parameters learned during trainging that encode that model's knowledge
+- **Model weights** - billions of numerical parameters learned during training that encode that model's knowledge
 - **Architecture code** - the neural network structure (typically a transformer) that runs weights to produce output 
 
 ## Tokens
@@ -24,10 +24,17 @@ Each token maps to a number (an ID in the model's vocabulary), and the model ope
 - Pricing is typically per-token (input tokens + output tokens)
 - Context windows are measured in tokens (not words or characters)
 - Longer prompts use more tokens, cost more, and leave less room for the model's response
+
+## Context window 
+
+It's what the system remembers; it's measured through tokens, if exes the context limit it possible that the LLM will hallucinate
+
+## Syatem/user messages 
+
+The difference between user and system messages (prompts): The system message is the rules of the session and the llm; the user prompt is the messages of the task to resolve at the moment
+
 # Conceptos
 
-Context window
-System/user messages
 Temperature
 Model selection
 Structured output
