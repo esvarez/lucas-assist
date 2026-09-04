@@ -10,15 +10,19 @@
 
 ```mermaid
 flowchart TB
-    Client["Client<br/>web + CLI"]
+    Client["Client<br/>SPA + CLI"]
+    CF["CloudFront<br/>single distribution"]
+    S3[("S3<br/>static SPA bundle")]
     APIGW["API Gateway<br/>HTTP API"]
 
-    Client --> APIGW
+    Client --> CF
+    CF -->|"/*"| S3
+    CF -->|"/api/*"| APIGW
     APIGW --> API
     APIGW --> Skills
 
     subgraph fast["Fast path · 512MB · 5s timeout"]
-        API["API Lambda (Go)<br/>chi router · CRUD · commit changeset"]
+        API["API Lambda (Go)<br/>gorilla/mux · CRUD · commit changeset"]
     end
 
     subgraph slow["LLM path · 1GB · 60s timeout"]
@@ -211,7 +215,9 @@ Response streaming only works on Lambda Function URLs, and the Go runtime has no
 
 **Decision:** 3–4 functions total.
 
-- **API Lambda** — 256–512MB, short timeout. All CRUD: create project, list tasks, apply an approved changeset, log a decision. Dozens of routes behind a `chi` router via `awslabs/aws-lambda-go-api-proxy`. One binary, one warm pool.
+- **API Lambda** — 256–512MB, short timeout. All CRUD: create project, list tasks, apply an approved changeset, log a decision. Dozens of routes behind a `gorilla/mux` router via `awslabs/aws-lambda-go-api-proxy` (use its `gorillamux` adapter package, not the `chi` one). One binary, one warm pool.
+
+Since `gorilla/mux` is a plain `net/http` router, local dev is `go run` against a normal `http.Server` — same handlers, same middleware, full debugger, no SAM local emulation. Only the thin `lambda.Start` wrapper differs between local and deployed.
 - **LLM Lambdas** — 1GB, generous timeouts, own concurrency limits and IAM roles. Anything that calls OpenAI: `decompose`, `next_action`, `ingest`.
 
 **Why not function-per-route:** The cold-start argument is a Node/Python/Java concern; Go binaries start fast regardless. Splitting also *fragments the warm pool* — twelve functions each get a trickle of traffic and each go cold independently. Plus: one atomic deploy, and local dev is a plain `go run` with a debugger attached.
@@ -231,6 +237,49 @@ Conversation ingestion and large decompositions run as Step Functions workflows 
 - **API:** API Gateway HTTP API (not REST API — cheaper, simpler).
 - **Runtime:** Lambda on `provided.al2023`.
 - **IaC:** SAM or Terraform.
+
+---
+
+## 14. UI: static SPA on S3 + CloudFront
+
+**Decision:** Client-rendered SPA (Vite), served from a private S3 bucket through CloudFront. No SSR anywhere.
+
+**Rationale:** Nudge is an authenticated tool behind a login — no SEO, no public pages, nothing to pre-render. Every SSR option (Amplify SSR, OpenNext, Lambda@Edge) charges per request to solve a problem that doesn't exist here. Choosing static is the cost decision; the hosting service is a detail after that.
+
+CloudFront's always-free tier is permanent, not a trial: 1 TB of data transfer out per month, 10M requests, 2M CloudFront Function invocations, free SSL certificates, all features available.
+
+### Cost
+
+| Item | Cost |
+|---|---|
+| CloudFront | $0 (always-free tier) |
+| S3 storage (~25MB) | ~$0.001 |
+| ACM certificate | $0 |
+| Route 53 hosted zone | $0.50/mo |
+| **Total** | **~$0.50/mo** |
+
+The hosted zone is the only guaranteed recurring charge, and it's avoidable by pointing the registrar's DNS at CloudFront directly.
+
+### One distribution, two origins
+
+| Behavior | Origin | Config |
+|---|---|---|
+| `/*` (default) | S3 via Origin Access Control | Bucket stays private |
+| `/api/*` | API Gateway | Caching **disabled**, `AllViewerExceptHostHeader` origin request policy |
+
+**Why bother:** no CORS preflight (removes a round trip from every API call), cookies work as first-party without `SameSite=None`, and one domain to configure. The extra requests fall under the same free allowance.
+
+### Config gotchas
+
+- **Origin Access Control**, not a public bucket or the legacy OAI.
+- **ACM cert must be issued in us-east-1** regardless of where the rest of the stack lives.
+- **SPA routing:** CloudFront custom error responses mapping 403 and 404 → `/index.html` with status 200, or deep-link refreshes 404.
+- **Cache headers:** hashed assets get `max-age=31536000, immutable`; `index.html` gets `no-cache`. Then deploys need no invalidation at all.
+- **Deploy:** `aws s3 sync` from GitHub Actions. Invalidations are free for the first 1,000 paths/month; `/*` counts as one path.
+
+### Rejected: Amplify Hosting
+
+Convenient (git-push deploys, PR previews, no distribution config), but the pricing shape is wrong: free for 12 months, then $0.15/GB served, $0.01/build minute, $0.023/GB stored — with no always-free hosting tier underneath. Month 13 goes from $0 to per-gigabyte billing while CloudFront's 1 TB stays free indefinitely. Since SAM/Terraform is already in play for the backend, the distribution is ~60 lines in the same template.
 
 ---
 
@@ -268,5 +317,6 @@ Both fields stay in `required`; the unused one is explicitly `null`. This patter
 ## Open questions
 
 - **Auth.** Cognito is the AWS-native answer but unpleasant. Clerk or WorkOS are easier. A CLI client may want API keys plus JWT verification in a Lambda authorizer.
+- **Is the CLI a first-class client?** If yes, token-based auth wins over cookies, which reduces the value of the same-origin setup in §14. If the web SPA is the only real surface, cookies are simpler. This decision gates the auth choice above.
 - **IaC choice.** SAM vs Terraform not settled.
 - **Cost trigger for revisiting the datastore.** Not defined yet.
