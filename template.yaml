@@ -7,9 +7,7 @@ Description: 'LLM personal assitant to manage projects'
 # ─────────────────────────────────────────────
 Globals:
   Function:
-    Timeout: 10
-    MemorySize: 128
-    Runtime: provided.al2
+    Runtime: provided.al2023
     Architectures:
       - arm64
     Environment:
@@ -25,49 +23,37 @@ Parameters:
     Default: dev
     AllowedValues: [dev, staging, prod]
     Description: Deployment environment
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Description: OpenAI API key used by skill Lambdas
 
 # ─────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────
 Resources:
 
-  # ── HTTP API (v2) ──────────────────────────
-  NudgeApi:
-    Type: AWS::Serverless::HttpApi
-    Properties:
-      StageName: !Ref Environment
-      Description: Nudge HTTP API
-      CorsConfiguration:
-        AllowOrigins:
-          - "*"
-        AllowMethods:
-          - GET
-          - POST
-          - PUT
-          - PATCH
-          - DELETE
-          - OPTIONS
-        AllowHeaders:
-          - Content-Type
-          - Authorization
-          - X-User-Id
-        MaxAge: 86400
-
-  CreateProjectFunction:
+  # ── POC: decompose_task skill ──────────────
+  # Per architecture.md POC scope: one Lambda, a Function URL, no API
+  # Gateway, no datastore. Exists to validate the Task struct's fields.
+  DecomposeTaskFunction:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
     Properties:
-      CodeUri: ./api/functions/project/create
+      CodeUri: ./
       Handler: bootstrap
-      FunctionName: !Sub ${Environment}-nudge-create-project
-      Description: "Create a new project"
-      Events:
-        CreateProjectEvent:
-          Type: HttpApi
-          Properties:
-            Path: /projects
-            Method: POST
-            ApiId: !Ref NudgeApi
-            
-            
+      FunctionName: !Sub ${Environment}-nudge-decompose-task
+      Description: "POC: decompose a task into subtasks via OpenAI"
+      MemorySize: 1024
+      Timeout: 60
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+
+Outputs:
+  DecomposeTaskFunctionUrl:
+    Description: Function URL for the decompose_task POC
+    Value: !GetAtt DecomposeTaskFunctionUrl.FunctionUrl
