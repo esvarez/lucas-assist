@@ -39,6 +39,28 @@ func (r *MemoryRepository) CreateProject(ctx context.Context, p domain.Project) 
 	return p, nil
 }
 
+func (r *MemoryRepository) GetProject(ctx context.Context, id string) (domain.Project, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p, ok := r.projects[id]
+	if !ok {
+		return domain.Project{}, ErrNotFound
+	}
+	return p, nil
+}
+
+func (r *MemoryRepository) ListProjects(ctx context.Context) ([]domain.Project, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	projects := make([]domain.Project, 0, len(r.projects))
+	for _, p := range r.projects {
+		projects = append(projects, p)
+	}
+	return projects, nil
+}
+
 func newID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
