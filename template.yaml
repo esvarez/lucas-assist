@@ -27,11 +27,51 @@ Parameters:
     Type: String
     NoEcho: true
     Description: OpenAI API key used by skill Lambdas
+  DynamoTableName:
+    Type: String
+    Default: nudge
+    Description: DynamoDB single-table name (architecture.md §7)
 
 # ─────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────
 Resources:
+
+  # ── HTTP API (v2) ──────────────────────────
+  # API Gateway HTTP API, not REST API (architecture.md §13).
+  NudgeApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+
+  # ── API Lambda ──────────────────────────────
+  # All CRUD and changeset commits behind one proxy route (architecture.md
+  # §11): a single net/http.ServeMux does the actual routing, so this stays
+  # one Lambda/one warm pool no matter how many routes get added.
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ./
+      Handler: bootstrap
+      FunctionName: !Sub ${Environment}-nudge-api
+      Description: "API Lambda: CRUD and changeset commits"
+      MemorySize: 512
+      Timeout: 5
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DynamoTableName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoTableName
+      Events:
+        ProxyEvent:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            ApiId: !Ref NudgeApi
 
   # ── POC: decompose_task skill ──────────────
   # Per architecture.md POC scope: one Lambda, a Function URL, no API
@@ -57,3 +97,6 @@ Outputs:
   DecomposeTaskFunctionUrl:
     Description: Function URL for the decompose_task POC
     Value: !GetAtt DecomposeTaskFunctionUrl.FunctionUrl
+  ApiUrl:
+    Description: Base URL of the Nudge HTTP API
+    Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
