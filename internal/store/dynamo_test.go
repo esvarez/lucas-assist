@@ -115,7 +115,7 @@ func TestDynamoRepository_CreateProject_DuplicateID(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
 
-	id := "dup-" + newID()
+	id := "dup-" + domain.NewID()
 
 	if _, err := repo.CreateProject(ctx, domain.Project{ID: id, Name: "First"}); err != nil {
 		t.Fatalf("first CreateProject() error = %v", err)
