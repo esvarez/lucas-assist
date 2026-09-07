@@ -22,7 +22,7 @@ flowchart TB
     APIGW --> Skills
 
     subgraph fast["Fast path · 512MB · 5s timeout"]
-        API["API Lambda (Go)<br/>gorilla/mux · CRUD · commit changeset"]
+        API["API Lambda (Go)<br/>net/http · CRUD · commit changeset"]
     end
 
     subgraph slow["LLM path · 1GB · 60s timeout"]
@@ -225,9 +225,9 @@ Response streaming only works on Lambda Function URLs, and the Go runtime has no
 
 **Decision:** 3–4 functions total.
 
-- **API Lambda** — 256–512MB, short timeout. All CRUD: create project, list tasks, apply an approved changeset, log a decision. Dozens of routes behind a `gorilla/mux` router via `awslabs/aws-lambda-go-api-proxy` (use its `gorillamux` adapter package, not the `chi` one). One binary, one warm pool.
+- **API Lambda** — 256–512MB, short timeout. All CRUD: create project, list tasks, apply an approved changeset, log a decision. Dozens of routes behind a plain stdlib `net/http.ServeMux` (Go 1.22+ method+path patterns, e.g. `"POST /projects"`), adapted for API Gateway HTTP API via `awslabs/aws-lambda-go-api-proxy`'s `httpadapter` package — it wraps any `http.Handler`, so no third-party router is needed at all. One binary, one warm pool.
 
-Since `gorilla/mux` is a plain `net/http` router, local dev is `go run` against a normal `http.Server` — same handlers, same middleware, full debugger, no SAM local emulation. Only the thin `lambda.Start` wrapper differs between local and deployed.
+Since the router is `net/http.ServeMux` itself, local dev is `go run` against a normal `http.Server` — same handlers, same middleware, full debugger, no SAM local emulation. Only the thin `lambda.Start` wrapper differs between local and deployed.
 - **LLM Lambdas** — 1GB, generous timeouts, own concurrency limits and IAM roles. Anything that calls OpenAI: `decompose`, `next_action`, `ingest`.
 
 **Why not function-per-route:** The cold-start argument is a Node/Python/Java concern; Go binaries start fast regardless. Splitting also *fragments the warm pool* — twelve functions each get a trickle of traffic and each go cold independently. Plus: one atomic deploy, and local dev is a plain `go run` with a debugger attached.

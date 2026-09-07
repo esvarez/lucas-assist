@@ -83,7 +83,7 @@ The SPA is client-rendered and served as static files. Do not introduce Next.js,
 
 ## Go conventions
 
-- Router is `gorilla/mux`, adapted for Lambda via `awslabs/aws-lambda-go-api-proxy/gorillamux`. Handlers are plain `net/http` — they must run unchanged under `cmd/local`.
+- Router is stdlib `net/http.ServeMux` (Go 1.22+ method+path patterns), adapted for Lambda via `awslabs/aws-lambda-go-api-proxy/httpadapter`. Handlers are plain `net/http` — they must run unchanged under `cmd/local`.
 - Build for `provided.al2023` on **arm64** (Graviton is cheaper). The binary must be named `bootstrap`:
   ```bash
   GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap ./cmd/api
