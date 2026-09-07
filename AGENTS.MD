@@ -102,6 +102,7 @@ Single table. Access is always scoped to a project.
 | GSI1 | `USER#<id>` | `<updated_at>` |
 | GSI2 (sparse) | `PROJECT#<id>` | `<priority>#<updated_at>` |
 
+- **ID formats vary by entity.** `PROJECT#<id>` is a nanoid (short, URL-safe — projects are user/URL-facing); `TASK#<uuid>` is a UUID; `DECISION#<ts>`/`EVENT#<ts>` key off a timestamp, not a generated ID. Don't assume one ID scheme covers every entity.
 - **GSIs only. Never add an LSI.** LSIs cannot be altered after table creation.
 - **GSI2 is sparse on purpose.** Write its key attributes only when a task is actionable (unblocked, not done). Marking a task done or blocked means *deleting* those attributes so it drops out of the index.
 - The task tree is `parent_id` attributes assembled in Go after a single Query. **Do not encode hierarchy into the sort key** — re-parenting must stay a single `UpdateItem`.

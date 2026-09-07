@@ -182,6 +182,16 @@ It also fits Lambda better than anything else: no VPC, no connection pooling, no
 
 **GSI2 is sparse on purpose.** Only write its key attributes when a task is actionable (unblocked, not done). "What should I do next?" becomes a single Query against a pre-ordered candidate set, and marking a task blocked or done drops it from the index automatically.
 
+### ID formats
+
+Not every `<id>` in the key schema is the same shape:
+
+- **`PROJECT#<id>`** — nanoid. Projects are user- and URL-facing (CLI output, web routes), so a short, URL-safe ID reads better than a UUID.
+- **`TASK#<uuid>`** — UUID, as already pinned above.
+- **`DECISION#<ts>` / `EVENT#<ts>`** — a timestamp, not a generated ID at all.
+
+**Rationale:** no reason to standardize on one ID scheme across entities that don't share a use case — pick the right primitive per entity instead of a single default that fits none of them well.
+
 ### Constraints to respect
 
 - Each GSI an item projects into is a **separate billed write**. Three indexes ≈ 3–4x write cost. Don't add indexes casually.
