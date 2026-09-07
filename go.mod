@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/aws/aws-lambda-go v1.55.0
 	github.com/invopop/jsonschema v0.14.0
+	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/openai/openai-go v1.12.0
 )
 

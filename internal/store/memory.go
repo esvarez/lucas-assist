@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"sync"
 	"time"
 
@@ -26,7 +24,7 @@ func (r *MemoryRepository) CreateProject(ctx context.Context, p domain.Project) 
 	defer r.mu.Unlock()
 
 	if p.ID == "" {
-		p.ID = newID()
+		p.ID = domain.NewID()
 	} else if _, exists := r.projects[p.ID]; exists {
 		return domain.Project{}, ErrDuplicateID
 	}
@@ -90,12 +88,4 @@ func (r *MemoryRepository) ListProjects(ctx context.Context) ([]domain.Project, 
 		projects = append(projects, p)
 	}
 	return projects, nil
-}
-
-func newID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err) // crypto/rand failing means the platform RNG is broken
-	}
-	return hex.EncodeToString(b)
 }
