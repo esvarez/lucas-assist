@@ -112,3 +112,61 @@ func (r *DynamoRepository) CreateProject(ctx context.Context, p domain.Project) 
 
 	return p, nil
 }
+
+// GetProject fetches a project's META item by ID. Returns ErrNotFound if no
+// such item exists.
+func (r *DynamoRepository) GetProject(ctx context.Context, id string) (domain.Project, error) {
+	out, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: projectPK(id)},
+			"SK": &types.AttributeValueMemberS{Value: metaSK},
+		},
+	})
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("get project item: %w", err)
+	}
+	if out.Item == nil {
+		return domain.Project{}, ErrNotFound
+	}
+
+	var item projectItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return domain.Project{}, fmt.Errorf("unmarshal project item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// ListProjects scans the table for all META items and returns them as
+// projects. This is an MVP implementation; architecture.md §7 designs a
+// GSI1 (PK=USER#<id>) for a per-user project list, but that requires a
+// UserID field that doesn't exist yet.
+func (r *DynamoRepository) ListProjects(ctx context.Context) ([]domain.Project, error) {
+	projects := make([]domain.Project, 0)
+
+	paginator := dynamodb.NewScanPaginator(r.client, &dynamodb.ScanInput{
+		TableName:        aws.String(r.table),
+		FilterExpression: aws.String("SK = :meta"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":meta": &types.AttributeValueMemberS{Value: metaSK},
+		},
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("scan project items: %w", err)
+		}
+
+		var items []projectItem
+		if err := attributevalue.UnmarshalListOfMaps(page.Items, &items); err != nil {
+			return nil, fmt.Errorf("unmarshal project items: %w", err)
+		}
+		for _, item := range items {
+			projects = append(projects, item.toDomain())
+		}
+	}
+
+	return projects, nil
+}
