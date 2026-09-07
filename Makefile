@@ -1,4 +1,4 @@
-.PHONY: build build-DecomposeTaskFunction build-ApiFunction test test-integration
+.PHONY: build build-DecomposeTaskFunction build-ApiFunction test test-integration local
 
 # Cross-compiles all Lambda binaries.
 build: build-DecomposeTaskFunction build-ApiFunction
@@ -19,3 +19,8 @@ test:
 # Requires DynamoDB Local on :8000 (docker compose up -d).
 test-integration:
 	DYNAMODB_ENDPOINT=$${DYNAMODB_ENDPOINT:-http://localhost:8000} go test -tags integration ./...
+
+# Runs the API as a normal http.Server on :8080. Requires DynamoDB Local
+# on :8000 (docker compose up -d).
+local:
+	go run ./cmd/local

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -34,42 +33,11 @@ func newTestDynamoRepository(t *testing.T) *DynamoRepository {
 		t.Fatalf("NewDynamoDBClient() error = %v", err)
 	}
 
-	if err := ensureTestTable(ctx, client); err != nil {
-		t.Fatalf("ensureTestTable() error = %v", err)
+	if err := EnsureTable(ctx, client, testTable); err != nil {
+		t.Fatalf("EnsureTable() error = %v", err)
 	}
 
 	return NewDynamoRepository(client, testTable)
-}
-
-func ensureTestTable(ctx context.Context, client *dynamodb.Client) error {
-	_, err := client.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(testTable)})
-	if err == nil {
-		return nil
-	}
-
-	var notFound *types.ResourceNotFoundException
-	if !errors.As(err, &notFound) {
-		return err
-	}
-
-	_, err = client.CreateTable(ctx, &dynamodb.CreateTableInput{
-		TableName:   aws.String(testTable),
-		BillingMode: types.BillingModePayPerRequest,
-		AttributeDefinitions: []types.AttributeDefinition{
-			{AttributeName: aws.String("PK"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("SK"), AttributeType: types.ScalarAttributeTypeS},
-		},
-		KeySchema: []types.KeySchemaElement{
-			{AttributeName: aws.String("PK"), KeyType: types.KeyTypeHash},
-			{AttributeName: aws.String("SK"), KeyType: types.KeyTypeRange},
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	waiter := dynamodb.NewTableExistsWaiter(client)
-	return waiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(testTable)}, time.Minute)
 }
 
 func TestDynamoRepository_CreateProject(t *testing.T) {
