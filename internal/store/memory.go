@@ -50,6 +50,18 @@ func (r *MemoryRepository) GetProject(ctx context.Context, id string) (domain.Pr
 	return p, nil
 }
 
+func (r *MemoryRepository) DeleteProject(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.projects[id]; !ok {
+		return ErrNotFound
+	}
+
+	delete(r.projects, id)
+	return nil
+}
+
 func (r *MemoryRepository) ListProjects(ctx context.Context) ([]domain.Project, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
