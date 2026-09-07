@@ -22,4 +22,5 @@ type Repository interface {
 	CreateProject(ctx context.Context, p domain.Project) (domain.Project, error)
 	GetProject(ctx context.Context, id string) (domain.Project, error)
 	ListProjects(ctx context.Context) ([]domain.Project, error)
+	DeleteProject(ctx context.Context, id string) error
 }
