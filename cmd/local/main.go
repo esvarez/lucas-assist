@@ -24,7 +24,7 @@ func main() {
 	ctx := context.Background()
 
 	endpoint := getenv("DYNAMODB_ENDPOINT", "http://localhost:8000")
-	client, err := store.NewDynamoDBClient(ctx, endpoint)
+	client, err := store.NewLocalDynamoDBClient(ctx, endpoint)
 	if err != nil {
 		log.Fatalf("new dynamodb client: %v", err)
 	}

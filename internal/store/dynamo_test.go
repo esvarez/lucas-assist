@@ -28,7 +28,7 @@ func newTestDynamoRepository(t *testing.T) *DynamoRepository {
 	}
 
 	ctx := context.Background()
-	client, err := NewDynamoDBClient(ctx, endpoint)
+	client, err := NewLocalDynamoDBClient(ctx, endpoint)
 	if err != nil {
 		t.Fatalf("NewDynamoDBClient() error = %v", err)
 	}

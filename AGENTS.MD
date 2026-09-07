@@ -83,7 +83,7 @@ The SPA is client-rendered and served as static files. Do not introduce Next.js,
 
 ## Go conventions
 
-- Router is stdlib `net/http.ServeMux` (Go 1.22+ method+path patterns), adapted for Lambda via `awslabs/aws-lambda-go-api-proxy/httpadapter`. Handlers are plain `net/http` — they must run unchanged under `cmd/local`.
+- Router is `gorilla/mux`, adapted for Lambda via `awslabs/aws-lambda-go-api-proxy/gorillamux`. Handlers are plain `net/http` — they must run unchanged under `cmd/local`.
 - Build for `provided.al2023` on **arm64** (Graviton is cheaper). The binary must be named `bootstrap`:
   ```bash
   GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap ./cmd/api
@@ -94,18 +94,34 @@ The SPA is client-rendered and served as static files. Do not introduce Next.js,
 
 ## DynamoDB rules
 
-Single table. Access is always scoped to a project.
+Single table, **partitioned by user**. The project ID lives in the sort key prefix.
 
-| | PK | SK |
+| Item | PK | SK |
 |---|---|---|
-| Base | `PROJECT#<id>` | `META` / `TASK#<uuid>` / `DECISION#<ts>` / `EVENT#<ts>` |
-| GSI1 | `USER#<id>` | `<updated_at>` |
-| GSI2 (sparse) | `PROJECT#<id>` | `<priority>#<updated_at>` |
+| Project card | `USER#<uid>` | `META#<pid>` |
+| Task | `USER#<uid>` | `P#<pid>#TASK#<uuid>` |
+| Decision | `USER#<uid>` | `P#<pid>#DEC#<ts>` |
+| Event | `USER#<uid>` | `P#<pid>#EVT#<ts>` |
+| Pending changeset | `USER#<uid>` | `P#<pid>#PENDING#<job_id>` |
 
-- **ID formats vary by entity.** `PROJECT#<id>` is a nanoid (short, URL-safe — projects are user/URL-facing); `TASK#<uuid>` is a UUID; `DECISION#<ts>`/`EVENT#<ts>` key off a timestamp, not a generated ID. Don't assume one ID scheme covers every entity.
-- **GSIs only. Never add an LSI.** LSIs cannot be altered after table creation.
+GSI2 (sparse): `PK = USER#<uid>`, `SK = <priority>#<updated_at>`. There is no GSI1.
+
+### The rule that matters most
+
+**Build the PK from the verified JWT claim only.** Never from a path parameter, query string, or request body.
+
+Authorization in this system is structural: a query is physically scoped to the caller's partition, so a handler that forgets an ownership check still cannot leak data. That property only holds if the user ID comes from the token.
+
+- Resolve the user ID once in auth middleware, put it in `context.Context`, read it from there.
+- **Never** add a route shaped like `/api/users/:uid/...`. Project-scoped routes are `/api/projects/:pid/...` and the user ID comes from the token, not the path.
+- If you find yourself writing a function that takes `userID string` from an HTTP request, stop.
+
+### Other rules
+
+- **GSIs only. Never add an LSI.** LSIs cannot be altered after table creation. (This also keeps the 10GB item-collection cap from applying, which is what lets user partitions grow freely.)
 - **GSI2 is sparse on purpose.** Write its key attributes only when a task is actionable (unblocked, not done). Marking a task done or blocked means *deleting* those attributes so it drops out of the index.
-- The task tree is `parent_id` attributes assembled in Go after a single Query. **Do not encode hierarchy into the sort key** — re-parenting must stay a single `UpdateItem`.
+- **Don't reintroduce a project-partitioned index.** Everything is reachable from the user partition; a `PROJECT#<id>` PK would recreate the authorization hole this schema was designed to close.
+- The task tree is `parent_id` attributes assembled in Go after a single Query. **Do not encode hierarchy into the sort key** — the `P#<pid>#` prefix scopes to a project, nothing more. Re-parenting must stay a single `UpdateItem`.
 - `TransactWriteItems` caps at **100 items**. The changeset applier must chunk larger changesets and each chunk must be idempotent.
 - Each GSI an item projects into is a separate billed write. Don't add indexes without discussing it.
 
@@ -144,6 +160,7 @@ Single table. Access is always scoped to a project.
 - Introducing SSR, a new datastore, or a background service
 - Anything that puts a Lambda in a VPC
 - Anything that lets model output reach the datastore without a user accept
+- Any route or function that takes a user ID from the request rather than the token
 
 ## Still undecided
 

@@ -25,7 +25,7 @@ var adapter *httpadapter.HandlerAdapterV2
 func init() {
 	ctx := context.Background()
 
-	client, err := store.NewDynamoDBClient(ctx, os.Getenv("DYNAMODB_ENDPOINT"))
+	client, err := store.NewDynamoDBClient(ctx)
 	if err != nil {
 		log.Fatalf("new dynamodb client: %v", err)
 	}

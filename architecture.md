@@ -22,7 +22,7 @@ flowchart TB
     APIGW --> Skills
 
     subgraph fast["Fast path · 512MB · 5s timeout"]
-        API["API Lambda (Go)<br/>net/http · CRUD · commit changeset"]
+        API["API Lambda (Go)<br/>gorilla/mux · CRUD · commit changeset"]
     end
 
     subgraph slow["LLM path · 1GB · 60s timeout"]
@@ -41,7 +41,7 @@ flowchart TB
     Worker --> DDB
     Worker --> OAI
 
-    DDB[("DynamoDB<br/>single table · GSI1 · GSI2")]
+    DDB[("DynamoDB<br/>single table · user-partitioned · GSI2")]
     OAI["OpenAI API<br/>strict json_schema"]
     EB["EventBridge<br/>event log fanout"]
 ```
@@ -83,7 +83,7 @@ sequenceDiagram
     participant API as API Lambda
 
     User->>Skill: "break this task down"
-    Skill->>DDB: Query PK = PROJECT#id
+    Skill->>DDB: Query PK = USER#uid, begins_with P#pid#
     DDB-->>Skill: project card, tasks, decisions
     Skill->>OAI: prompt + strict json_schema
     OAI-->>Skill: Changeset (schema-guaranteed)
@@ -168,29 +168,45 @@ Pick specific models at implementation time rather than fixing them here; use a 
 
 **Why not LSIs:** They must be defined at table creation and can never be added, removed, or altered. The schema will change several more times before it settles. GSIs are additive against a live table, which removes the premature-lock-in risk entirely.
 
-**Why DynamoDB over Postgres:** A project is a *bounded working set* — a few hundred items, well under the 1MB Query page. `PK = PROJECT#<id>` pulls everything in one round trip, and all filtering, ranking, and aggregation happens in Go over an in-memory slice. That removes the two usual objections: no `GROUP BY` needed, and no materialized paths needed (re-parenting is a single `UpdateItem` on `parent_id`, since the tree is assembled in Go anyway).
+**Why DynamoDB over Postgres:** A project is a *bounded working set* — a few hundred items, well under the 1MB Query page. A single `begins_with` Query on the user's partition pulls a whole project in one round trip, and all filtering, ranking, and aggregation happens in Go over an in-memory slice. That removes the two usual objections: no `GROUP BY` needed, and no materialized paths needed (re-parenting is a single `UpdateItem` on `parent_id`, since the tree is assembled in Go anyway).
 
 It also fits Lambda better than anything else: no VPC, no connection pooling, no cold-resume, IAM auth instead of secrets, genuine per-request billing.
 
 ### Key schema
 
-| | PK | SK |
+Partitioned by **user**, with the project ID carried in the sort key prefix.
+
+| Item | PK | SK |
 |---|---|---|
-| Base | `PROJECT#<id>` | `META` / `TASK#<uuid>` / `DECISION#<ts>` / `EVENT#<ts>` |
-| GSI1 | `USER#<id>` | `<updated_at>` |
-| GSI2 (sparse) | `PROJECT#<id>` | `<priority>#<updated_at>` |
+| Project card | `USER#<uid>` | `META#<pid>` |
+| Task | `USER#<uid>` | `P#<pid>#TASK#<uuid>` |
+| Decision | `USER#<uid>` | `P#<pid>#DEC#<ts>` |
+| Event | `USER#<uid>` | `P#<pid>#EVT#<ts>` |
+| Pending changeset | `USER#<uid>` | `P#<pid>#PENDING#<job_id>` |
 
-**GSI2 is sparse on purpose.** Only write its key attributes when a task is actionable (unblocked, not done). "What should I do next?" becomes a single Query against a pre-ordered candidate set, and marking a task blocked or done drops it from the index automatically.
+| Access pattern | Query |
+|---|---|
+| List my projects | `PK = USER#<uid> AND begins_with(SK, "META#")` |
+| Load one project | `PK = USER#<uid> AND begins_with(SK, "P#<pid>#")` |
+| Cross-project next action | GSI2 |
 
-### ID formats
+**Authorization is structural, not procedural.** The partition key is derived from the verified JWT subject and never from user input, so a query is physically scoped to the caller's data. A handler that forgets an ownership check still cannot leak another user's project. This is a stronger guarantee than checking `owner_id` at the API layer, and it survives contributors — human or agent — who don't know the conventions.
 
-Not every `<id>` in the key schema is the same shape:
+**There is no GSI1.** Project listing was its only job and the base table now handles it. That removes an index every item projected into, cutting billed writes by roughly 25%.
 
-- **`PROJECT#<id>`** — nanoid. Projects are user- and URL-facing (CLI output, web routes), so a short, URL-safe ID reads better than a UUID.
-- **`TASK#<uuid>`** — UUID, as already pinned above.
-- **`DECISION#<ts>` / `EVENT#<ts>`** — a timestamp, not a generated ID at all.
+**GSI2 (sparse):** `PK = USER#<uid>`, `SK = <priority>#<updated_at>`. Key attributes are written only when a task is actionable (unblocked, not done); marking a task blocked or done deletes them so it drops out of the index. Because it's user-partitioned, "what should I do next?" works **across all of a user's projects** in a single Query — which for a developer juggling several side projects is the more useful version of the feature.
 
-**Rationale:** no reason to standardize on one ID scheme across entities that don't share a use case — pick the right primitive per entity instead of a single default that fits none of them well.
+### Trade-off accepted
+
+User partitioning makes shared projects a migration rather than an addition: a second person's access would require duplicating items into their partition or reading across partitions. Ownership transfer would rewrite every item.
+
+This is accepted deliberately. Nudge is a *personal* project agent. If shared projects become a requirement, expect to re-key.
+
+**Non-issue:** the 10GB item collection limit applies only to tables with local secondary indexes, which §7 already bans. DynamoDB will split large user partitions freely.
+
+### The one rule this creates
+
+Build the PK from the **verified JWT claim only** — never from a path parameter, query string, or request body. A route like `/api/users/:uid/projects` reintroduces exactly the hole this design closes. Resolve the user ID once in middleware and pass it through `context.Context`.
 
 ### Constraints to respect
 
@@ -225,9 +241,9 @@ Response streaming only works on Lambda Function URLs, and the Go runtime has no
 
 **Decision:** 3–4 functions total.
 
-- **API Lambda** — 256–512MB, short timeout. All CRUD: create project, list tasks, apply an approved changeset, log a decision. Dozens of routes behind a plain stdlib `net/http.ServeMux` (Go 1.22+ method+path patterns, e.g. `"POST /projects"`), adapted for API Gateway HTTP API via `awslabs/aws-lambda-go-api-proxy`'s `httpadapter` package — it wraps any `http.Handler`, so no third-party router is needed at all. One binary, one warm pool.
+- **API Lambda** — 256–512MB, short timeout. All CRUD: create project, list tasks, apply an approved changeset, log a decision. Dozens of routes behind a `gorilla/mux` router via `awslabs/aws-lambda-go-api-proxy` (use its `gorillamux` adapter package, not the `chi` one). One binary, one warm pool.
 
-Since the router is `net/http.ServeMux` itself, local dev is `go run` against a normal `http.Server` — same handlers, same middleware, full debugger, no SAM local emulation. Only the thin `lambda.Start` wrapper differs between local and deployed.
+Since `gorilla/mux` is a plain `net/http` router, local dev is `go run` against a normal `http.Server` — same handlers, same middleware, full debugger, no SAM local emulation. Only the thin `lambda.Start` wrapper differs between local and deployed.
 - **LLM Lambdas** — 1GB, generous timeouts, own concurrency limits and IAM roles. Anything that calls OpenAI: `decompose`, `next_action`, `ingest`.
 
 **Why not function-per-route:** The cold-start argument is a Node/Python/Java concern; Go binaries start fast regardless. Splitting also *fragments the warm pool* — twelve functions each get a trickle of traffic and each go cold independently. Plus: one atomic deploy, and local dev is a plain `go run` with a debugger attached.
