@@ -1,13 +1,14 @@
-.PHONY: build build-DecomposeTaskFunction build-ApiFunction test test-integration local
+.PHONY: build build-SkillsFunction build-ApiFunction test test-integration local
 
 # Cross-compiles all Lambda binaries.
-build: build-DecomposeTaskFunction build-ApiFunction
+build: build-SkillsFunction build-ApiFunction
 
 # SAM invokes this target (Metadata.BuildMethod: makefile in template.yaml)
-# for the DecomposeTaskFunction resource, with $(ARTIFACTS_DIR) set to the
-# build output directory.
-build-DecomposeTaskFunction:
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o $(ARTIFACTS_DIR)/bootstrap ./cmd/skills/decompose_task
+# for the SkillsFunction resource, with $(ARTIFACTS_DIR) set to the build
+# output directory. Consolidated entrypoint — dispatches by skill name,
+# see cmd/skills/main.go.
+build-SkillsFunction:
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o $(ARTIFACTS_DIR)/bootstrap ./cmd/skills
 
 # SAM invokes this target for the ApiFunction resource.
 build-ApiFunction:

@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
 
 	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/llm"
@@ -22,14 +21,13 @@ const (
 )
 
 // DecomposeInput is what the caller knows about the task to break down.
-// The POC has no datastore, so this is passed in directly rather than
-// assembled from project context.
+// There's no datastore yet, so this comes straight from the request body.
 type DecomposeInput struct {
-	TaskTitle       string
-	TaskDescription string
+	TaskTitle       string `json:"task_title"`
+	TaskDescription string `json:"task_description"`
 	// Domain selects the system prompt. Empty or unrecognized falls back
 	// to DomainGeneral.
-	Domain Domain
+	Domain Domain `json:"domain"`
 }
 
 // DecomposeResult is the model's proposed changeset. Both Subtasks and
@@ -62,37 +60,47 @@ func systemPrompt(d Domain) string {
 	return decomposeSystemPromptGeneral
 }
 
-// newChatCompletion is a seam over llm.Client.Chat.Completions.New so tests
-// can stub the OpenAI call instead of hitting the network.
-var newChatCompletion = func(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-	return llm.Client.Chat.Completions.New(ctx, params)
-}
+// DecomposeTaskSkill implements agent.Skill for decompose_task.
+type DecomposeTaskSkill struct{}
 
-// Decompose calls OpenAI to break TaskTitle/TaskDescription into subtasks.
-func Decompose(ctx context.Context, in DecomposeInput) (DecomposeResult, error) {
-	completion, err := newChatCompletion(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModelGPT4o,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemPrompt(in.Domain)),
-			openai.UserMessage(fmt.Sprintf("Title: %s\n\nDescription: %s", in.TaskTitle, in.TaskDescription)),
-		},
-		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
-				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
-					Name:   "decompose_task_result",
-					Strict: openai.Bool(true),
-					Schema: llm.StrictSchema(&DecomposeResult{}),
-				},
-			},
-		},
-	})
-	if err != nil {
-		return DecomposeResult{}, fmt.Errorf("decompose_task: chat completion: %w", err)
+// Name implements agent.Skill.
+func (DecomposeTaskSkill) Name() string { return "decompose_task" }
+
+// BuildContext implements agent.Skill: unmarshals the request body and
+// assembles the chat messages — stable content (system prompt) first,
+// variable content (the task itself) last (architecture.md §6).
+func (DecomposeTaskSkill) BuildContext(_ context.Context, rawInput json.RawMessage) ([]openai.ChatCompletionMessageParamUnion, error) {
+	var in DecomposeInput
+	if err := json.Unmarshal(rawInput, &in); err != nil {
+		return nil, fmt.Errorf("decompose_task: unmarshal input: %w", err)
 	}
 
+	return []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(systemPrompt(in.Domain)),
+		openai.UserMessage(fmt.Sprintf("Title: %s\n\nDescription: %s", in.TaskTitle, in.TaskDescription)),
+	}, nil
+}
+
+// ResponseFormat implements agent.Skill.
+func (DecomposeTaskSkill) ResponseFormat() openai.ResponseFormatJSONSchemaParam {
+	return openai.ResponseFormatJSONSchemaParam{
+		JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+			Name:   "decompose_task_result",
+			Strict: openai.Bool(true),
+			Schema: llm.StrictSchema(&DecomposeResult{}),
+		},
+	}
+}
+
+// Tools implements agent.Skill. decompose_task needs no context-retrieval
+// tools yet — there's no datastore to query.
+func (DecomposeTaskSkill) Tools() []openai.ChatCompletionToolParam { return nil }
+
+// Parse implements agent.Skill.
+func (DecomposeTaskSkill) Parse(raw json.RawMessage) (any, error) {
 	var result DecomposeResult
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
-		return DecomposeResult{}, fmt.Errorf("decompose_task: unmarshal model output: %w", err)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("decompose_task: unmarshal model output: %w", err)
 	}
 	return result, nil
 }
