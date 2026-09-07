@@ -11,8 +11,6 @@ import (
 )
 
 type createProjectRequest struct {
-	// ID is optional; the repository generates one when omitted.
-	ID          string     `json:"id,omitempty"`
 	Name        string     `json:"name"`
 	Goal        string     `json:"goal"`
 	Deadline    *time.Time `json:"deadline,omitempty"`
@@ -29,7 +27,6 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 		}
 
 		created, err := repo.CreateProject(r.Context(), domain.Project{
-			ID:          req.ID,
 			Name:        req.Name,
 			Goal:        req.Goal,
 			Deadline:    req.Deadline,

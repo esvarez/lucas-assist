@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -49,16 +50,25 @@ func TestCreateProject_InvalidBody(t *testing.T) {
 	}
 }
 
+// stubRepository lets a test force whatever error CreateProject returns.
+// Project IDs are always server-generated (see domain.NewID, #18), so a
+// client can't trigger store.ErrDuplicateID through the HTTP API itself —
+// this is the only way to exercise the handler's 409 mapping for it.
+type stubRepository struct {
+	err error
+}
+
+func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
+	return domain.Project{}, s.err
+}
+
 func TestCreateProject_DuplicateID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
+	router := NewRouter(stubRepository{err: store.ErrDuplicateID})
 
-	body := `{"id": "proj_1", "name": "Nudge"}`
-	first := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
-	router.ServeHTTP(httptest.NewRecorder(), first)
-
-	second := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	body := `{"name": "Nudge"}`
+	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, second)
+	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusConflict, rec.Body.String())
