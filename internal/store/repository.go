@@ -23,4 +23,5 @@ type Repository interface {
 	GetProject(ctx context.Context, id string) (domain.Project, error)
 	ListProjects(ctx context.Context) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, id string) error
+	UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error)
 }
