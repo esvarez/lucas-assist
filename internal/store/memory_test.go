@@ -109,6 +109,43 @@ func TestMemoryRepository_GetProject_NotFound(t *testing.T) {
 	}
 }
 
+func TestMemoryRepository_DeleteProject(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if err := repo.DeleteProject(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteProject() error = %v", err)
+	}
+
+	if _, err := repo.GetProject(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetProject() after delete error = %v, want %v", err, ErrNotFound)
+	}
+
+	projects, err := repo.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+	for _, p := range projects {
+		if p.ID == created.ID {
+			t.Errorf("ListProjects() still contains deleted project %q", created.ID)
+		}
+	}
+}
+
+func TestMemoryRepository_DeleteProject_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	err := repo.DeleteProject(context.Background(), "does-not-exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
 func TestMemoryRepository_ListProjects(t *testing.T) {
 	repo := NewMemoryRepository()
 	ctx := context.Background()
