@@ -50,6 +50,25 @@ func (r *MemoryRepository) GetProject(ctx context.Context, id string) (domain.Pr
 	return p, nil
 }
 
+func (r *MemoryRepository) UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	existing, ok := r.projects[p.ID]
+	if !ok {
+		return domain.Project{}, ErrNotFound
+	}
+
+	existing.Goal = p.Goal
+	existing.Deadline = p.Deadline
+	existing.Constraints = p.Constraints
+	existing.Status = p.Status
+	existing.UpdatedAt = time.Now().UTC()
+
+	r.projects[existing.ID] = existing
+	return existing, nil
+}
+
 func (r *MemoryRepository) ListProjects(ctx context.Context) ([]domain.Project, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

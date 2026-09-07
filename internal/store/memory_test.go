@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/esvarez/lucas-assist/internal/domain"
 )
@@ -106,6 +107,72 @@ func TestMemoryRepository_GetProject_NotFound(t *testing.T) {
 	_, err := repo.GetProject(context.Background(), "does-not-exist")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_UpdateProject(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{
+		Name:        "Nudge",
+		Goal:        "Ship the POC",
+		Constraints: []string{"no VPC"},
+		Status:      "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	time.Sleep(time.Millisecond)
+
+	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	updated, err := repo.UpdateProject(ctx, domain.Project{
+		ID:          created.ID,
+		Name:        "should be ignored",
+		Goal:        "Ship v2",
+		Deadline:    &deadline,
+		Constraints: []string{"no VPC", "no SSR"},
+		Status:      "done",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+
+	if updated.Name != created.Name {
+		t.Errorf("Name = %q, want unchanged %q", updated.Name, created.Name)
+	}
+	if updated.Goal != "Ship v2" || updated.Status != "done" {
+		t.Errorf("UpdateProject() = %+v, want Goal/Status updated", updated)
+	}
+	if updated.Deadline == nil || !updated.Deadline.Equal(deadline) {
+		t.Errorf("Deadline = %v, want %v", updated.Deadline, deadline)
+	}
+	if !reflect.DeepEqual(updated.Constraints, []string{"no VPC", "no SSR"}) {
+		t.Errorf("Constraints = %v, want updated", updated.Constraints)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want after %v", updated.UpdatedAt, created.UpdatedAt)
+	}
+	if !updated.CreatedAt.Equal(created.CreatedAt) {
+		t.Errorf("CreatedAt = %v, want unchanged %v", updated.CreatedAt, created.CreatedAt)
+	}
+
+	got, err := repo.GetProject(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, updated) {
+		t.Errorf("GetProject() after update = %+v, want %+v", got, updated)
+	}
+}
+
+func TestMemoryRepository_UpdateProject_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.UpdateProject(context.Background(), domain.Project{ID: "does-not-exist"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateProject() error = %v, want %v", err, ErrNotFound)
 	}
 }
 
