@@ -22,6 +22,7 @@ import (
 // invocations — never inside the handler.
 var registry = agent.NewRegistry(
 	skills.DecomposeTaskSkill{},
+	skills.CreateProjectSkill{},
 )
 
 type requestEnvelope struct {
