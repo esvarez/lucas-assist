@@ -2,8 +2,11 @@ package skills
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
+
+	"github.com/esvarez/lucas-assist/internal/agent"
 )
 
 // These tests hit the real OpenAI API. They're skipped unless
@@ -30,17 +33,33 @@ func logDecomposeResult(t *testing.T, result DecomposeResult) {
 	}
 }
 
+func runDecompose(t *testing.T, in DecomposeInput) DecomposeResult {
+	t.Helper()
+
+	rawInput, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+
+	got, err := agent.Run(context.Background(), DecomposeTaskSkill{}, rawInput)
+	if err != nil {
+		t.Fatalf("agent.Run() error = %v", err)
+	}
+	result, ok := got.(DecomposeResult)
+	if !ok {
+		t.Fatalf("agent.Run() returned %T, want DecomposeResult", got)
+	}
+	return result
+}
+
 func TestDecomposeManual(t *testing.T) {
 	skipUnlessOpenAIKey(t)
 
-	result, err := Decompose(context.Background(), DecomposeInput{
+	result := runDecompose(t, DecomposeInput{
 		TaskTitle:       "Clean my room",
 		TaskDescription: "It's been a couple weeks, there's laundry and clutter everywhere",
 		Domain:          DomainGeneral,
 	})
-	if err != nil {
-		t.Fatalf("Decompose() error = %v", err)
-	}
 	logDecomposeResult(t, result)
 
 	if result.Status != "ok" && result.Status != "needs_clarification" {
@@ -55,13 +74,10 @@ func TestDecomposeManual(t *testing.T) {
 func TestDecomposeManual_TitleOnly(t *testing.T) {
 	skipUnlessOpenAIKey(t)
 
-	result, err := Decompose(context.Background(), DecomposeInput{
+	result := runDecompose(t, DecomposeInput{
 		TaskTitle: "Clean my room",
 		Domain:    DomainGeneral,
 	})
-	if err != nil {
-		t.Fatalf("Decompose() error = %v", err)
-	}
 	logDecomposeResult(t, result)
 
 	if result.Status != "ok" && result.Status != "needs_clarification" {

@@ -73,18 +73,20 @@ Resources:
             Method: ANY
             ApiId: !Ref NudgeApi
 
-  # ── POC: decompose_task skill ──────────────
-  # Per architecture.md POC scope: one Lambda, a Function URL, no API
-  # Gateway, no datastore. Exists to validate the Task struct's fields.
-  DecomposeTaskFunction:
+  # ── Skill Lambda ─────────────────────────────
+  # Consolidated entrypoint (architecture.md §4/§11): one Lambda dispatches
+  # by skill name from the request body to a registered agent.Skill, so
+  # adding a skill is one new file, not a new Lambda. Function URL for now;
+  # API Gateway routing to this Lambda is a separate infra concern.
+  SkillsFunction:
     Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: makefile
     Properties:
       CodeUri: ./
       Handler: bootstrap
-      FunctionName: !Sub ${Environment}-nudge-decompose-task
-      Description: "POC: decompose a task into subtasks via OpenAI"
+      FunctionName: !Sub ${Environment}-nudge-skills
+      Description: "Skill Lambda: decompose_task and future skills"
       MemorySize: 1024
       Timeout: 60
       FunctionUrlConfig:
@@ -94,9 +96,9 @@ Resources:
           OPENAI_API_KEY: !Ref OpenAIApiKey
 
 Outputs:
-  DecomposeTaskFunctionUrl:
-    Description: Function URL for the decompose_task POC
-    Value: !GetAtt DecomposeTaskFunctionUrl.FunctionUrl
+  SkillsFunctionUrl:
+    Description: Function URL for the Skill Lambda
+    Value: !GetAtt SkillsFunctionUrl.FunctionUrl
   ApiUrl:
     Description: Base URL of the Nudge HTTP API
     Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}

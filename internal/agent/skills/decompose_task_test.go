@@ -6,8 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openai/openai-go"
-
+	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/llm"
 )
 
@@ -128,45 +127,89 @@ func findKey(node any, key string) (any, bool) {
 	return nil, false
 }
 
-func fakeCompletion(content string) *openai.ChatCompletion {
-	return &openai.ChatCompletion{
-		Choices: []openai.ChatCompletionChoice{
-			{Message: openai.ChatCompletionMessage{Content: content}},
-		},
+func TestDecomposeTaskSkill_Name(t *testing.T) {
+	if got := (DecomposeTaskSkill{}).Name(); got != "decompose_task" {
+		t.Errorf("Name() = %q, want %q", got, "decompose_task")
 	}
 }
 
-// withStubbedChat replaces newChatCompletion for the duration of the test
-// and restores it afterward.
-func withStubbedChat(t *testing.T, stub func(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error)) {
-	t.Helper()
-	original := newChatCompletion
-	newChatCompletion = stub
-	t.Cleanup(func() { newChatCompletion = original })
-}
+func TestDecomposeTaskSkill_BuildContext(t *testing.T) {
+	raw := []byte(`{"task_title": "Move apartments", "task_description": "Moving across town next month", "domain": "general"}`)
 
-func TestDecompose_OK(t *testing.T) {
-	var gotParams openai.ChatCompletionNewParams
-	withStubbedChat(t, func(_ context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-		gotParams = params
-		return fakeCompletion(`{
-			"status": "ok",
-			"subtasks": [
-				{"title": "Pack boxes", "description": "Box up the kitchen", "acceptance_criteria": ["All kitchen items boxed"]}
-			],
-			"questions": null
-		}`), nil
-	})
-
-	result, err := Decompose(context.Background(), DecomposeInput{
-		TaskTitle:       "Move apartments",
-		TaskDescription: "Moving across town next month",
-		Domain:          DomainGeneral,
-	})
+	messages, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), raw)
 	if err != nil {
-		t.Fatalf("Decompose() error = %v", err)
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("BuildContext() returned %d messages, want 2", len(messages))
 	}
 
+	sysMsg := messages[0].OfSystem.Content.OfString.Value
+	if sysMsg != decomposeSystemPromptGeneral {
+		t.Errorf("system message = %q, want the general prompt", sysMsg)
+	}
+	userMsg := messages[1].OfUser.Content.OfString.Value
+	if !strings.Contains(userMsg, "Move apartments") {
+		t.Errorf("user message = %q, want it to contain the task title", userMsg)
+	}
+}
+
+func TestDecomposeTaskSkill_BuildContext_SoftwareDomain(t *testing.T) {
+	raw := []byte(`{"task_title": "Add auth", "domain": "software"}`)
+
+	messages, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+	sysMsg := messages[0].OfSystem.Content.OfString.Value
+	if sysMsg != decomposeSystemPromptSoftware {
+		t.Errorf("system message = %q, want the software prompt", sysMsg)
+	}
+}
+
+func TestDecomposeTaskSkill_BuildContext_InvalidInput(t *testing.T) {
+	_, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), []byte("not json"))
+	if err == nil {
+		t.Fatal("BuildContext() error = nil, want an unmarshal error")
+	}
+	if !errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it to wrap agent.ErrInvalidInput so callers can map it to 400", err)
+	}
+}
+
+func TestDecomposeTaskSkill_ResponseFormat(t *testing.T) {
+	rf := (DecomposeTaskSkill{}).ResponseFormat()
+	if !rf.JSONSchema.Strict.Value {
+		t.Error("JSONSchema.Strict = false, want true")
+	}
+	if rf.JSONSchema.Name != "decompose_task_result" {
+		t.Errorf("JSONSchema.Name = %q, want %q", rf.JSONSchema.Name, "decompose_task_result")
+	}
+}
+
+func TestDecomposeTaskSkill_Tools(t *testing.T) {
+	if tools := (DecomposeTaskSkill{}).Tools(); tools != nil {
+		t.Errorf("Tools() = %v, want nil", tools)
+	}
+}
+
+func TestDecomposeTaskSkill_Parse_OK(t *testing.T) {
+	raw := []byte(`{
+		"status": "ok",
+		"subtasks": [
+			{"title": "Pack boxes", "description": "Box up the kitchen", "acceptance_criteria": ["All kitchen items boxed"]}
+		],
+		"questions": null
+	}`)
+
+	got, err := (DecomposeTaskSkill{}).Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	result, ok := got.(DecomposeResult)
+	if !ok {
+		t.Fatalf("Parse() returned %T, want DecomposeResult", got)
+	}
 	if result.Status != "ok" {
 		t.Errorf("Status = %q, want %q", result.Status, "ok")
 	}
@@ -176,55 +219,16 @@ func TestDecompose_OK(t *testing.T) {
 	if result.Questions != nil {
 		t.Errorf("Questions = %#v, want nil", result.Questions)
 	}
-
-	// The request sent to OpenAI should use the general prompt, strict
-	// structured output, and mention the task content.
-	sysMsg := gotParams.Messages[0].OfSystem.Content.OfString.Value
-	if sysMsg != decomposeSystemPromptGeneral {
-		t.Errorf("system message = %q, want the general prompt", sysMsg)
-	}
-	userMsg := gotParams.Messages[1].OfUser.Content.OfString.Value
-	if !strings.Contains(userMsg, "Move apartments") {
-		t.Errorf("user message = %q, want it to contain the task title", userMsg)
-	}
-	jsonSchema := gotParams.ResponseFormat.OfJSONSchema
-	if jsonSchema == nil {
-		t.Fatal("ResponseFormat.OfJSONSchema is nil, want a json_schema response format")
-	}
-	if !jsonSchema.JSONSchema.Strict.Value {
-		t.Error("JSONSchema.Strict = false, want true")
-	}
 }
 
-func TestDecompose_UsesSoftwarePromptForSoftwareDomain(t *testing.T) {
-	var gotParams openai.ChatCompletionNewParams
-	withStubbedChat(t, func(_ context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-		gotParams = params
-		return fakeCompletion(`{"status": "needs_clarification", "subtasks": null, "questions": ["What language?"]}`), nil
-	})
+func TestDecomposeTaskSkill_Parse_NeedsClarification(t *testing.T) {
+	raw := []byte(`{"status": "needs_clarification", "subtasks": null, "questions": ["When is the deadline?"]}`)
 
-	if _, err := Decompose(context.Background(), DecomposeInput{
-		TaskTitle: "Add auth",
-		Domain:    DomainSoftware,
-	}); err != nil {
-		t.Fatalf("Decompose() error = %v", err)
-	}
-
-	sysMsg := gotParams.Messages[0].OfSystem.Content.OfString.Value
-	if sysMsg != decomposeSystemPromptSoftware {
-		t.Errorf("system message = %q, want the software prompt", sysMsg)
-	}
-}
-
-func TestDecompose_NeedsClarification(t *testing.T) {
-	withStubbedChat(t, func(_ context.Context, _ openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-		return fakeCompletion(`{"status": "needs_clarification", "subtasks": null, "questions": ["When is the deadline?"]}`), nil
-	})
-
-	result, err := Decompose(context.Background(), DecomposeInput{TaskTitle: "Plan the event"})
+	got, err := (DecomposeTaskSkill{}).Parse(raw)
 	if err != nil {
-		t.Fatalf("Decompose() error = %v", err)
+		t.Fatalf("Parse() error = %v", err)
 	}
+	result := got.(DecomposeResult)
 	if result.Status != "needs_clarification" {
 		t.Errorf("Status = %q, want %q", result.Status, "needs_clarification")
 	}
@@ -236,25 +240,9 @@ func TestDecompose_NeedsClarification(t *testing.T) {
 	}
 }
 
-func TestDecompose_ChatCompletionError(t *testing.T) {
-	wantErr := errors.New("network is down")
-	withStubbedChat(t, func(_ context.Context, _ openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-		return nil, wantErr
-	})
-
-	_, err := Decompose(context.Background(), DecomposeInput{TaskTitle: "anything"})
-	if err == nil || !errors.Is(err, wantErr) {
-		t.Fatalf("Decompose() error = %v, want it to wrap %v", err, wantErr)
-	}
-}
-
-func TestDecompose_InvalidModelOutput(t *testing.T) {
-	withStubbedChat(t, func(_ context.Context, _ openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
-		return fakeCompletion("not json"), nil
-	})
-
-	_, err := Decompose(context.Background(), DecomposeInput{TaskTitle: "anything"})
+func TestDecomposeTaskSkill_Parse_InvalidOutput(t *testing.T) {
+	_, err := (DecomposeTaskSkill{}).Parse([]byte("not json"))
 	if err == nil {
-		t.Fatal("Decompose() error = nil, want an unmarshal error")
+		t.Fatal("Parse() error = nil, want an unmarshal error")
 	}
 }
