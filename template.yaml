@@ -99,4 +99,4 @@ Outputs:
     Value: !GetAtt DecomposeTaskFunctionUrl.FunctionUrl
   ApiUrl:
     Description: Base URL of the Nudge HTTP API
-    Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com
+    Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
