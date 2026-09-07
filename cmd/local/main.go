@@ -30,6 +30,10 @@ func main() {
 	}
 
 	table := getenv("DYNAMODB_TABLE", "nudge-local")
+	if err := store.EnsureTable(ctx, client, table); err != nil {
+		log.Fatalf("ensure table %q: %v", table, err)
+	}
+
 	repo := store.NewDynamoRepository(client, table)
 	router := api.NewRouter(repo)
 
