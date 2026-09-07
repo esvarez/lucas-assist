@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -41,10 +42,22 @@ func handler(ctx context.Context, req events.LambdaFunctionURLRequest) (events.L
 
 	result, err := agent.Run(ctx, skill, envelope.Input)
 	if err != nil {
-		return jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()}), nil
+		return jsonResponse(statusForRunError(err), map[string]string{"error": err.Error()}), nil
 	}
 
 	return jsonResponse(http.StatusOK, result), nil
+}
+
+// statusForRunError maps an agent.Run error to an HTTP status: malformed
+// or missing skill input is the client's mistake (400), anything else
+// (the chat completion call, the model's output) is treated as upstream
+// (502) — Run's errors are wrapped with %w all the way down, so this
+// checks all the way down too.
+func statusForRunError(err error) int {
+	if errors.Is(err, agent.ErrInvalidInput) {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
 }
 
 func jsonResponse(status int, body any) events.LambdaFunctionURLResponse {

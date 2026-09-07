@@ -2,9 +2,11 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/llm"
 )
 
@@ -169,6 +171,9 @@ func TestDecomposeTaskSkill_BuildContext_InvalidInput(t *testing.T) {
 	_, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), []byte("not json"))
 	if err == nil {
 		t.Fatal("BuildContext() error = nil, want an unmarshal error")
+	}
+	if !errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it to wrap agent.ErrInvalidInput so callers can map it to 400", err)
 	}
 }
 

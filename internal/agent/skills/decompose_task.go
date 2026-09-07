@@ -8,6 +8,7 @@ import (
 
 	"github.com/openai/openai-go"
 
+	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/llm"
 )
@@ -72,7 +73,7 @@ func (DecomposeTaskSkill) Name() string { return "decompose_task" }
 func (DecomposeTaskSkill) BuildContext(_ context.Context, rawInput json.RawMessage) ([]openai.ChatCompletionMessageParamUnion, error) {
 	var in DecomposeInput
 	if err := json.Unmarshal(rawInput, &in); err != nil {
-		return nil, fmt.Errorf("decompose_task: unmarshal input: %w", err)
+		return nil, fmt.Errorf("decompose_task: unmarshal input: %w: %w", agent.ErrInvalidInput, err)
 	}
 
 	return []openai.ChatCompletionMessageParamUnion{
