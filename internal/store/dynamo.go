@@ -85,7 +85,7 @@ func (i projectItem) toDomain() domain.Project {
 // (attribute_not_exists(PK)) so an existing project is never overwritten.
 func (r *DynamoRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
 	if p.ID == "" {
-		p.ID = newID()
+		p.ID = domain.NewID()
 	}
 
 	now := time.Now().UTC()
