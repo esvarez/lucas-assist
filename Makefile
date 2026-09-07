@@ -1,4 +1,4 @@
-.PHONY: build build-DecomposeTaskFunction test
+.PHONY: build build-DecomposeTaskFunction test test-integration
 
 # Cross-compiles all Lambda binaries.
 build: build-DecomposeTaskFunction
@@ -11,3 +11,7 @@ build-DecomposeTaskFunction:
 
 test:
 	go test ./...
+
+# Requires DynamoDB Local on :8000 (docker compose up -d).
+test-integration:
+	DYNAMODB_ENDPOINT=$${DYNAMODB_ENDPOINT:-http://localhost:8000} go test -tags integration ./...
