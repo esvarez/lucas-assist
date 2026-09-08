@@ -65,7 +65,7 @@ func (r *MemoryRepository) UpdateProject(ctx context.Context, p domain.Project) 
 	defer r.mu.Unlock()
 
 	existing, ok := r.projects[p.ID]
-	if !ok {
+	if !ok || existing.UserID != p.UserID {
 		return domain.Project{}, ErrNotFound
 	}
 

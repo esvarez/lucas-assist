@@ -20,9 +20,11 @@ var ErrNotFound = errors.New("not found")
 // read and write through.
 //
 // GetProject and ListProjects take a userID because the DynamoDB key schema
-// (architecture.md §7) partitions by user: PK=USER#<uid>. DeleteProject and
-// UpdateProject still key off ID alone — they're not yet implemented against
-// DynamoDB (see #11, #12) and will pick up the same treatment then.
+// (architecture.md §7) partitions by user: PK=USER#<uid>. UpdateProject
+// instead reads UserID off the domain.Project it's given, since the key is
+// already there. DeleteProject still keys off ID alone — it's not yet
+// implemented against DynamoDB (see #12) and will pick up the same
+// treatment then.
 type Repository interface {
 	CreateProject(ctx context.Context, p domain.Project) (domain.Project, error)
 	GetProject(ctx context.Context, userID, id string) (domain.Project, error)

@@ -149,6 +149,90 @@ func (r *DynamoRepository) GetProject(ctx context.Context, userID, id string) (d
 	return item.toDomain(), nil
 }
 
+// UpdateProject updates a project's mutable fields (Goal, Deadline,
+// Constraints, Status) via a conditional UpdateItem (attribute_exists(PK))
+// and bumps UpdatedAt. The condition fails — returning ErrNotFound — both
+// when the project doesn't exist at all and when p.UserID doesn't match its
+// actual owner, since that project's item lives under a different PK
+// entirely.
+func (r *DynamoRepository) UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
+	now := time.Now().UTC()
+
+	goalAV, err := attributevalue.Marshal(p.Goal)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("marshal goal: %w", err)
+	}
+	constraintsAV, err := attributevalue.Marshal(p.Constraints)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("marshal constraints: %w", err)
+	}
+	statusAV, err := attributevalue.Marshal(p.Status)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("marshal status: %w", err)
+	}
+	updatedAtAV, err := attributevalue.Marshal(now)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("marshal updated_at: %w", err)
+	}
+
+	// Several of these are DynamoDB reserved words (confirmed the hard way:
+	// "constraints" and "status" both are) and can't appear literally in an
+	// update expression, so every attribute name here gets an alias.
+	updateExpr := "SET #goal = :goal, #constraints = :constraints, #status = :status, #updated_at = :updated_at"
+	names := map[string]string{
+		"#goal":        "goal",
+		"#constraints": "constraints",
+		"#status":      "status",
+		"#updated_at":  "updated_at",
+	}
+	values := map[string]types.AttributeValue{
+		":goal":        goalAV,
+		":constraints": constraintsAV,
+		":status":      statusAV,
+		":updated_at":  updatedAtAV,
+	}
+
+	if p.Deadline != nil {
+		deadlineAV, err := attributevalue.Marshal(p.Deadline)
+		if err != nil {
+			return domain.Project{}, fmt.Errorf("marshal deadline: %w", err)
+		}
+		updateExpr += ", #deadline = :deadline"
+		names["#deadline"] = "deadline"
+		values[":deadline"] = deadlineAV
+	} else {
+		updateExpr += " REMOVE #deadline"
+		names["#deadline"] = "deadline"
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: projectPK(p.UserID)},
+			"SK": &types.AttributeValueMemberS{Value: projectSK(p.ID)},
+		},
+		UpdateExpression:          aws.String(updateExpr),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.Project{}, ErrNotFound
+		}
+		return domain.Project{}, fmt.Errorf("update project item: %w", err)
+	}
+
+	var item projectItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.Project{}, fmt.Errorf("unmarshal project item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
 // ListProjects queries the user's partition for all META items and returns
 // them as projects (architecture.md §7: `PK = USER#<uid> AND
 // begins_with(SK, "META#")`). No GSI is needed — the base table already

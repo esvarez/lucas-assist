@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -191,6 +192,120 @@ func TestDynamoRepository_ListProjects(t *testing.T) {
 		if p.UserID != userID {
 			t.Errorf("ListProjects(%q) leaked project owned by %q", userID, p.UserID)
 		}
+	}
+}
+
+func TestDynamoRepository_UpdateProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateProject(ctx, domain.Project{
+		UserID:      userID,
+		Name:        "Nudge",
+		Goal:        "Ship the POC",
+		Constraints: []string{"no VPC"},
+		Status:      "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	updated, err := repo.UpdateProject(ctx, domain.Project{
+		UserID:      userID,
+		ID:          created.ID,
+		Name:        "should be ignored",
+		Goal:        "Ship v2",
+		Deadline:    &deadline,
+		Constraints: []string{"no VPC", "no SSR"},
+		Status:      "done",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+
+	if updated.Name != created.Name {
+		t.Errorf("Name = %q, want unchanged %q", updated.Name, created.Name)
+	}
+	if updated.Goal != "Ship v2" || updated.Status != "done" {
+		t.Errorf("UpdateProject() = %+v, want Goal/Status updated", updated)
+	}
+	if updated.Deadline == nil || !updated.Deadline.Equal(deadline) {
+		t.Errorf("Deadline = %v, want %v", updated.Deadline, deadline)
+	}
+	if !reflect.DeepEqual(updated.Constraints, []string{"no VPC", "no SSR"}) {
+		t.Errorf("Constraints = %v, want updated", updated.Constraints)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v, want after %v", updated.UpdatedAt, created.UpdatedAt)
+	}
+	if !updated.CreatedAt.Equal(created.CreatedAt) {
+		t.Errorf("CreatedAt = %v, want unchanged %v", updated.CreatedAt, created.CreatedAt)
+	}
+
+	got, err := repo.GetProject(ctx, userID, created.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, updated) {
+		t.Errorf("GetProject() after update = %+v, want %+v", got, updated)
+	}
+}
+
+func TestDynamoRepository_UpdateProject_ClearsDeadline(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge", Deadline: &deadline})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if created.Deadline == nil {
+		t.Fatalf("CreateProject() = %+v, want Deadline set", created)
+	}
+
+	updated, err := repo.UpdateProject(ctx, domain.Project{UserID: userID, ID: created.ID, Status: "active"})
+	if err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+	if updated.Deadline != nil {
+		t.Errorf("Deadline = %v, want nil after clearing", updated.Deadline)
+	}
+
+	got, err := repo.GetProject(ctx, userID, created.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if got.Deadline != nil {
+		t.Errorf("GetProject() after update Deadline = %v, want nil", got.Deadline)
+	}
+}
+
+func TestDynamoRepository_UpdateProject_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.UpdateProject(ctx, domain.Project{UserID: testUserID(), ID: "missing-" + domain.NewID()})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_UpdateProject_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: testUserID(), Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	_, err = repo.UpdateProject(ctx, domain.Project{UserID: testUserID(), ID: created.ID, Status: "done"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}
 }
 
