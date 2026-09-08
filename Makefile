@@ -1,4 +1,4 @@
-.PHONY: build build-SkillsFunction build-ApiFunction test test-integration local
+.PHONY: build build-SkillsFunction build-ApiFunction test test-integration local cli
 
 # Cross-compiles all Lambda binaries.
 build: build-SkillsFunction build-ApiFunction
@@ -25,3 +25,10 @@ test-integration:
 # on :8000 (docker compose up -d).
 local:
 	go run ./cmd/local
+
+# Propose a project via create_project, confirm, then commit via
+# POST /projects. Usage: make cli ARGS='"A CLI tool for indie developers"'
+# Requires OPENAI_API_KEY (in-process propose) and, by default, cmd/local
+# running for the commit step.
+cli:
+	go run ./cmd/cli $(ARGS)
