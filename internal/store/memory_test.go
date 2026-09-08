@@ -134,7 +134,7 @@ func TestMemoryRepository_DeleteProject(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	if err := repo.DeleteProject(ctx, created.ID); err != nil {
+	if err := repo.DeleteProject(ctx, "user_1", created.ID); err != nil {
 		t.Fatalf("DeleteProject() error = %v", err)
 	}
 
@@ -156,9 +156,27 @@ func TestMemoryRepository_DeleteProject(t *testing.T) {
 func TestMemoryRepository_DeleteProject_NotFound(t *testing.T) {
 	repo := NewMemoryRepository()
 
-	err := repo.DeleteProject(context.Background(), "does-not-exist")
+	err := repo.DeleteProject(context.Background(), "user_1", "does-not-exist")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("DeleteProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_DeleteProject_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if err := repo.DeleteProject(ctx, "user_2", created.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteProject() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+
+	if _, err := repo.GetProject(ctx, "user_1", created.ID); err != nil {
+		t.Errorf("GetProject() after failed delete error = %v, want project still present", err)
 	}
 }
 

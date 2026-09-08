@@ -48,11 +48,12 @@ func (r *MemoryRepository) GetProject(ctx context.Context, userID, id string) (d
 	return p, nil
 }
 
-func (r *MemoryRepository) DeleteProject(ctx context.Context, id string) error {
+func (r *MemoryRepository) DeleteProject(ctx context.Context, userID, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, ok := r.projects[id]; !ok {
+	p, ok := r.projects[id]
+	if !ok || p.UserID != userID {
 		return ErrNotFound
 	}
 

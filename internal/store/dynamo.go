@@ -233,6 +233,31 @@ func (r *DynamoRepository) UpdateProject(ctx context.Context, p domain.Project) 
 	return item.toDomain(), nil
 }
 
+// DeleteProject deletes a project's META item via a conditional DeleteItem
+// (attribute_exists(PK)). The condition fails — returning ErrNotFound —
+// both when the project doesn't exist at all and when userID doesn't match
+// its actual owner, since that project's item lives under a different PK
+// entirely.
+func (r *DynamoRepository) DeleteProject(ctx context.Context, userID, id string) error {
+	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: projectPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: projectSK(id)},
+		},
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("delete project item: %w", err)
+	}
+
+	return nil
+}
+
 // ListProjects queries the user's partition for all META items and returns
 // them as projects (architecture.md §7: `PK = USER#<uid> AND
 // begins_with(SK, "META#")`). No GSI is needed — the base table already
