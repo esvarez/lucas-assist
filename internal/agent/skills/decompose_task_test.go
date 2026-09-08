@@ -38,11 +38,11 @@ func TestSystemPrompt(t *testing.T) {
 func TestDecomposeResultSchemaStrictMode(t *testing.T) {
 	schema := llm.StrictSchema(&DecomposeResult{})
 
-	assertObjectStrict(t, "root", schema, []string{"status", "subtasks", "questions"})
+	assertObjectStrict(t, "root", schema, []string{"status", "subtasks", "assumptions", "questions"})
 
 	properties, _ := schema["properties"].(map[string]any)
 
-	for _, nullableField := range []string{"subtasks", "questions"} {
+	for _, nullableField := range []string{"subtasks", "assumptions", "questions"} {
 		anyOf, ok := properties[nullableField].(map[string]any)["anyOf"].([]any)
 		if !ok || len(anyOf) != 2 {
 			t.Fatalf("properties.%s: want a 2-branch anyOf, got %#v", nullableField, properties[nullableField])
@@ -177,6 +177,61 @@ func TestDecomposeTaskSkill_BuildContext_InvalidInput(t *testing.T) {
 	}
 }
 
+// TestDecomposeTaskSkill_BuildContext_RejectsUnknownFields is the #41
+// regression: a mistyped field name (here, "TaskDescription" instead of
+// "task_description") used to be silently dropped by lenient JSON
+// decoding — the caller's answers never reached the model at all, which
+// is why round 1 re-asked the same questions. It must now be a loud
+// error instead of silent data loss.
+func TestDecomposeTaskSkill_BuildContext_RejectsUnknownFields(t *testing.T) {
+	raw := []byte(`{"task_title": "IndieDev Task Tracker", "TaskDescription": "answers here", "domain": "software"}`)
+
+	_, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), raw)
+	if err == nil {
+		t.Fatal("BuildContext() error = nil, want an error for the unknown field")
+	}
+	if !errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it to wrap agent.ErrInvalidInput so callers can map it to 400", err)
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_WithClarifications is the other
+// #41 fix: a follow-up round's answers are passed as structured
+// Clarifications, not folded into TaskDescription prose, and the message
+// explicitly marks them as settled — including negative answers — so the
+// model doesn't ask again.
+func TestDecomposeTaskSkill_BuildContext_WithClarifications(t *testing.T) {
+	raw := []byte(`{
+		"task_title": "IndieDev Task Tracker",
+		"task_description": "A CLI tool for indie developers to manage and track tasks",
+		"domain": "software",
+		"clarification_round": 1,
+		"clarifications": [
+			{"question": "Preferred technology stack?", "answer": "No preference"},
+			{"question": "Authentication?", "answer": "Out of scope"}
+		]
+	}`)
+
+	messages, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+
+	userMsg := messages[1].OfUser.Content.OfString.Value
+	for _, want := range []string{
+		"Clarification round: 1",
+		"already been answered",
+		"Preferred technology stack?",
+		"No preference",
+		"Authentication?",
+		"Out of scope",
+	} {
+		if !strings.Contains(userMsg, want) {
+			t.Errorf("user message = %q, want it to contain %q", userMsg, want)
+		}
+	}
+}
+
 func TestDecomposeTaskSkill_ResponseFormat(t *testing.T) {
 	rf := (DecomposeTaskSkill{}).ResponseFormat()
 	if !rf.JSONSchema.Strict.Value {
@@ -199,6 +254,7 @@ func TestDecomposeTaskSkill_Parse_OK(t *testing.T) {
 		"subtasks": [
 			{"title": "Pack boxes", "description": "Box up the kitchen", "acceptance_criteria": ["All kitchen items boxed"]}
 		],
+		"assumptions": ["No professional movers — assuming a DIY move"],
 		"questions": null
 	}`)
 
@@ -216,13 +272,16 @@ func TestDecomposeTaskSkill_Parse_OK(t *testing.T) {
 	if len(result.Subtasks) != 1 || result.Subtasks[0].Title != "Pack boxes" {
 		t.Errorf("Subtasks = %#v, want one subtask titled %q", result.Subtasks, "Pack boxes")
 	}
+	if len(result.Assumptions) != 1 {
+		t.Errorf("Assumptions = %#v, want one assumption", result.Assumptions)
+	}
 	if result.Questions != nil {
 		t.Errorf("Questions = %#v, want nil", result.Questions)
 	}
 }
 
 func TestDecomposeTaskSkill_Parse_NeedsClarification(t *testing.T) {
-	raw := []byte(`{"status": "needs_clarification", "subtasks": null, "questions": ["When is the deadline?"]}`)
+	raw := []byte(`{"status": "needs_clarification", "subtasks": null, "assumptions": null, "questions": ["What is the task actually about?"]}`)
 
 	got, err := (DecomposeTaskSkill{}).Parse(raw)
 	if err != nil {
@@ -234,6 +293,9 @@ func TestDecomposeTaskSkill_Parse_NeedsClarification(t *testing.T) {
 	}
 	if result.Subtasks != nil {
 		t.Errorf("Subtasks = %#v, want nil", result.Subtasks)
+	}
+	if result.Assumptions != nil {
+		t.Errorf("Assumptions = %#v, want nil", result.Assumptions)
 	}
 	if len(result.Questions) != 1 {
 		t.Errorf("Questions = %#v, want one question", result.Questions)
