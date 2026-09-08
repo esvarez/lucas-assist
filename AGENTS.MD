@@ -92,6 +92,17 @@ The SPA is client-rendered and served as static files. Do not introduce Next.js,
 - Errors wrap with `fmt.Errorf("...: %w", err)`. No naked returns of `err` from more than one layer down.
 - All exported types in `/internal/domain` are plain structs with JSON tags. No ORM-style behavior on domain types.
 
+## Auth rules
+
+GitHub OAuth is the **only** identity provider. Nudge issues its own JWTs. See `docs/architecture-decisions.md` §15.
+
+- **Web:** authorization code + PKCE. **CLI:** device flow (RFC 8628). The CLI is first-class — don't build web-only auth paths.
+- **Access token:** self-issued JWT, HS256, 15min. **Refresh token:** opaque, stored as `sha256` hash in DynamoDB with a TTL attribute. Never store a refresh token in plaintext.
+- Both clients send `Authorization: Bearer <access_token>`. One middleware path. Web keeps the refresh token in an httpOnly/Secure/SameSite=Strict cookie; the CLI in `~/.nudge/credentials` mode 0600.
+- **Never send the GitHub access token to the client.** It stays server-side on the user record.
+- **The internal user ID is a generated UUID, not the GitHub user ID.** Login resolves GitHub ID → UUID via a `GetItem` on the `IDENTITY#github#<gh_id>` item. Don't add a GSI for this and don't use the provider ID as the partition key — that would make a second provider a full re-key.
+- Validation is Go middleware, not an API Gateway JWT authorizer.
+
 ## DynamoDB rules
 
 Single table, **partitioned by user**. The project ID lives in the sort key prefix.
@@ -103,6 +114,9 @@ Single table, **partitioned by user**. The project ID lives in the sort key pref
 | Decision | `USER#<uid>` | `P#<pid>#DEC#<ts>` |
 | Event | `USER#<uid>` | `P#<pid>#EVT#<ts>` |
 | Pending changeset | `USER#<uid>` | `P#<pid>#PENDING#<job_id>` |
+| User profile | `USER#<uid>` | `PROFILE` |
+| Session | `USER#<uid>` | `SESSION#<sha256(refresh)>` |
+| Identity lookup | `IDENTITY#github#<gh_id>` | `IDENTITY` |
 
 GSI2 (sparse): `PK = USER#<uid>`, `SK = <priority>#<updated_at>`. There is no GSI1.
 
@@ -115,6 +129,22 @@ Authorization in this system is structural: a query is physically scoped to the 
 - Resolve the user ID once in auth middleware, put it in `context.Context`, read it from there.
 - **Never** add a route shaped like `/api/users/:uid/...`. Project-scoped routes are `/api/projects/:pid/...` and the user ID comes from the token, not the path.
 - If you find yourself writing a function that takes `userID string` from an HTTP request, stop.
+
+### Single-user projects
+
+Every project has exactly one owner. **Shared projects are out of scope.**
+
+- No `MEMBER#` items, no `assignee_id`, no roles or permission model. Ownership is the only access concept.
+- Don't add fields or abstractions "for when we support teams." That feature is not planned.
+
+### Optimistic concurrency is still required
+
+Single-user is not single-session — two browser tabs hit the same conflict a second user would, because a changeset is proposed against one read and committed in a later round trip.
+
+- The project `META#<pid>` item carries a `version` integer, incremented on every commit.
+- A proposed changeset records the version it was built against.
+- Every commit transaction includes `ConditionExpression: version = :expected`.
+- On `ConditionalCheckFailedException`, return a conflict to the client so it can re-propose. **Do not retry the write.**
 
 ### Other rules
 
@@ -152,6 +182,14 @@ Authorization in this system is structural: a query is physically scoped to the 
 - Run `make test lint` before proposing a change.
 - Any change to the DynamoDB key schema, Lambda topology, or the propose/commit flow must update `docs/architecture-decisions.md` in the same change.
 
+## Out of scope for the MVP
+
+Do not build these. If a task seems to need one, stop and ask.
+
+- **Shared or multi-user projects.** Every project has exactly one owner. No members, no roles, no invites, no sharing UI, no `MEMBER#` items. The key schema is user-partitioned specifically because of this; adding collaboration later means re-keying, and that decision hasn't been made.
+- **Real-time collaboration or push updates.** No WebSockets, no subscriptions.
+- **Assignment.** Tasks have no assignee field. "What should I do next?" means *the owner*.
+
 ## Stop and ask before
 
 - Adding a new Lambda function
@@ -166,6 +204,12 @@ Authorization in this system is structural: a query is physically scoped to the 
 
 Don't assume answers to these — ask.
 
-- Auth provider (Cognito vs Clerk vs WorkOS)
-- Whether the CLI is a first-class client (gates cookies vs token auth)
+- **What `priority` means** — GSI2's sort key depends on it and it is undefined. Do not invent a scheme.
+- Secrets storage: SSM Parameter Store vs Secrets Manager
+- Optimistic concurrency (`version` attribute on project META)
+- Whether the sync path persists pending changesets or keeps them in client state
+- Idempotency key derivation for chunked commits
+- Project deletion strategy (exceeds the 100-item transaction cap)
 - SAM vs Terraform for `/infra`
+
+Resolved: auth is GitHub OAuth with self-issued JWTs, and the CLI **is** first-class.

@@ -196,13 +196,28 @@ Partitioned by **user**, with the project ID carried in the sort key prefix.
 
 **GSI2 (sparse):** `PK = USER#<uid>`, `SK = <priority>#<updated_at>`. Key attributes are written only when a task is actionable (unblocked, not done); marking a task blocked or done deletes them so it drops out of the index. Because it's user-partitioned, "what should I do next?" works **across all of a user's projects** in a single Query — which for a developer juggling several side projects is the more useful version of the feature.
 
-### Trade-off accepted
+### Scope decision: single-user projects only
 
-User partitioning makes shared projects a migration rather than an addition: a second person's access would require duplicating items into their partition or reading across partitions. Ownership transfer would rewrite every item.
+**Every project has exactly one owner. Shared projects are explicitly out of scope for the MVP.**
 
-This is accepted deliberately. Nudge is a *personal* project agent. If shared projects become a requirement, expect to re-key.
+This is a product decision, not a limitation to work around. Nudge is a *personal* project agent — the user is an indie developer working alone, and the whole design leans into that: user-partitioned keys, no membership model, no per-user assignment on tasks.
+
+Do not build toward collaboration. No `MEMBER#` items, no `assignee_id` field, no permission checks beyond ownership. Speculative scaffolding for a feature that may never ship is cost without benefit, and it would dilute the structural authorization guarantee above.
+
+**What it would cost later, honestly:** user partitioning makes sharing a re-key, not an addition. A second person's access would require duplicating items into their partition or reading across partitions, and ownership transfer would rewrite every item. That's a real migration. It's accepted knowingly, in exchange for authorization that can't be forgotten and one fewer index.
 
 **Non-issue:** the 10GB item collection limit applies only to tables with local secondary indexes, which §7 already bans. DynamoDB will split large user partitions freely.
+
+### Still add a `version` attribute
+
+Single-user does **not** mean single-session. The propose/commit split means a changeset is generated against one read of project state and committed in a separate round trip, possibly minutes later while the user reviews the diff. Two browser tabs, or a phone and a laptop, produce exactly the conflict a multi-user system would.
+
+- `version` (integer) on the project `META#<pid>` item, incremented on every commit.
+- A proposed changeset records the version it was built against.
+- The commit transaction carries `ConditionExpression: version = :expected`.
+- On mismatch, the UI reports that the project changed and offers to re-propose.
+
+One attribute and one condition expression. It costs nothing now and is unpleasant to retrofit once there's data.
 
 ### The one rule this creates
 
@@ -309,6 +324,50 @@ Convenient (git-push deploys, PR previews, no distribution config), but the pric
 
 ---
 
+## 15. Auth: GitHub OAuth, self-issued JWTs
+
+**Decision:** GitHub is the only identity provider. Nudge issues its own tokens. The CLI is a first-class client.
+
+**Rationale:** The target user is an indie software developer — GitHub coverage is effectively 100%. No password, no email verification, no reset flow, no MFA to build. Free permanently with no MAU tier and no vendor to migrate off. And the token is useful to the product later: commits, PRs, and issues are the raw material for auto-updating project state.
+
+**Rejected:** Cognito (10,000 MAU free but poor DX and confusing tier changes), WorkOS AuthKit (1M MAU free, genuinely good, but adds a vendor for a managed layer we barely use), Clerk (its value is prebuilt React components, and our login is one button), Auth0 (fine free tier, expensive past it).
+
+**Google was the close call.** Same cost, same coverage. Two things decided it: Google's loopback flow needs a browser on the same machine, so a CLI over SSH or in a container breaks, while GitHub's device flow works anywhere. And GitHub's token unlocks repo context; Google's equivalent is Calendar, which needs sensitive scopes and OAuth verification review.
+
+### Flows
+
+| Client | Flow |
+|---|---|
+| Web SPA | Authorization code + PKCE, redirect to `/api/auth/callback` |
+| CLI | Device flow (RFC 8628) — print code, user approves in browser, poll for token |
+
+### Tokens
+
+- **Access token:** self-issued JWT, HS256, 15-minute expiry. Signing secret in SSM Parameter Store. Carries the internal user ID as `sub`.
+- **Refresh token:** opaque random string, stored **hashed** in DynamoDB with a TTL attribute. DynamoDB TTL expires sessions at no cost, and storing the hash means a table leak doesn't yield usable sessions. This is also what makes revocation possible.
+- **Transport:** `Authorization: Bearer <access_token>` for both clients — one uniform middleware path.
+- **Refresh token storage:** web keeps it in an httpOnly, Secure, SameSite=Strict cookie (first-party, which is exactly what §14's single-distribution setup buys); the CLI keeps it in `~/.nudge/credentials` at mode 0600.
+
+The GitHub access token itself is **never** sent to the client. It's stored server-side against the user record for future repo integration.
+
+### Identity is decoupled from the provider
+
+The internal user ID is a generated UUID, **not** the GitHub user ID. Since the DynamoDB partition key is derived from it (§7), coupling it to a provider would make adding a second provider a full re-key.
+
+| Item | PK | SK | Purpose |
+|---|---|---|---|
+| User profile | `USER#<uid>` | `PROFILE` | Internal identity, GitHub token |
+| Identity lookup | `IDENTITY#github#<gh_id>` | `IDENTITY` | Login: GitHub ID → internal UID |
+| Session | `USER#<uid>` | `SESSION#<sha256(refresh)>` | Refresh token, TTL attribute |
+
+Login is a single `GetItem` on the identity item — **no GSI needed**, which keeps write costs down (§7). Adding Google later means writing `IDENTITY#google#<sub>` pointing at the same UID; linking by verified email becomes possible rather than a migration.
+
+### Validation
+
+Token validation is Go middleware in the API Lambda, not an API Gateway JWT authorizer. The native authorizer requires an OIDC discovery endpoint, which self-issued tokens don't have, and hosting one to save a few milliseconds isn't worth it. Middleware resolves the user ID once and puts it in `context.Context` — which is the mechanism §7's authorization guarantee depends on.
+
+---
+
 ## POC scope
 
 Deliberately none of the above.
@@ -342,7 +401,28 @@ Both fields stay in `required`; the unused one is explicitly `null`. This patter
 
 ## Open questions
 
-- **Auth.** Cognito is the AWS-native answer but unpleasant. Clerk or WorkOS are easier. A CLI client may want API keys plus JWT verification in a Lambda authorizer.
-- **Is the CLI a first-class client?** If yes, token-based auth wins over cookies, which reduces the value of the same-origin setup in §14. If the web SPA is the only real surface, cookies are simpler. This decision gates the auth choice above.
-- **IaC choice.** SAM vs Terraform not settled.
-- **Cost trigger for revisiting the datastore.** Not defined yet.
+### Blocking — decide before writing code
+
+- **What is `priority`?** GSI2's sort key is `<priority>#<updated_at>` and nothing defines what produces that value. User-set? Computed from dependencies and staleness? A bucketed enum? The sort key format is fixed at index creation, so this is a schema-level unknown.
+- **Secrets storage.** SSM Parameter Store (free standard tier) vs Secrets Manager (~$0.40/secret/month). Three secrets to hold: OpenAI key, GitHub client secret, JWT signing secret. Parameter Store is the likely answer given the cost constraint (§14).
+
+### Decide during the build
+
+- **Optimistic concurrency (`version` on project META).** A changeset is proposed against a read and committed minutes later. Even single-user, two tabs or a concurrent async job produce stale commits. One attribute plus a `ConditionExpression`. Retrofitting is a data migration.
+- **Pending changeset persistence.** `P#<pid>#PENDING#<job_id>` appears in the §7 schema because the async path needs it. Whether the sync path also uses it (survives refresh) or keeps proposals in client state is undecided.
+- **Async job status and notification.** Polling is the answer given no streaming (§10), but interval, job-status item shape, and failure handling are unspecified.
+- **Idempotency keys for changeset commits.** Chunked commits must be idempotent; the key derivation isn't defined. Client-supplied, or a deterministic hash of the changeset?
+- **Project deletion.** Removing every `P#<pid>#` item exceeds the 100-item `TransactWriteItems` cap on any real project. Needs a soft-delete flag or a paginated background job.
+
+### Can wait
+
+- **SAM vs Terraform** for `/infra`.
+- **What consumes EventBridge.** It carries "event log fanout" in the topology diagram but nothing subscribes. The `EVT#` items in DynamoDB already are the event log — this may be premature.
+- **Per-user OpenAI spend limits.** Not urgent at MVP scale, but a cost-sensitive multi-user product eventually needs a ceiling per account.
+- **Model selection.** Deliberately deferred to implementation time.
+
+### Resolved
+
+- ~~Auth provider~~ → GitHub OAuth, self-issued JWTs (§15)
+- ~~Is the CLI first-class?~~ → Yes. Device flow, Bearer tokens (§15)
+- ~~Cost trigger for revisiting the datastore~~ → Obsolete; DynamoDB is the cheap option (§7)
