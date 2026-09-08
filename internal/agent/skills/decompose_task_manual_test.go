@@ -28,6 +28,9 @@ func logDecomposeResult(t *testing.T, result DecomposeResult) {
 	for _, st := range result.Subtasks {
 		t.Logf("subtask: %+v", st)
 	}
+	for _, a := range result.Assumptions {
+		t.Logf("assumption: %s", a)
+	}
 	for _, q := range result.Questions {
 		t.Logf("question: %s", q)
 	}
@@ -82,5 +85,42 @@ func TestDecomposeManual_TitleOnly(t *testing.T) {
 
 	if result.Status != "ok" && result.Status != "needs_clarification" {
 		t.Errorf("Status = %q, want %q or %q", result.Status, "ok", "needs_clarification")
+	}
+}
+
+// TestDecomposeManual_Regression41 replays the exact round-1 payload from
+// #41: a follow-up call with clarification_round 1 and the reported
+// answers ("no preference", "out of scope", etc.) as structured
+// Clarifications. Before the fix this looped forever, re-asking the same
+// questions — clarification_round > 0 must now always return "ok".
+func TestDecomposeManual_Regression41(t *testing.T) {
+	skipUnlessOpenAIKey(t)
+
+	result := runDecompose(t, DecomposeInput{
+		TaskTitle:          "IndieDev Task Tracker",
+		TaskDescription:    "Create a CLI tool for indie developers to manage and track tasks",
+		Domain:             DomainSoftware,
+		ClarificationRound: 1,
+		Clarifications: []Clarification{
+			{Question: "What specific features do you want (e.g., task creation, editing, deletion)?", Answer: "Create and editing"},
+			{Question: "Preferred technology stack?", Answer: "No preference"},
+			{Question: "Authentication?", Answer: "Out of scope"},
+			{Question: "Target audience?", Answer: "No preference"},
+			{Question: "Existing trackers for inspiration?", Answer: "No"},
+		},
+	})
+	logDecomposeResult(t, result)
+
+	if result.Status != "ok" {
+		t.Fatalf("Status = %q, want %q (clarification_round > 0 must not re-ask)", result.Status, "ok")
+	}
+	if len(result.Subtasks) < 3 || len(result.Subtasks) > 7 {
+		t.Errorf("Subtasks = %d, want 3-7", len(result.Subtasks))
+	}
+	if len(result.Assumptions) == 0 {
+		t.Error("Assumptions is empty, want the unspecified choices (stack, storage, etc.) recorded")
+	}
+	if result.Questions != nil {
+		t.Errorf("Questions = %#v, want nil on a round-1 ok result", result.Questions)
 	}
 }
