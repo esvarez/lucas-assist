@@ -6,6 +6,10 @@ import "time"
 // events, notes — hangs off of. It's the "project card" injected into
 // every skill prompt.
 type Project struct {
+	// UserID scopes the project to its owner (architecture.md §7: DynamoDB
+	// partitions by user). Caller-supplied for now — populating it from a
+	// verified JWT subject is separate, undecided auth work.
+	UserID      string     `json:"user_id"`
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
 	Goal        string     `json:"goal"`
