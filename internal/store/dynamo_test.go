@@ -309,6 +309,54 @@ func TestDynamoRepository_UpdateProject_WrongUser(t *testing.T) {
 	}
 }
 
+func TestDynamoRepository_DeleteProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if err := repo.DeleteProject(ctx, userID, created.ID); err != nil {
+		t.Fatalf("DeleteProject() error = %v", err)
+	}
+
+	if _, err := repo.GetProject(ctx, userID, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetProject() after delete error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_DeleteProject_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	err := repo.DeleteProject(ctx, testUserID(), "missing-"+domain.NewID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_DeleteProject_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if err := repo.DeleteProject(ctx, testUserID(), created.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteProject() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+
+	if _, err := repo.GetProject(ctx, userID, created.ID); err != nil {
+		t.Errorf("GetProject() after failed delete error = %v, want project still present", err)
+	}
+}
+
 func TestDynamoRepository_ListProjects_Empty(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
