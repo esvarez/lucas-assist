@@ -22,20 +22,6 @@ const testTable = "nudge-integration-test"
 
 func newTestDynamoRepository(t *testing.T) *DynamoRepository {
 	t.Helper()
-	return newTestDynamoRepositoryWithTable(t, testTable)
-}
-
-// newIsolatedTestDynamoRepository provisions a fresh, never-before-used
-// table so the caller can rely on it starting out empty — the shared
-// testTable accumulates items across test runs against a persistent
-// DynamoDB Local instance.
-func newIsolatedTestDynamoRepository(t *testing.T) *DynamoRepository {
-	t.Helper()
-	return newTestDynamoRepositoryWithTable(t, testTable+"-"+domain.NewID())
-}
-
-func newTestDynamoRepositoryWithTable(t *testing.T, table string) *DynamoRepository {
-	t.Helper()
 
 	endpoint := os.Getenv("DYNAMODB_ENDPOINT")
 	if endpoint == "" {
@@ -48,18 +34,28 @@ func newTestDynamoRepositoryWithTable(t *testing.T, table string) *DynamoReposit
 		t.Fatalf("NewDynamoDBClient() error = %v", err)
 	}
 
-	if err := EnsureTable(ctx, client, table); err != nil {
+	if err := EnsureTable(ctx, client, testTable); err != nil {
 		t.Fatalf("EnsureTable() error = %v", err)
 	}
 
-	return NewDynamoRepository(client, table)
+	return NewDynamoRepository(client, testTable)
+}
+
+// testUserID returns a userID unique to this test run. Since the table is
+// partitioned by user, a fresh userID is on its own empty partition even
+// against the shared testTable, which persists across runs of a long-lived
+// DynamoDB Local instance.
+func testUserID() string {
+	return "user-" + domain.NewID()
 }
 
 func TestDynamoRepository_CreateProject(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
+	userID := testUserID()
 
 	created, err := repo.CreateProject(ctx, domain.Project{
+		UserID:      userID,
 		Name:        "Nudge",
 		Goal:        "Ship the POC",
 		Constraints: []string{"no VPC", "no SSR"},
@@ -82,8 +78,8 @@ func TestDynamoRepository_CreateProject(t *testing.T) {
 	got, err := repo.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(testTable),
 		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: projectPK(created.ID)},
-			"SK": &types.AttributeValueMemberS{Value: metaSK},
+			"PK": &types.AttributeValueMemberS{Value: projectPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: projectSK(created.ID)},
 		},
 	})
 	if err != nil {
@@ -97,14 +93,15 @@ func TestDynamoRepository_CreateProject(t *testing.T) {
 func TestDynamoRepository_CreateProject_DuplicateID(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
+	userID := testUserID()
 
 	id := "dup-" + domain.NewID()
 
-	if _, err := repo.CreateProject(ctx, domain.Project{ID: id, Name: "First"}); err != nil {
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: userID, ID: id, Name: "First"}); err != nil {
 		t.Fatalf("first CreateProject() error = %v", err)
 	}
 
-	_, err := repo.CreateProject(ctx, domain.Project{ID: id, Name: "Second"})
+	_, err := repo.CreateProject(ctx, domain.Project{UserID: userID, ID: id, Name: "Second"})
 	if !errors.Is(err, ErrDuplicateID) {
 		t.Fatalf("second CreateProject() error = %v, want %v", err, ErrDuplicateID)
 	}
@@ -113,8 +110,10 @@ func TestDynamoRepository_CreateProject_DuplicateID(t *testing.T) {
 func TestDynamoRepository_GetProject(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
+	userID := testUserID()
 
 	created, err := repo.CreateProject(ctx, domain.Project{
+		UserID:      userID,
 		Name:        "Nudge",
 		Goal:        "Ship the POC",
 		Constraints: []string{"no VPC", "no SSR"},
@@ -124,7 +123,7 @@ func TestDynamoRepository_GetProject(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	got, err := repo.GetProject(ctx, created.ID)
+	got, err := repo.GetProject(ctx, userID, created.ID)
 	if err != nil {
 		t.Fatalf("GetProject() error = %v", err)
 	}
@@ -137,46 +136,69 @@ func TestDynamoRepository_GetProject_NotFound(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
 
-	_, err := repo.GetProject(ctx, "missing-"+domain.NewID())
+	_, err := repo.GetProject(ctx, testUserID(), "missing-"+domain.NewID())
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_GetProject_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: testUserID(), Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	_, err = repo.GetProject(ctx, testUserID(), created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}
 }
 
 func TestDynamoRepository_ListProjects(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
+	userID := testUserID()
+	otherUserID := testUserID()
 
 	want := make(map[string]bool)
 	for _, name := range []string{"Nudge", "Widget"} {
-		created, err := repo.CreateProject(ctx, domain.Project{Name: name})
+		created, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: name})
 		if err != nil {
 			t.Fatalf("CreateProject() error = %v", err)
 		}
 		want[created.ID] = true
 	}
 
-	got, err := repo.ListProjects(ctx)
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: otherUserID, Name: "Someone else's"}); err != nil {
+		t.Fatalf("CreateProject() for other user error = %v", err)
+	}
+
+	got, err := repo.ListProjects(ctx, userID)
 	if err != nil {
 		t.Fatalf("ListProjects() error = %v", err)
 	}
 
-	found := 0
-	for _, p := range got {
-		if want[p.ID] {
-			found++
-		}
+	if len(got) != len(want) {
+		t.Errorf("ListProjects() returned %d projects, want %d", len(got), len(want))
 	}
-	if found != len(want) {
-		t.Errorf("ListProjects() found %d/%d created projects in result of length %d", found, len(want), len(got))
+	for _, p := range got {
+		if !want[p.ID] {
+			t.Errorf("ListProjects(%q) returned unexpected project %q (userID %q)", userID, p.ID, p.UserID)
+		}
+		if p.UserID != userID {
+			t.Errorf("ListProjects(%q) leaked project owned by %q", userID, p.UserID)
+		}
 	}
 }
 
 func TestDynamoRepository_ListProjects_Empty(t *testing.T) {
-	repo := newIsolatedTestDynamoRepository(t)
+	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
 
-	got, err := repo.ListProjects(ctx)
+	got, err := repo.ListProjects(ctx, testUserID())
 	if err != nil {
 		t.Fatalf("ListProjects() error = %v", err)
 	}

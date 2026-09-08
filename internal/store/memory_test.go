@@ -87,12 +87,12 @@ func TestMemoryRepository_GetProject_Found(t *testing.T) {
 	repo := NewMemoryRepository()
 	ctx := context.Background()
 
-	created, err := repo.CreateProject(ctx, domain.Project{Name: "Nudge"})
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	got, err := repo.GetProject(ctx, created.ID)
+	got, err := repo.GetProject(ctx, "user_1", created.ID)
 	if err != nil {
 		t.Fatalf("GetProject() error = %v", err)
 	}
@@ -104,9 +104,24 @@ func TestMemoryRepository_GetProject_Found(t *testing.T) {
 func TestMemoryRepository_GetProject_NotFound(t *testing.T) {
 	repo := NewMemoryRepository()
 
-	_, err := repo.GetProject(context.Background(), "does-not-exist")
+	_, err := repo.GetProject(context.Background(), "user_1", "does-not-exist")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetProject() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetProject_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	_, err = repo.GetProject(ctx, "user_2", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}
 }
 
@@ -114,7 +129,7 @@ func TestMemoryRepository_DeleteProject(t *testing.T) {
 	repo := NewMemoryRepository()
 	ctx := context.Background()
 
-	created, err := repo.CreateProject(ctx, domain.Project{Name: "Nudge"})
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
@@ -123,11 +138,11 @@ func TestMemoryRepository_DeleteProject(t *testing.T) {
 		t.Fatalf("DeleteProject() error = %v", err)
 	}
 
-	if _, err := repo.GetProject(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := repo.GetProject(ctx, "user_1", created.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetProject() after delete error = %v, want %v", err, ErrNotFound)
 	}
 
-	projects, err := repo.ListProjects(ctx)
+	projects, err := repo.ListProjects(ctx, "user_1")
 	if err != nil {
 		t.Fatalf("ListProjects() error = %v", err)
 	}
@@ -152,6 +167,7 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := repo.CreateProject(ctx, domain.Project{
+		UserID:      "user_1",
 		Name:        "Nudge",
 		Goal:        "Ship the POC",
 		Constraints: []string{"no VPC"},
@@ -195,7 +211,7 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 		t.Errorf("CreatedAt = %v, want unchanged %v", updated.CreatedAt, created.CreatedAt)
 	}
 
-	got, err := repo.GetProject(ctx, created.ID)
+	got, err := repo.GetProject(ctx, "user_1", created.ID)
 	if err != nil {
 		t.Fatalf("GetProject() error = %v", err)
 	}
@@ -217,26 +233,34 @@ func TestMemoryRepository_ListProjects(t *testing.T) {
 	repo := NewMemoryRepository()
 	ctx := context.Background()
 
-	if _, err := repo.CreateProject(ctx, domain.Project{Name: "First"}); err != nil {
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "First"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
-	if _, err := repo.CreateProject(ctx, domain.Project{Name: "Second"}); err != nil {
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Second"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: "user_2", Name: "Someone else's"}); err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	projects, err := repo.ListProjects(ctx)
+	projects, err := repo.ListProjects(ctx, "user_1")
 	if err != nil {
 		t.Fatalf("ListProjects() error = %v", err)
 	}
 	if len(projects) != 2 {
 		t.Errorf("ListProjects() returned %d projects, want 2", len(projects))
 	}
+	for _, p := range projects {
+		if p.UserID != "user_1" {
+			t.Errorf("ListProjects(\"user_1\") leaked project owned by %q", p.UserID)
+		}
+	}
 }
 
 func TestMemoryRepository_ListProjects_Empty(t *testing.T) {
 	repo := NewMemoryRepository()
 
-	projects, err := repo.ListProjects(context.Background())
+	projects, err := repo.ListProjects(context.Background(), "user_1")
 	if err != nil {
 		t.Fatalf("ListProjects() error = %v", err)
 	}

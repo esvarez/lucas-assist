@@ -14,13 +14,15 @@ import (
 	"github.com/esvarez/lucas-assist/internal/domain"
 )
 
-// metaSK is the sort key for a project's own item — see architecture.md §7
-// ("Base | PROJECT#<id> | META / TASK#<uuid> / ...").
-const metaSK = "META"
+// metaSKPrefix is the sort-key prefix for a project's own item — see
+// architecture.md §7's key schema table (`PK=USER#<uid>`, `SK=META#<pid>`).
+const metaSKPrefix = "META#"
 
 // DynamoRepository is a DynamoDB-backed Repository. Each project is stored
-// as a single META item under PK=PROJECT#<id>, SK=META in a single table
-// (architecture.md §7).
+// as a single META item under PK=USER#<uid>, SK=META#<pid> in a single
+// table, partitioned by user (architecture.md §7). This structurally scopes
+// every query to its caller's data — a query built from the wrong userID
+// simply can't see another user's items.
 type DynamoRepository struct {
 	client *dynamodb.Client
 	table  string
@@ -39,6 +41,7 @@ func NewDynamoRepository(client *dynamodb.Client, table string) *DynamoRepositor
 type projectItem struct {
 	PK          string     `dynamodbav:"PK"`
 	SK          string     `dynamodbav:"SK"`
+	UserID      string     `dynamodbav:"user_id"`
 	ID          string     `dynamodbav:"id"`
 	Name        string     `dynamodbav:"name"`
 	Goal        string     `dynamodbav:"goal"`
@@ -49,14 +52,19 @@ type projectItem struct {
 	UpdatedAt   time.Time  `dynamodbav:"updated_at"`
 }
 
-func projectPK(id string) string {
-	return "PROJECT#" + id
+func projectPK(userID string) string {
+	return "USER#" + userID
+}
+
+func projectSK(id string) string {
+	return metaSKPrefix + id
 }
 
 func toProjectItem(p domain.Project) projectItem {
 	return projectItem{
-		PK:          projectPK(p.ID),
-		SK:          metaSK,
+		PK:          projectPK(p.UserID),
+		SK:          projectSK(p.ID),
+		UserID:      p.UserID,
 		ID:          p.ID,
 		Name:        p.Name,
 		Goal:        p.Goal,
@@ -70,6 +78,7 @@ func toProjectItem(p domain.Project) projectItem {
 
 func (i projectItem) toDomain() domain.Project {
 	return domain.Project{
+		UserID:      i.UserID,
 		ID:          i.ID,
 		Name:        i.Name,
 		Goal:        i.Goal,
@@ -113,14 +122,16 @@ func (r *DynamoRepository) CreateProject(ctx context.Context, p domain.Project) 
 	return p, nil
 }
 
-// GetProject fetches a project's META item by ID. Returns ErrNotFound if no
-// such item exists.
-func (r *DynamoRepository) GetProject(ctx context.Context, id string) (domain.Project, error) {
+// GetProject fetches a project's META item by userID and ID. Returns
+// ErrNotFound if no such item exists — including when id belongs to a
+// project owned by a different user, since that item lives under a
+// different PK entirely.
+func (r *DynamoRepository) GetProject(ctx context.Context, userID, id string) (domain.Project, error) {
 	out, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.table),
 		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: projectPK(id)},
-			"SK": &types.AttributeValueMemberS{Value: metaSK},
+			"PK": &types.AttributeValueMemberS{Value: projectPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: projectSK(id)},
 		},
 	})
 	if err != nil {
@@ -138,25 +149,26 @@ func (r *DynamoRepository) GetProject(ctx context.Context, id string) (domain.Pr
 	return item.toDomain(), nil
 }
 
-// ListProjects scans the table for all META items and returns them as
-// projects. This is an MVP implementation; architecture.md §7 designs a
-// GSI1 (PK=USER#<id>) for a per-user project list, but that requires a
-// UserID field that doesn't exist yet.
-func (r *DynamoRepository) ListProjects(ctx context.Context) ([]domain.Project, error) {
+// ListProjects queries the user's partition for all META items and returns
+// them as projects (architecture.md §7: `PK = USER#<uid> AND
+// begins_with(SK, "META#")`). No GSI is needed — the base table already
+// scopes the result to userID.
+func (r *DynamoRepository) ListProjects(ctx context.Context, userID string) ([]domain.Project, error) {
 	projects := make([]domain.Project, 0)
 
-	paginator := dynamodb.NewScanPaginator(r.client, &dynamodb.ScanInput{
-		TableName:        aws.String(r.table),
-		FilterExpression: aws.String("SK = :meta"),
+	paginator := dynamodb.NewQueryPaginator(r.client, &dynamodb.QueryInput{
+		TableName:              aws.String(r.table),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":meta": &types.AttributeValueMemberS{Value: metaSK},
+			":pk":       &types.AttributeValueMemberS{Value: projectPK(userID)},
+			":skPrefix": &types.AttributeValueMemberS{Value: metaSKPrefix},
 		},
 	})
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("scan project items: %w", err)
+			return nil, fmt.Errorf("query project items: %w", err)
 		}
 
 		var items []projectItem
