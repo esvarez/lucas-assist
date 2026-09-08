@@ -63,7 +63,7 @@ type DecomposeResult struct {
 	Status      string                `json:"status" jsonschema:"enum=ok,enum=needs_clarification,description=ok if the task was clear enough to decompose; needs_clarification if not"`
 	Subtasks    []domain.ProposedTask `json:"subtasks" jsonschema:"nullable"`
 	Assumptions []string              `json:"assumptions" jsonschema:"nullable,description=Specific choices made on the user's behalf because they were unspecified (e.g. 'SQLite via mattn/go-sqlite3 for local storage; no sync or server component'). Null when status is needs_clarification."`
-	Questions   []string              `json:"questions" jsonschema:"nullable,description=Questions to ask the user before this task can be decomposed. Only used on clarification_round 0, and only when what is being built can't be identified at all."`
+	Questions   []string              `json:"questions" jsonschema:"nullable,description=Questions to ask the user before this task can be decomposed. Only used on clarification_round 0 and only when what is being built can't be identified at all."`
 }
 
 const decomposeSystemPromptGeneral = `You break any personal task into small, concrete subtasks someone can act on one at a time, each with a title, description, and acceptance criteria. The task could be about anything — a household chore, a move, a career change, an event to plan. Don't assume a domain.
