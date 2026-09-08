@@ -27,15 +27,36 @@ Parameters:
     Type: String
     NoEcho: true
     Description: OpenAI API key used by skill Lambdas
-  DynamoTableName:
-    Type: String
-    Default: nudge
-    Description: DynamoDB single-table name (architecture.md §7)
 
 # ─────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────
 Resources:
+
+  # ── DynamoDB table ──────────────────────────
+  # Single table (architecture.md §7), keyed identically to
+  # internal/store/table.go's EnsureTable (used for local dev / DynamoDB
+  # Local), so the same code path works against both. No GSIs yet — added
+  # additively against a live table later (architecture.md §7; AGENTS.MD:
+  # stop and ask before adding a GSI).
+  #
+  # TableName is environment-scoped (matches FunctionName below) so dev/
+  # staging/prod deploys in the same account never collide on one table.
+  NudgeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Environment}-nudge
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
 
   # ── HTTP API (v2) ──────────────────────────
   # API Gateway HTTP API, not REST API (architecture.md §13).
@@ -61,10 +82,10 @@ Resources:
       Timeout: 5
       Environment:
         Variables:
-          DYNAMODB_TABLE: !Ref DynamoTableName
+          DYNAMODB_TABLE: !Ref NudgeTable
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref DynamoTableName
+            TableName: !Ref NudgeTable
       Events:
         ProxyEvent:
           Type: HttpApi
