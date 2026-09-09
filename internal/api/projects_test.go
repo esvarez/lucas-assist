@@ -15,7 +15,7 @@ import (
 func TestCreateProject_Success(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"name": "Nudge", "goal": "Ship the POC", "constraints": ["no VPC"], "status": "active"}`
+	body := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC", "constraints": ["no VPC"], "status": "active"}`
 	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 
@@ -34,6 +34,28 @@ func TestCreateProject_Success(t *testing.T) {
 	}
 	if got.Name != "Nudge" || got.Goal != "Ship the POC" {
 		t.Errorf("response = %+v, want Name/Goal preserved from request", got)
+	}
+	if got.UserID != "user_1" {
+		t.Errorf("UserID = %q, want %q (the supplied user_id)", got.UserID, "user_1")
+	}
+}
+
+// TestCreateProject_MissingUserID documents deliberate behavior: user_id
+// is required, not silently defaulted to empty. The DynamoDB key schema
+// partitions by user (PK=USER#<uid>) — an empty UserID would collide
+// every such project into one shared "USER#" partition, defeating that
+// isolation (#47).
+func TestCreateProject_MissingUserID(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"name": "Nudge", "goal": "Ship the POC"}`
+	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
@@ -65,7 +87,7 @@ func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (do
 func TestCreateProject_DuplicateID(t *testing.T) {
 	router := NewRouter(stubRepository{err: store.ErrDuplicateID})
 
-	body := `{"name": "Nudge"}`
+	body := `{"user_id": "user_1", "name": "Nudge"}`
 	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
