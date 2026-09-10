@@ -58,6 +58,16 @@ func TestCreateProject_MissingUserID(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
+
+	var got validationErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if msg, ok := got.Fields["user_id"]; !ok {
+		t.Errorf("Fields = %#v, want a \"user_id\" entry naming which field failed", got.Fields)
+	} else if msg == "" {
+		t.Error(`Fields["user_id"] is empty, want a message explaining why`)
+	}
 }
 
 func TestCreateProject_InvalidBody(t *testing.T) {
