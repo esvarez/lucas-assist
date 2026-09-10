@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/esvarez/lucas-assist/internal/domain"
@@ -84,15 +85,17 @@ func TestCreateProject_InvalidBody(t *testing.T) {
 }
 
 // stubRepository lets a test force whatever error CreateProject/
-// DeleteProject/UpdateProject returns. Project IDs are always
-// server-generated (see domain.NewID, #18), so a client can't trigger
-// store.ErrDuplicateID through the HTTP API itself — this is the only
-// way to exercise the handlers' error-status mapping for errors the
+// DeleteProject/UpdateProject/GetProject/ListProjects returns. Project IDs
+// are always server-generated (see domain.NewID, #18), so a client can't
+// trigger store.ErrDuplicateID through the HTTP API itself — this is the
+// only way to exercise the handlers' error-status mapping for errors the
 // memory repo won't naturally produce via the API.
 type stubRepository struct {
 	createErr error
 	deleteErr error
 	updateErr error
+	getErr    error
+	listErr   error
 }
 
 func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
@@ -105,6 +108,14 @@ func (s stubRepository) DeleteProject(ctx context.Context, userID, id string) er
 
 func (s stubRepository) UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error) {
 	return domain.Project{}, s.updateErr
+}
+
+func (s stubRepository) GetProject(ctx context.Context, userID, id string) (domain.Project, error) {
+	return domain.Project{}, s.getErr
+}
+
+func (s stubRepository) ListProjects(ctx context.Context, userID string) ([]domain.Project, error) {
+	return nil, s.listErr
 }
 
 func TestCreateProject_DuplicateID(t *testing.T) {
@@ -262,6 +273,144 @@ func TestUpdateProject_InvalidBody(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
 	req := httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString("not json"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestGetProject_Success(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	created, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge", Goal: "Ship the POC"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/"+created.ID+"?user_id=user_1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got domain.Project
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.ID != created.ID || got.Name != "Nudge" || got.Goal != "Ship the POC" {
+		t.Errorf("response = %+v, want the created project", got)
+	}
+}
+
+func TestGetProject_NotFound(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/does-not-exist?user_id=user_1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// TestGetProject_WrongUser documents that a project ID belonging to a
+// different user 404s exactly like a genuinely missing one — the item
+// lives under a different USER#<uid> partition entirely, so there's no
+// way to distinguish "not yours" from "doesn't exist" (architecture.md
+// §7's structural authorization).
+func TestGetProject_WrongUser(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	created, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/"+created.ID+"?user_id=user_2", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestGetProject_MissingUserID(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/some-id", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestListProjects_WithItems(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	ctx := context.Background()
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Widget"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	// A different user's project must never show up in user_1's list.
+	if _, err := repo.CreateProject(ctx, domain.Project{UserID: "user_2", Name: "Someone else's"}); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/projects?user_id=user_1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got []domain.Project
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListProjects() returned %d projects, want 2", len(got))
+	}
+	for _, p := range got {
+		if p.UserID != "user_1" {
+			t.Errorf("GET /projects?user_id=user_1 leaked project owned by %q", p.UserID)
+		}
+	}
+}
+
+func TestListProjects_Empty(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := httptest.NewRequest(http.MethodGet, "/projects?user_id=user_1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.TrimSpace(body) != "[]" {
+		t.Errorf("body = %q, want an empty JSON array, not null", body)
+	}
+}
+
+func TestListProjects_MissingUserID(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := httptest.NewRequest(http.MethodGet, "/projects", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
