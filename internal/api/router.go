@@ -18,11 +18,13 @@ import (
 // as long as it has CreateProject.
 type ProjectRepository interface {
 	CreateProject(ctx context.Context, p domain.Project) (domain.Project, error)
+	DeleteProject(ctx context.Context, userID, id string) error
 }
 
 // NewRouter builds the API's route table against repo.
 func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /projects", createProjectHandler(repo))
+	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
 	return mux
 }

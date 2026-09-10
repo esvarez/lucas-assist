@@ -11,10 +11,6 @@ import (
 )
 
 type createProjectRequest struct {
-	// UserID is caller-supplied for now — populating it from a verified
-	// JWT subject is separate, undecided auth work (domain.Project).
-	// Required: the DynamoDB key schema partitions by user
-	// (PK=USER#<uid>), so an empty UserID isn't a valid project owner.
 	UserID      string     `json:"user_id"`
 	Name        string     `json:"name"`
 	Goal        string     `json:"goal"`
@@ -54,6 +50,34 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusCreated, created)
+	}
+}
+
+// deleteProjectHandler removes a project. user_id is a query param, not a
+// body — DELETE requests conventionally carry no body — consistent with
+// #47's "user_id is required, not silently empty" convention. Returns 204
+// on success: DeleteProject only reports success/failure, not the deleted
+// project, so there's nothing to echo back (unlike the 201-with-body
+// createProjectHandler returns).
+func deleteProjectHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("user_id")
+		if userID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+
+		id := r.PathValue("id")
+		if err := repo.DeleteProject(r.Context(), userID, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
