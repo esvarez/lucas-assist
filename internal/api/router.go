@@ -15,14 +15,16 @@ import (
 // AGENTS.MD: adding a CRUD route, not a new Lambda) — this interface grows
 // alongside them instead of requiring every route's dependency up front.
 // Any store.Repository implementation, complete or partial, satisfies it
-// as long as it has CreateProject.
+// as long as it has these methods.
 type ProjectRepository interface {
 	CreateProject(ctx context.Context, p domain.Project) (domain.Project, error)
+	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 }
 
 // NewRouter builds the API's route table against repo.
 func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /projects", createProjectHandler(repo))
+	mux.HandleFunc("PUT /projects/{id}", updateProjectHandler(repo))
 	return mux
 }
