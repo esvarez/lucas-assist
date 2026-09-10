@@ -18,6 +18,8 @@ import (
 // as long as it has CreateProject.
 type ProjectRepository interface {
 	CreateProject(ctx context.Context, p domain.Project) (domain.Project, error)
+	GetProject(ctx context.Context, userID, id string) (domain.Project, error)
+	ListProjects(ctx context.Context, userID string) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, userID, id string) error
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 }
@@ -26,6 +28,8 @@ type ProjectRepository interface {
 func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /projects", createProjectHandler(repo))
+	mux.HandleFunc("GET /projects", listProjectsHandler(repo))
+	mux.HandleFunc("GET /projects/{id}", getProjectHandler(repo))
 	mux.HandleFunc("PUT /projects/{id}", updateProjectHandler(repo))
 	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
 	return mux

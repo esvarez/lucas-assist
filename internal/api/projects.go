@@ -128,6 +128,52 @@ func deleteProjectHandler(repo ProjectRepository) http.HandlerFunc {
 	}
 }
 
+// getProjectHandler fetches a single project. user_id is a query param —
+// same convention as deleteProjectHandler, since GET requests carry no
+// body.
+func getProjectHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("user_id")
+		if userID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+
+		project, err := repo.GetProject(r.Context(), userID, r.PathValue("id"))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
+// listProjectsHandler lists every project owned by user_id. Like
+// GetProject, a project ID belonging to a different user is invisible —
+// here that just means it's absent from the list, not a 404.
+func listProjectsHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := r.URL.Query().Get("user_id")
+		if userID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+
+		projects, err := repo.ListProjects(r.Context(), userID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, projects)
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
