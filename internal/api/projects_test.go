@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,20 +73,27 @@ func TestCreateProject_InvalidBody(t *testing.T) {
 	}
 }
 
-// stubRepository lets a test force whatever error CreateProject returns.
-// Project IDs are always server-generated (see domain.NewID, #18), so a
-// client can't trigger store.ErrDuplicateID through the HTTP API itself —
-// this is the only way to exercise the handler's 409 mapping for it.
+// stubRepository lets a test force whatever error CreateProject/
+// DeleteProject returns. Project IDs are always server-generated (see
+// domain.NewID, #18), so a client can't trigger store.ErrDuplicateID
+// through the HTTP API itself — this is the only way to exercise the
+// handlers' error-status mapping for errors the memory repo won't
+// naturally produce via the API.
 type stubRepository struct {
-	err error
+	createErr error
+	deleteErr error
 }
 
 func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
-	return domain.Project{}, s.err
+	return domain.Project{}, s.createErr
+}
+
+func (s stubRepository) DeleteProject(ctx context.Context, userID, id string) error {
+	return s.deleteErr
 }
 
 func TestCreateProject_DuplicateID(t *testing.T) {
-	router := NewRouter(stubRepository{err: store.ErrDuplicateID})
+	router := NewRouter(stubRepository{createErr: store.ErrDuplicateID})
 
 	body := `{"user_id": "user_1", "name": "Nudge"}`
 	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
@@ -94,5 +102,51 @@ func TestCreateProject_DuplicateID(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestDeleteProject_Success(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	created, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/"+created.ID+"?user_id=user_1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+
+	if _, err := repo.GetProject(context.Background(), "user_1", created.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetProject() after delete error = %v, want %v", err, store.ErrNotFound)
+	}
+}
+
+func TestDeleteProject_NotFound(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/does-not-exist?user_id=user_1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestDeleteProject_MissingUserID(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/some-id", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
