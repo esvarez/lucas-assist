@@ -19,14 +19,13 @@ var ErrNotFound = errors.New("not found")
 // Repository is the persistence interface every skill and the API Lambda
 // read and write through.
 //
-// GetProject, ListProjects, and DeleteProject take a userID because the
-// DynamoDB key schema (architecture.md §7) partitions by user:
-// PK=USER#<uid>. UpdateProject instead reads UserID off the domain.Project
-// it's given, since the key is already there.
+// GetProject, ListProjects, DeleteProject, and UpdateProject all take a
+// userID explicitly because the DynamoDB key schema (architecture.md §7)
+// partitions by user: PK=USER#<uid>.
 type Repository interface {
 	CreateProject(ctx context.Context, p domain.Project) (domain.Project, error)
 	GetProject(ctx context.Context, userID, id string) (domain.Project, error)
 	ListProjects(ctx context.Context, userID string) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, userID, id string) error
-	UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error)
+	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 }

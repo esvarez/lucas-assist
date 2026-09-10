@@ -61,12 +61,12 @@ func (r *MemoryRepository) DeleteProject(ctx context.Context, userID, id string)
 	return nil
 }
 
-func (r *MemoryRepository) UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
+func (r *MemoryRepository) UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	existing, ok := r.projects[p.ID]
-	if !ok || existing.UserID != p.UserID {
+	if !ok || existing.UserID != userID {
 		return domain.Project{}, ErrNotFound
 	}
 

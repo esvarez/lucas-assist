@@ -152,10 +152,10 @@ func (r *DynamoRepository) GetProject(ctx context.Context, userID, id string) (d
 // UpdateProject updates a project's mutable fields (Goal, Deadline,
 // Constraints, Status) via a conditional UpdateItem (attribute_exists(PK))
 // and bumps UpdatedAt. The condition fails — returning ErrNotFound — both
-// when the project doesn't exist at all and when p.UserID doesn't match its
+// when the project doesn't exist at all and when userID doesn't match its
 // actual owner, since that project's item lives under a different PK
 // entirely.
-func (r *DynamoRepository) UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
+func (r *DynamoRepository) UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error) {
 	now := time.Now().UTC()
 
 	goalAV, err := attributevalue.Marshal(p.Goal)
@@ -208,7 +208,7 @@ func (r *DynamoRepository) UpdateProject(ctx context.Context, p domain.Project) 
 	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(r.table),
 		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: projectPK(p.UserID)},
+			"PK": &types.AttributeValueMemberS{Value: projectPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: projectSK(p.ID)},
 		},
 		UpdateExpression:          aws.String(updateExpr),
