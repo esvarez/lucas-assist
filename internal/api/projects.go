@@ -11,6 +11,11 @@ import (
 )
 
 type createProjectRequest struct {
+	// UserID is caller-supplied for now — populating it from a verified
+	// JWT subject is separate, undecided auth work (domain.Project).
+	// Required: the DynamoDB key schema partitions by user
+	// (PK=USER#<uid>), so an empty UserID isn't a valid project owner.
+	UserID      string     `json:"user_id"`
 	Name        string     `json:"name"`
 	Goal        string     `json:"goal"`
 	Deadline    *time.Time `json:"deadline,omitempty"`
@@ -26,7 +31,13 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 			return
 		}
 
+		if req.UserID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+
 		created, err := repo.CreateProject(r.Context(), domain.Project{
+			UserID:      req.UserID,
 			Name:        req.Name,
 			Goal:        req.Goal,
 			Deadline:    req.Deadline,
