@@ -212,8 +212,7 @@ func TestDynamoRepository_UpdateProject(t *testing.T) {
 	}
 
 	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	updated, err := repo.UpdateProject(ctx, domain.Project{
-		UserID:      userID,
+	updated, err := repo.UpdateProject(ctx, userID, domain.Project{
 		ID:          created.ID,
 		Name:        "should be ignored",
 		Goal:        "Ship v2",
@@ -267,7 +266,7 @@ func TestDynamoRepository_UpdateProject_ClearsDeadline(t *testing.T) {
 		t.Fatalf("CreateProject() = %+v, want Deadline set", created)
 	}
 
-	updated, err := repo.UpdateProject(ctx, domain.Project{UserID: userID, ID: created.ID, Status: "active"})
+	updated, err := repo.UpdateProject(ctx, userID, domain.Project{ID: created.ID, Status: "active"})
 	if err != nil {
 		t.Fatalf("UpdateProject() error = %v", err)
 	}
@@ -288,7 +287,7 @@ func TestDynamoRepository_UpdateProject_NotFound(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
 
-	_, err := repo.UpdateProject(ctx, domain.Project{UserID: testUserID(), ID: "missing-" + domain.NewID()})
+	_, err := repo.UpdateProject(ctx, testUserID(), domain.Project{ID: "missing-" + domain.NewID()})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateProject() error = %v, want %v", err, ErrNotFound)
 	}
@@ -303,7 +302,7 @@ func TestDynamoRepository_UpdateProject_WrongUser(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	_, err = repo.UpdateProject(ctx, domain.Project{UserID: testUserID(), ID: created.ID, Status: "done"})
+	_, err = repo.UpdateProject(ctx, testUserID(), domain.Project{ID: created.ID, Status: "done"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}

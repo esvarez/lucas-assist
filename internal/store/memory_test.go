@@ -198,8 +198,7 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	updated, err := repo.UpdateProject(ctx, domain.Project{
-		UserID:      "user_1",
+	updated, err := repo.UpdateProject(ctx, "user_1", domain.Project{
 		ID:          created.ID,
 		Name:        "should be ignored",
 		Goal:        "Ship v2",
@@ -242,7 +241,7 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 func TestMemoryRepository_UpdateProject_NotFound(t *testing.T) {
 	repo := NewMemoryRepository()
 
-	_, err := repo.UpdateProject(context.Background(), domain.Project{UserID: "user_1", ID: "does-not-exist"})
+	_, err := repo.UpdateProject(context.Background(), "user_1", domain.Project{ID: "does-not-exist"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateProject() error = %v, want %v", err, ErrNotFound)
 	}
@@ -257,7 +256,7 @@ func TestMemoryRepository_UpdateProject_WrongUser(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	_, err = repo.UpdateProject(ctx, domain.Project{UserID: "user_2", ID: created.ID, Status: "done"})
+	_, err = repo.UpdateProject(ctx, "user_2", domain.Project{ID: created.ID, Status: "done"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}
