@@ -97,8 +97,28 @@ Resources:
   # ── Skill Lambda ─────────────────────────────
   # Consolidated entrypoint (architecture.md §4/§11): one Lambda dispatches
   # by skill name from the request body to a registered agent.Skill, so
-  # adding a skill is one new file, not a new Lambda. Function URL for now;
-  # API Gateway routing to this Lambda is a separate infra concern.
+  # adding a skill is one new file, not a new Lambda.
+  #
+  # Routed onto NudgeApi (POST /skills, issue #60) so propose (this) and
+  # accept (POST /projects on ApiFunction) share one origin — a browser
+  # would otherwise need to SigV4 a Function URL directly, or the two
+  # origins would push toward CORS, which architecture.md §13 and
+  # AGENTS.md forbid.
+  #
+  # Timeout mismatch: HTTP API's AWS_PROXY integration timeout caps at
+  # 30000ms and isn't configurable past that, while this function's own
+  # Timeout is 60s. A model call that runs past 30s completes in the
+  # Lambda but the caller sees a 504 from the gateway first. Acceptable
+  # for this slice (architecture.md §19 step 6 — AgentRun/SQS/polling —
+  # is where long-running model calls get a real async path instead of a
+  # synchronous HTTP round trip).
+  #
+  # Function URL stays alongside the new route rather than being removed.
+  # NudgeApi has no authorizer yet, so POST /skills is now exactly as
+  # public as POST /projects — same posture as the rest of the unauthed
+  # CRUD API, not a regression. The IAM-signed Function URL is kept as a
+  # narrower, SigV4-only calling path until GitHub OAuth lands; drop it
+  # then if nothing still uses it.
   SkillsFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -115,11 +135,18 @@ Resources:
       Environment:
         Variables:
           OPENAI_API_KEY: !Ref OpenAIApiKey
+      Events:
+        SkillsApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /skills
+            Method: POST
+            ApiId: !Ref NudgeApi
 
 Outputs:
   SkillsFunctionUrl:
     Description: Function URL for the Skill Lambda
     Value: !GetAtt SkillsFunctionUrl.FunctionUrl
   ApiUrl:
-    Description: Base URL of the Nudge HTTP API
+    Description: Base URL of the Nudge HTTP API (POST /projects, POST /skills)
     Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
