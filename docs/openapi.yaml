@@ -1,0 +1,273 @@
+openapi: 3.0.3
+info:
+  title: Nudge API
+  description: >
+    Project CRUD routes served by the API Lambda (cmd/api) and the local dev
+    server (cmd/local). Reflects the current implementation in
+    internal/api — user_id is caller-supplied today; deriving it from a
+    verified JWT is separate, undecided auth work (see AGENTS.md).
+  version: "0.1.0"
+servers:
+  - url: http://localhost:8080
+    description: Local dev server (make local)
+
+paths:
+  /projects:
+    post:
+      summary: Create a project
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: Invalid body or failed validation (e.g. missing user_id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "409":
+          description: A project with this id already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      summary: List projects for a user
+      operationId: listProjects
+      parameters:
+        - $ref: "#/components/parameters/UserIdQuery"
+      responses:
+        "200":
+          description: Projects owned by user_id (empty array if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Project"
+        "400":
+          description: user_id is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+    get:
+      summary: Get a project by id
+      operationId: getProject
+      parameters:
+        - $ref: "#/components/parameters/UserIdQuery"
+      responses:
+        "200":
+          description: The project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: user_id is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      summary: Update a project
+      description: >
+        Updates the mutable fields only — goal, deadline, constraints,
+        status. Name is immutable via this route.
+      operationId: updateProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectRequest"
+      responses:
+        "200":
+          description: The updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: Invalid body or user_id is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      summary: Delete a project
+      operationId: deleteProject
+      parameters:
+        - $ref: "#/components/parameters/UserIdQuery"
+      responses:
+        "204":
+          description: Project deleted
+        "400":
+          description: user_id is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    UserIdQuery:
+      name: user_id
+      in: query
+      required: true
+      description: Owner of the project(s). Caller-supplied for now.
+      schema:
+        type: string
+    ProjectIdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    NotFound:
+      description: No project with this id in this user's partition
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    Project:
+      type: object
+      properties:
+        user_id:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        goal:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+        constraints:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - user_id
+        - id
+        - name
+        - goal
+        - constraints
+        - status
+        - created_at
+        - updated_at
+
+    CreateProjectRequest:
+      type: object
+      properties:
+        user_id:
+          type: string
+          description: Required — the DynamoDB key schema partitions by user.
+        name:
+          type: string
+        goal:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+        constraints:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+      required:
+        - user_id
+
+    UpdateProjectRequest:
+      type: object
+      description: name is intentionally absent — this route never touches it.
+      properties:
+        user_id:
+          type: string
+        goal:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+        constraints:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+      required:
+        - user_id
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+        - error
+        - fields
