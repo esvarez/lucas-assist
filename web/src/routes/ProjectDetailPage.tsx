@@ -14,7 +14,6 @@ import { listTasks, type Task } from '@/src/api/tasks'
 import WhatsNextCard from '@/src/components/WhatsNextCard'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
-import { LightRays } from '@/components/ui/light-rays'
 
 function ProjectDetailHeader({ project }: { project: Project }) {
   return (
