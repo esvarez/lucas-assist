@@ -9,6 +9,7 @@ import "time"
 //	        \-> rejected
 //	        \-> expired
 //	        \-> conflict
+//	        \-> failed
 type ChangesetStatus string
 
 const (
@@ -19,6 +20,11 @@ const (
 	ChangesetRejected ChangesetStatus = "rejected"
 	ChangesetExpired  ChangesetStatus = "expired"
 	ChangesetConflict ChangesetStatus = "conflict"
+	// ChangesetFailed covers an apply that errored for a reason other than
+	// a version conflict (architecture.md §3) — e.g. a transient DynamoDB
+	// failure mid-TransactWriteItems — so it doesn't collide with
+	// ChangesetConflict, which is reserved for a stale baseVersion.
+	ChangesetFailed ChangesetStatus = "failed"
 )
 
 // Changeset is a skill's proposed mutation, reviewed and explicitly
