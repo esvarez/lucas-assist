@@ -1,4 +1,5 @@
 import { Outlet } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
 
 function Layout() {
   return (
@@ -8,6 +9,7 @@ function Layout() {
         <h1 className="text-3xl font-bold underline">
     Hello world!
   </h1>
+  <Button>Click me</Button>
       </header>
       <main>
         <Outlet />
