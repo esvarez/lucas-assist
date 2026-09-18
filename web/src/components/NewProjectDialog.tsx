@@ -15,10 +15,6 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, ValidationError, createProject } from '../api/projects'
 
-// New projects start "on-track" — there's no status picker in this form,
-// so this is the value every created project gets until it's edited.
-const DEFAULT_STATUS = 'on-track'
-
 // Fields this form renders — anything the server flags outside this set
 // (e.g. user_id or status, which have no input here) surfaces as a
 // general error instead of being silently dropped.
@@ -77,8 +73,7 @@ function NewProjectDialog() {
         name: trimmedName,
         goal: goal.trim(),
         deadline: toISODeadline(deadline),
-        constraints: constraints.map((c) => c.trim()).filter(Boolean),
-        status: DEFAULT_STATUS,
+        constraints: constraints.map((c) => c.trim()).filter(Boolean)
       })
       setOpen(false)
       reset()
