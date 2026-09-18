@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { AlertCircleIcon } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '../api/projects'
+import { statusBadgeClassName } from '../lib/project-status'
 
 function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -25,7 +30,11 @@ function ProjectDetailPage() {
   if (error) {
     return (
       <div className="flex flex-col gap-3 p-4">
-        <p className="text-sm text-destructive">{error}</p>
+        <Alert variant="destructive">
+          <AlertCircleIcon />
+          <AlertTitle>Couldn't load project</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
         <Link to="/projects" className="text-sm text-primary underline">
           Back to projects
         </Link>
@@ -34,7 +43,12 @@ function ProjectDetailPage() {
   }
 
   if (!project) {
-    return <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+    return (
+      <div className="flex flex-col gap-4 p-4">
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-16 w-full" />
+      </div>
+    )
   }
 
   return (
@@ -45,9 +59,9 @@ function ProjectDetailPage() {
 
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold">{project.name}</h1>
-        <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+        <Badge variant="outline" className={statusBadgeClassName(project.status)}>
           {project.status}
-        </span>
+        </Badge>
       </div>
 
       {project.goal && <p className="text-sm text-muted-foreground">{project.goal}</p>}
