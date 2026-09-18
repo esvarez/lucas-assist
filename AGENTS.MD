@@ -28,7 +28,7 @@ Requires Go 1.22+, Node 20+, Docker (for DynamoDB Local).
 ```
 /cmd/api              API Lambda entrypoint (lambda.Start)
 /cmd/skills           LLM Lambda entrypoints
-/cmd/worker           Step Functions task handlers
+/cmd/worker           Agent Worker Lambda entrypoint (SQS-driven; not yet implemented, see #76)
 /cmd/local            Local http.Server for development
 /internal/domain      Project, Task, Decision, Event, Note, Changeset
 /internal/store       Repository interface + DynamoDB and in-memory impls
@@ -71,7 +71,7 @@ DynamoDB over its public endpoint with IAM auth; OpenAI over the public internet
 |---|---|---|---|
 | API Lambda | 512MB | 5s | All CRUD, changeset commit, dozens of routes |
 | Skill Lambdas | 1GB | 60s | Anything that calls OpenAI |
-| Worker Lambdas | 1GB | long | Step Functions tasks |
+| Agent Worker | Higher memory, controlled concurrency | Context assembly, Responses API, read tools and changeset validation |
 
 Adding a CRUD endpoint means adding a route to the existing API Lambda, **not** creating a new function. Only create a new Lambda if its memory/timeout profile genuinely differs.
 
