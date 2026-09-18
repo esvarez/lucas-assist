@@ -111,13 +111,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/Project"
         "400":
-          description: Invalid body or user_id is required
+          description: Invalid body, or failed validation (missing user_id or version)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            version doesn't match the project's current version (optimistic
+            concurrency, architecture.md §8) — re-fetch and retry, don't
+            retry the same request.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
     delete:
@@ -191,6 +200,11 @@ components:
             type: string
         status:
           type: string
+        version:
+          type: integer
+          description: >
+            Optimistic-concurrency version (architecture.md §8). Starts at 1
+            on create, increments by 1 on every successful update.
         created_at:
           type: string
           format: date-time
@@ -204,6 +218,7 @@ components:
         - goal
         - constraints
         - status
+        - version
         - created_at
         - updated_at
 
@@ -236,6 +251,12 @@ components:
       properties:
         user_id:
           type: string
+        version:
+          type: integer
+          description: >
+            Required — the project's version as last read (Project.version).
+            Rejected with 409 if it no longer matches the stored version
+            (architecture.md §8).
         goal:
           type: string
         deadline:
@@ -250,6 +271,7 @@ components:
           type: string
       required:
         - user_id
+        - version
 
     ErrorResponse:
       type: object

@@ -55,6 +55,7 @@ type projectItem struct {
 	Deadline    *time.Time `dynamodbav:"deadline,omitempty"`
 	Constraints []string   `dynamodbav:"constraints,omitempty"`
 	Status      string     `dynamodbav:"status"`
+	Version     int        `dynamodbav:"version"`
 	CreatedAt   time.Time  `dynamodbav:"created_at"`
 	UpdatedAt   time.Time  `dynamodbav:"updated_at"`
 }
@@ -98,6 +99,7 @@ func toProjectItem(p domain.Project) projectItem {
 		Deadline:    p.Deadline,
 		Constraints: p.Constraints,
 		Status:      p.Status,
+		Version:     p.Version,
 		CreatedAt:   p.CreatedAt,
 		UpdatedAt:   p.UpdatedAt,
 	}
@@ -112,6 +114,7 @@ func (i projectItem) toDomain() domain.Project {
 		Deadline:    i.Deadline,
 		Constraints: i.Constraints,
 		Status:      i.Status,
+		Version:     i.Version,
 		CreatedAt:   i.CreatedAt,
 		UpdatedAt:   i.UpdatedAt,
 	}
@@ -127,6 +130,7 @@ func (r *DynamoRepository) CreateProject(ctx context.Context, p domain.Project) 
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	p.Version = 1
 
 	item, err := attributevalue.MarshalMap(toProjectItem(p))
 	if err != nil {
@@ -177,11 +181,18 @@ func (r *DynamoRepository) GetProject(ctx context.Context, userID, id string) (d
 }
 
 // UpdateProject updates a project's mutable fields (Goal, Deadline,
-// Constraints, Status) via a conditional UpdateItem (attribute_exists(PK))
-// and bumps UpdatedAt. The condition fails — returning ErrNotFound — both
-// when the project doesn't exist at all and when userID doesn't match its
-// actual owner, since that project's item lives under a different PK
-// entirely.
+// Constraints, Status) via a conditional UpdateItem, bumps UpdatedAt, and
+// enforces optimistic concurrency: p.Version must equal the item's current
+// stored version, or the update is rejected instead of applied. On success
+// the stored version increments by one.
+//
+// One UpdateItem call can't tell you which half of a compound condition
+// failed, so ReturnValuesOnConditionCheckFailure asks DynamoDB to include
+// the item's current attributes (if any) on failure: no item at all means
+// the project doesn't exist or belongs to a different user (ErrNotFound,
+// same as before), an item with a different version means the write lost
+// the optimistic-concurrency race (ErrConflict) — never retried
+// automatically (AGENTS.MD: "do not retry the write").
 func (r *DynamoRepository) UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error) {
 	now := time.Now().UTC()
 
@@ -201,22 +212,33 @@ func (r *DynamoRepository) UpdateProject(ctx context.Context, userID string, p d
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("marshal updated_at: %w", err)
 	}
+	expectedVersionAV, err := attributevalue.Marshal(p.Version)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("marshal expected version: %w", err)
+	}
+	newVersionAV, err := attributevalue.Marshal(p.Version + 1)
+	if err != nil {
+		return domain.Project{}, fmt.Errorf("marshal new version: %w", err)
+	}
 
 	// Several of these are DynamoDB reserved words (confirmed the hard way:
 	// "constraints" and "status" both are) and can't appear literally in an
 	// update expression, so every attribute name here gets an alias.
-	updateExpr := "SET #goal = :goal, #constraints = :constraints, #status = :status, #updated_at = :updated_at"
+	updateExpr := "SET #goal = :goal, #constraints = :constraints, #status = :status, #updated_at = :updated_at, #version = :new_version"
 	names := map[string]string{
 		"#goal":        "goal",
 		"#constraints": "constraints",
 		"#status":      "status",
 		"#updated_at":  "updated_at",
+		"#version":     "version",
 	}
 	values := map[string]types.AttributeValue{
-		":goal":        goalAV,
-		":constraints": constraintsAV,
-		":status":      statusAV,
-		":updated_at":  updatedAtAV,
+		":goal":             goalAV,
+		":constraints":      constraintsAV,
+		":status":           statusAV,
+		":updated_at":       updatedAtAV,
+		":new_version":      newVersionAV,
+		":expected_version": expectedVersionAV,
 	}
 
 	if p.Deadline != nil {
@@ -238,16 +260,20 @@ func (r *DynamoRepository) UpdateProject(ctx context.Context, userID string, p d
 			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: projectSK(p.ID)},
 		},
-		UpdateExpression:          aws.String(updateExpr),
-		ConditionExpression:       aws.String("attribute_exists(PK)"),
-		ExpressionAttributeNames:  names,
-		ExpressionAttributeValues: values,
-		ReturnValues:              types.ReturnValueAllNew,
+		UpdateExpression:                    aws.String(updateExpr),
+		ConditionExpression:                 aws.String("attribute_exists(PK) AND #version = :expected_version"),
+		ExpressionAttributeNames:            names,
+		ExpressionAttributeValues:           values,
+		ReturnValues:                        types.ReturnValueAllNew,
+		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
 	})
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return domain.Project{}, ErrNotFound
+			if len(condErr.Item) == 0 {
+				return domain.Project{}, ErrNotFound
+			}
+			return domain.Project{}, ErrConflict
 		}
 		return domain.Project{}, fmt.Errorf("update project item: %w", err)
 	}

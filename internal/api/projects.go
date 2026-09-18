@@ -58,9 +58,13 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 
 // updateProjectRequest carries only the mutable fields — Repository.
 // UpdateProject never touches Name — plus user_id, per the same
-// caller-supplied convention as createProjectRequest (#47).
+// caller-supplied convention as createProjectRequest (#47). Version is
+// required: it's the caller's optimistic-concurrency check-in, the
+// project's version as last read, not something that defaults sanely to
+// zero (architecture.md §8).
 type updateProjectRequest struct {
-	UserID      string     `json:"user_id"`
+	UserID      string     `json:"user_id" validate:"required"`
+	Version     int        `json:"version" validate:"required"`
 	Goal        string     `json:"goal"`
 	Deadline    *time.Time `json:"deadline,omitempty"`
 	Constraints []string   `json:"constraints"`
@@ -75,13 +79,13 @@ func updateProjectHandler(repo ProjectRepository) http.HandlerFunc {
 			return
 		}
 
-		if req.UserID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+		if !validateStruct(w, req) {
 			return
 		}
 
 		updated, err := repo.UpdateProject(r.Context(), req.UserID, domain.Project{
 			ID:          r.PathValue("id"),
+			Version:     req.Version,
 			Goal:        req.Goal,
 			Deadline:    req.Deadline,
 			Constraints: req.Constraints,
@@ -90,6 +94,10 @@ func updateProjectHandler(repo ProjectRepository) http.HandlerFunc {
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			if errors.Is(err, store.ErrConflict) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

@@ -191,7 +191,7 @@ func TestUpdateProject_Success(t *testing.T) {
 		t.Fatalf("unmarshal create response: %v", err)
 	}
 
-	updateBody := `{"user_id": "user_1", "goal": "Ship v2", "constraints": ["no VPC"], "status": "done"}`
+	updateBody := `{"user_id": "user_1", "version": 1, "goal": "Ship v2", "constraints": ["no VPC"], "status": "done"}`
 	updateReq := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(updateBody))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, updateReq)
@@ -213,12 +213,58 @@ func TestUpdateProject_Success(t *testing.T) {
 	if got.Name != "Nudge" {
 		t.Errorf("Name = %q, want unchanged %q (UpdateProject never touches Name)", got.Name, "Nudge")
 	}
+	if got.Version != 2 {
+		t.Errorf("Version = %d, want 2 (incremented from the created project's 1)", got.Version)
+	}
+}
+
+// TestUpdateProject_VersionConflict documents the optimistic-concurrency
+// path (architecture.md §8): retrying with a stale version 409s instead of
+// silently applying.
+func TestUpdateProject_VersionConflict(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	createBody := `{"user_id": "user_1", "name": "Nudge", "goal": "v1"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody))
+	createRec := httptest.NewRecorder()
+	router.ServeHTTP(createRec, createReq)
+
+	var created domain.Project
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+
+	firstBody := `{"user_id": "user_1", "version": 1, "goal": "v2"}`
+	firstReq := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(firstBody))
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first update status = %d, want %d (body: %s)", firstRec.Code, http.StatusOK, firstRec.Body.String())
+	}
+
+	staleBody := `{"user_id": "user_1", "version": 1, "goal": "v3 (stale)"}`
+	staleReq := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(staleBody))
+	staleRec := httptest.NewRecorder()
+	router.ServeHTTP(staleRec, staleReq)
+
+	if staleRec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body: %s)", staleRec.Code, http.StatusConflict, staleRec.Body.String())
+	}
+
+	got, err := repo.GetProject(context.Background(), "user_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if got.Goal != "v2" {
+		t.Errorf("Goal = %q, want %q (the conflicting write must not have applied)", got.Goal, "v2")
+	}
 }
 
 func TestUpdateProject_NotFound(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "goal": "Ship v2", "status": "done"}`
+	body := `{"user_id": "user_1", "version": 1, "goal": "Ship v2", "status": "done"}`
 	req := httptest.NewRequest(http.MethodPut, "/projects/does-not-exist", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -246,7 +292,7 @@ func TestUpdateProject_WrongUser(t *testing.T) {
 		t.Fatalf("unmarshal create response: %v", err)
 	}
 
-	updateBody := `{"user_id": "user_2", "goal": "Ship v2", "status": "done"}`
+	updateBody := `{"user_id": "user_2", "version": 1, "goal": "Ship v2", "status": "done"}`
 	req := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(updateBody))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -259,13 +305,41 @@ func TestUpdateProject_WrongUser(t *testing.T) {
 func TestUpdateProject_MissingUserID(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"goal": "Ship v2", "status": "done"}`
+	body := `{"version": 1, "goal": "Ship v2", "status": "done"}`
 	req := httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// TestUpdateProject_MissingVersion documents deliberate behavior: version
+// is required, not silently defaulted to 0. Zero is never a real project's
+// version (CreateProject always starts at 1), so an omitted version must
+// be rejected up front rather than reaching the repository and always
+// conflicting (architecture.md §8).
+func TestUpdateProject_MissingVersion(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"user_id": "user_1", "goal": "Ship v2", "status": "done"}`
+	req := httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var got validationErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if msg, ok := got.Fields["version"]; !ok {
+		t.Errorf("Fields = %#v, want a \"version\" entry naming which field failed", got.Fields)
+	} else if msg == "" {
+		t.Error(`Fields["version"] is empty, want a message explaining why`)
 	}
 }
 

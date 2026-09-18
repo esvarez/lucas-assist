@@ -46,6 +46,7 @@ func (r *MemoryRepository) CreateProject(ctx context.Context, p domain.Project) 
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	p.Version = 1
 
 	r.projects[p.ID] = p
 	return p, nil
@@ -83,11 +84,15 @@ func (r *MemoryRepository) UpdateProject(ctx context.Context, userID string, p d
 	if !ok || existing.UserID != userID {
 		return domain.Project{}, ErrNotFound
 	}
+	if existing.Version != p.Version {
+		return domain.Project{}, ErrConflict
+	}
 
 	existing.Goal = p.Goal
 	existing.Deadline = p.Deadline
 	existing.Constraints = p.Constraints
 	existing.Status = p.Status
+	existing.Version++
 	existing.UpdatedAt = time.Now().UTC()
 
 	r.projects[existing.ID] = existing
