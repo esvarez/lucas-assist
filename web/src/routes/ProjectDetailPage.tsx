@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
 import { listTasks, type Task } from '@/src/api/tasks'
@@ -42,6 +43,11 @@ function TaskAccordion({ task }: { task: Task }) {
             </span>
           </span>
         </AccordionTrigger>
+        {subtasks.length > 0 && (
+          <div className="pb-2">
+            <Progress value={(done / subtasks.length) * 100} />
+          </div>
+        )}
         <AccordionContent>
           <ul className="flex flex-col gap-2">
             {subtasks.map((subtask) => (
