@@ -13,9 +13,11 @@ type Task struct {
 }
 
 // ProposedTask is the content of a Task before the commit path assigns it
-// an ID, order, and status. It's what skills like decompose_task propose.
+// an ID, order, and status. It's what skills like decompose_task propose,
+// and what a Changeset stores until it's accepted — hence the dynamodbav
+// tags alongside the json/jsonschema ones.
 type ProposedTask struct {
-	Title              string   `json:"title" jsonschema:"description=Short imperative task title"`
-	Description        string   `json:"description" jsonschema:"description=What done looks like for this task"`
-	AcceptanceCriteria []string `json:"acceptance_criteria" jsonschema:"description=Concrete, checkable conditions for calling this task done"`
+	Title              string   `json:"title" dynamodbav:"title" jsonschema:"description=Short imperative task title"`
+	Description        string   `json:"description" dynamodbav:"description" jsonschema:"description=What done looks like for this task"`
+	AcceptanceCriteria []string `json:"acceptance_criteria" dynamodbav:"acceptance_criteria,omitempty" jsonschema:"description=Concrete, checkable conditions for calling this task done"`
 }

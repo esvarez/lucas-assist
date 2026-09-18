@@ -18,11 +18,12 @@ import (
 // architecture.md §8's key schema table (`PK=USER#<uid>`, `SK=META#<pid>`).
 const metaSKPrefix = "META#"
 
-// taskSKPrefix is the sort-key prefix shared by every task under one
-// project — `PK=USER#<uid>`, `SK=P#<pid>#TASK#<task_id>` (architecture.md
-// §8). Sharing the `P#<pid>#` prefix with the project's own META item is
-// what lets one paginated Query retrieve a whole project's items together.
-const taskSKPrefix = "P#"
+// projectScopeSKPrefix is the sort-key prefix shared by every item scoped
+// to one project — Task, Changeset, and so on — e.g. `PK=USER#<uid>`,
+// `SK=P#<pid>#TASK#<task_id>` (architecture.md §8). Sharing the `P#<pid>#`
+// prefix with the project's own META item is what lets one paginated Query
+// retrieve a whole project's items together.
+const projectScopeSKPrefix = "P#"
 
 // DynamoRepository is a DynamoDB-backed Repository. Each project is stored
 // as a single META item under PK=USER#<uid>, SK=META#<pid> in a single
@@ -73,7 +74,17 @@ func taskSK(projectID, taskID string) string {
 // taskListSKPrefix is the begins_with prefix that scopes a Query to one
 // project's tasks (architecture.md §8).
 func taskListSKPrefix(projectID string) string {
-	return taskSKPrefix + projectID + "#TASK#"
+	return projectScopeSKPrefix + projectID + "#TASK#"
+}
+
+func changesetSK(projectID, changesetID string) string {
+	return changesetListSKPrefix(projectID) + changesetID
+}
+
+// changesetListSKPrefix is the begins_with prefix that scopes a Query to
+// one project's changesets (architecture.md §8).
+func changesetListSKPrefix(projectID string) string {
+	return projectScopeSKPrefix + projectID + "#CHANGESET#"
 }
 
 func toProjectItem(p domain.Project) projectItem {
@@ -442,4 +453,143 @@ func (r *DynamoRepository) ListTasks(ctx context.Context, userID, projectID stri
 	}
 
 	return tasks, nil
+}
+
+// changesetItem is the DynamoDB item shape for a changeset. Unlike
+// taskItem, UserID here just mirrors domain.Changeset.UserID rather than
+// being carried solely for key-building — Changeset owns its UserID
+// directly.
+type changesetItem struct {
+	PK            string                `dynamodbav:"PK"`
+	SK            string                `dynamodbav:"SK"`
+	UserID        string                `dynamodbav:"user_id"`
+	ID            string                `dynamodbav:"id"`
+	ProjectID     string                `dynamodbav:"project_id"`
+	Skill         string                `dynamodbav:"skill"`
+	BaseVersion   int                   `dynamodbav:"base_version"`
+	Status        string                `dynamodbav:"status"`
+	ProposedTasks []domain.ProposedTask `dynamodbav:"proposed_tasks,omitempty"`
+	CreatedAt     time.Time             `dynamodbav:"created_at"`
+}
+
+func toChangesetItem(c domain.Changeset) changesetItem {
+	return changesetItem{
+		PK:            userPK(c.UserID),
+		SK:            changesetSK(c.ProjectID, c.ID),
+		UserID:        c.UserID,
+		ID:            c.ID,
+		ProjectID:     c.ProjectID,
+		Skill:         c.Skill,
+		BaseVersion:   c.BaseVersion,
+		Status:        string(c.Status),
+		ProposedTasks: c.ProposedTasks,
+		CreatedAt:     c.CreatedAt,
+	}
+}
+
+func (i changesetItem) toDomain() domain.Changeset {
+	return domain.Changeset{
+		ID:            i.ID,
+		ProjectID:     i.ProjectID,
+		UserID:        i.UserID,
+		Skill:         i.Skill,
+		BaseVersion:   i.BaseVersion,
+		Status:        domain.ChangesetStatus(i.Status),
+		ProposedTasks: i.ProposedTasks,
+		CreatedAt:     i.CreatedAt,
+	}
+}
+
+// CreateChangeset writes a changeset item via a conditional PutItem
+// (attribute_not_exists(PK)) so an existing changeset is never overwritten.
+func (r *DynamoRepository) CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error) {
+	if c.ID == "" {
+		c.ID = domain.NewID()
+	}
+	c.CreatedAt = time.Now().UTC()
+
+	item, err := attributevalue.MarshalMap(toChangesetItem(c))
+	if err != nil {
+		return domain.Changeset{}, fmt.Errorf("marshal changeset item: %w", err)
+	}
+
+	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(r.table),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.Changeset{}, ErrDuplicateID
+		}
+		return domain.Changeset{}, fmt.Errorf("put changeset item: %w", err)
+	}
+
+	return c, nil
+}
+
+// GetChangeset fetches a changeset by userID, projectID, and ID. Returns
+// ErrNotFound if no such item exists — including when it belongs to a
+// different user or a different project, since that item lives under a
+// different PK/SK entirely.
+func (r *DynamoRepository) GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error) {
+	out, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: changesetSK(projectID, changesetID)},
+		},
+	})
+	if err != nil {
+		return domain.Changeset{}, fmt.Errorf("get changeset item: %w", err)
+	}
+	if out.Item == nil {
+		return domain.Changeset{}, ErrNotFound
+	}
+
+	var item changesetItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return domain.Changeset{}, fmt.Errorf("unmarshal changeset item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// UpdateChangesetStatus sets a changeset's status via a conditional
+// UpdateItem (attribute_exists(PK)). This is an unconditional status set —
+// enforcing which prior states may transition to which next state belongs
+// to the changeset-accept endpoint, not this primitive.
+func (r *DynamoRepository) UpdateChangesetStatus(ctx context.Context, userID, projectID, changesetID string, status domain.ChangesetStatus) (domain.Changeset, error) {
+	statusAV, err := attributevalue.Marshal(string(status))
+	if err != nil {
+		return domain.Changeset{}, fmt.Errorf("marshal status: %w", err)
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: changesetSK(projectID, changesetID)},
+		},
+		UpdateExpression:          aws.String("SET #status = :status"),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames:  map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":status": statusAV},
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.Changeset{}, ErrNotFound
+		}
+		return domain.Changeset{}, fmt.Errorf("update changeset item: %w", err)
+	}
+
+	var item changesetItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.Changeset{}, fmt.Errorf("unmarshal changeset item: %w", err)
+	}
+
+	return item.toDomain(), nil
 }

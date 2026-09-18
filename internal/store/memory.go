@@ -11,9 +11,10 @@ import (
 // MemoryRepository is an in-memory Repository for local dev and unit
 // tests. State lives only as long as the process — nothing is durable.
 type MemoryRepository struct {
-	mu       sync.Mutex
-	projects map[string]domain.Project
-	tasks    map[string]taskRecord
+	mu         sync.Mutex
+	projects   map[string]domain.Project
+	tasks      map[string]taskRecord
+	changesets map[string]domain.Changeset
 }
 
 // taskRecord pairs a Task with the userID it was created under. domain.Task
@@ -26,8 +27,9 @@ type taskRecord struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		projects: make(map[string]domain.Project),
-		tasks:    make(map[string]taskRecord),
+		projects:   make(map[string]domain.Project),
+		tasks:      make(map[string]taskRecord),
+		changesets: make(map[string]domain.Changeset),
 	}
 }
 
@@ -141,4 +143,45 @@ func (r *MemoryRepository) ListTasks(ctx context.Context, userID, projectID stri
 		}
 	}
 	return tasks, nil
+}
+
+func (r *MemoryRepository) CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if c.ID == "" {
+		c.ID = domain.NewID()
+	} else if _, exists := r.changesets[c.ID]; exists {
+		return domain.Changeset{}, ErrDuplicateID
+	}
+
+	c.CreatedAt = time.Now().UTC()
+
+	r.changesets[c.ID] = c
+	return c, nil
+}
+
+func (r *MemoryRepository) GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	c, ok := r.changesets[changesetID]
+	if !ok || c.UserID != userID || c.ProjectID != projectID {
+		return domain.Changeset{}, ErrNotFound
+	}
+	return c, nil
+}
+
+func (r *MemoryRepository) UpdateChangesetStatus(ctx context.Context, userID, projectID, changesetID string, status domain.ChangesetStatus) (domain.Changeset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	c, ok := r.changesets[changesetID]
+	if !ok || c.UserID != userID || c.ProjectID != projectID {
+		return domain.Changeset{}, ErrNotFound
+	}
+
+	c.Status = status
+	r.changesets[changesetID] = c
+	return c, nil
 }

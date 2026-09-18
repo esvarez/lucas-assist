@@ -36,4 +36,15 @@ type Repository interface {
 	CreateTask(ctx context.Context, userID string, t domain.Task) (domain.Task, error)
 	GetTask(ctx context.Context, userID, projectID, taskID string) (domain.Task, error)
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
+
+	// CreateChangeset reads UserID/ProjectID off c itself — domain.Changeset
+	// carries UserID directly (like domain.Project, unlike domain.Task).
+	// GetChangeset and UpdateChangesetStatus still take userID and
+	// projectID explicitly since a lookup needs them before it has the
+	// changeset in hand. UpdateChangesetStatus is an unconditional status
+	// set; enforcing which prior states may transition to which next state
+	// belongs to the changeset-accept endpoint, not this primitive.
+	CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error)
+	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
+	UpdateChangesetStatus(ctx context.Context, userID, projectID, changesetID string, status domain.ChangesetStatus) (domain.Changeset, error)
 }

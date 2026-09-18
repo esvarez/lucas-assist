@@ -542,3 +542,191 @@ func TestDynamoRepository_ListTasks_Empty(t *testing.T) {
 		t.Errorf("ListTasks() = %+v, want empty", got)
 	}
 }
+
+func TestDynamoRepository_CreateChangeset(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID:   projectID,
+		UserID:      userID,
+		Skill:       "decompose_task",
+		BaseVersion: 1,
+		Status:      domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{
+			{Title: "Add login command", Description: "Device-flow login for the CLI", AcceptanceCriteria: []string{"running `nudge login` prints a device code"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	if created.ID == "" {
+		t.Error("ID = \"\", want a generated ID")
+	}
+	if created.ProjectID != projectID || created.Skill != "decompose_task" {
+		t.Errorf("CreateChangeset() = %+v, want ProjectID/Skill preserved from input", created)
+	}
+	if created.CreatedAt.IsZero() {
+		t.Errorf("CreateChangeset() = %+v, want CreatedAt set", created)
+	}
+
+	got, err := repo.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(testTable),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: changesetSK(projectID, created.ID)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetItem() error = %v", err)
+	}
+	if got.Item == nil {
+		t.Fatalf("GetItem() found no item for changeset %q", created.ID)
+	}
+}
+
+func TestDynamoRepository_CreateChangeset_DuplicateID(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	id := "dup-" + domain.NewID()
+
+	if _, err := repo.CreateChangeset(ctx, domain.Changeset{ID: id, ProjectID: projectID, UserID: userID}); err != nil {
+		t.Fatalf("first CreateChangeset() error = %v", err)
+	}
+
+	_, err := repo.CreateChangeset(ctx, domain.Changeset{ID: id, ProjectID: projectID, UserID: userID})
+	if !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("second CreateChangeset() error = %v, want %v", err, ErrDuplicateID)
+	}
+}
+
+func TestDynamoRepository_GetChangeset(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID:   projectID,
+		UserID:      userID,
+		Skill:       "decompose_task",
+		BaseVersion: 3,
+		Status:      domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{
+			{Title: "Add login command"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	got, err := repo.GetChangeset(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("GetChangeset() = %+v, want %+v", got, created)
+	}
+}
+
+func TestDynamoRepository_GetChangeset_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.GetChangeset(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChangeset() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_GetChangeset_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: projectID, UserID: testUserID()})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.GetChangeset(ctx, testUserID(), projectID, created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChangeset() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_GetChangeset_WrongProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: "proj-" + domain.NewID(), UserID: userID})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.GetChangeset(ctx, userID, "proj-"+domain.NewID(), created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChangeset() with wrong projectID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_UpdateChangesetStatus(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: projectID, UserID: userID, Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	updated, err := repo.UpdateChangesetStatus(ctx, userID, projectID, created.ID, domain.ChangesetAccepted)
+	if err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+	if updated.Status != domain.ChangesetAccepted {
+		t.Errorf("Status = %q, want %q", updated.Status, domain.ChangesetAccepted)
+	}
+
+	got, err := repo.GetChangeset(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if got.Status != domain.ChangesetAccepted {
+		t.Errorf("GetChangeset() after update Status = %q, want %q", got.Status, domain.ChangesetAccepted)
+	}
+}
+
+func TestDynamoRepository_UpdateChangesetStatus_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.UpdateChangesetStatus(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), domain.ChangesetAccepted)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateChangesetStatus() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_UpdateChangesetStatus_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: projectID, UserID: testUserID(), Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.UpdateChangesetStatus(ctx, testUserID(), projectID, created.ID, domain.ChangesetAccepted)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateChangesetStatus() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
