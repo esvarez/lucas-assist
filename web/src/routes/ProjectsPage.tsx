@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { AlertCircleIcon } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import NewProjectDialog from '../components/NewProjectDialog'
-import { listProjects, type Project } from '../api/projects'
+import NewProjectDialog from '@/src/components/NewProjectDialog'
+import ProjectCard from '@/src/components/ProjectCard'
+import { listProjects, type Project } from '@/src/api/projects'
 
 function ProjectsPage() {
   const [projects, setProjects] = useState<Project[] | null>(null)
@@ -61,19 +60,7 @@ function ProjectsPage() {
       {!error && projects && projects.length > 0 && (
         <div className="flex flex-col gap-2">
           {projects.map((project) => (
-            <Link key={project.id} to={`/projects/${project.id}`}>
-              <Card className="transition-colors hover:bg-accent">
-                <CardHeader>
-                  <div className="flex items-center justify-between gap-2">
-                    <CardTitle>{project.name}</CardTitle>
-                    <Badge variant="secondary">{project.status}</Badge>
-                  </div>
-                  {project.goal && (
-                    <CardDescription className="line-clamp-2">{project.goal}</CardDescription>
-                  )}
-                </CardHeader>
-              </Card>
-            </Link>
+            <ProjectCard key={project.id} project={project} />
           ))}
         </div>
       )}
