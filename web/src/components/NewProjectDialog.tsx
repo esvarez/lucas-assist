@@ -24,6 +24,14 @@ import { cn } from '@/lib/utils'
 // general error instead of being silently dropped.
 const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'constraints'])
 
+// Calendar hands back a Date at local midnight for the picked day.
+// date.toISOString() converts that to UTC, which shifts the day backward
+// in any timezone ahead of UTC — normalize to UTC midnight for the same
+// calendar day instead of the instant the local midnight represents.
+function toUTCMidnightISO(date: Date): string {
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())).toISOString()
+}
+
 function NewProjectDialog() {
   const navigate = useNavigate()
   const nameId = useId()
@@ -73,7 +81,7 @@ function NewProjectDialog() {
       const project = await createProject({
         name: trimmedName,
         goal: goal.trim(),
-        deadline: deadline?.toISOString(),
+        deadline: deadline ? toUTCMidnightISO(deadline) : undefined,
         constraints: constraints.map((c) => c.trim()).filter(Boolean)
       })
       setOpen(false)
