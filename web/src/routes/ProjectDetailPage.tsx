@@ -44,12 +44,15 @@ function TaskAccordion({ task }: { task: Task }) {
           </span>
         </AccordionTrigger>
         {subtasks.length > 0 && (
-          <div className="pb-2">
-            <Progress value={(done / subtasks.length) * 100} />
+          <div>
+            <Progress
+              value={(done / subtasks.length) * 100}
+              className="[&_[data-slot=progress-track]]:rounded-none!"
+            />
           </div>
         )}
         <AccordionContent>
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-2 pt-2">
             {subtasks.map((subtask) => (
               <li key={subtask.id} className="flex items-center justify-between gap-2">
                 <Label className="min-w-0 flex-1 font-normal">
@@ -159,6 +162,8 @@ function ProjectDetailPage() {
           </ul>
         </div>
       )}
+
+      <h2 className="text-lg font-bold">Tasks</h2>
 
       {tasks.map((task) => (
         <TaskAccordion key={task.id} task={task} />
