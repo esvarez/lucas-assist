@@ -82,6 +82,7 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --whats-next-bg: linear-gradient(180deg, oklch(0.511 0.096 186.391 / 0.10), oklch(0.511 0.096 186.391 / 0.02));
 }
 
 .dark {
@@ -116,6 +117,7 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --whats-next-bg: linear-gradient(180deg, oklch(0.65 0.096 186.391 / 0.14), oklch(0.65 0.096 186.391 / 0.03));
 }
 
 @layer base {

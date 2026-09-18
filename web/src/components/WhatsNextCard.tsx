@@ -43,8 +43,7 @@ function WhatsNextCard({ projectId }: { projectId: string }) {
   const alreadyInProgress = task.status === 'in-progress'
 
   return (
-    <Card className="relative overflow-hidden border border-primary ring-0">
-      <LightRays color="rgba(0, 120, 111, 0.2)"/>
+    <Card className="relative overflow-hidden border border-primary bg-[image:var(--whats-next-bg)] ring-0">
       <CardHeader>
         <div className="flex items-center gap-2">
           <span className="size-1.5 rounded-full bg-primary" aria-hidden />

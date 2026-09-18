@@ -153,10 +153,6 @@ function ProjectDetailPage() {
         </p>
       )}
 
-{/* <div className="relative h-[400px] w-full overflow-hidden rounded-xl border">
-  <LightRays color="rgba(0, 120, 111)"/>
-</div> */}
-
       {project.constraints.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className="text-xs font-medium text-muted-foreground">Constraints</span>
