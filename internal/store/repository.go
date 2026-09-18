@@ -16,6 +16,11 @@ var ErrDuplicateID = errors.New("project with this id already exists")
 // ErrNotFound is returned when a lookup by ID finds nothing.
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict is returned when a conditional write's expected version
+// doesn't match the item's current version (architecture.md §8's "Project
+// version" — a stale baseVersion, not a missing item).
+var ErrConflict = errors.New("version conflict")
+
 // Repository is the persistence interface every skill and the API Lambda
 // read and write through.
 //
@@ -27,6 +32,12 @@ type Repository interface {
 	GetProject(ctx context.Context, userID, id string) (domain.Project, error)
 	ListProjects(ctx context.Context, userID string) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, userID, id string) error
+
+	// UpdateProject enforces optimistic concurrency on p.Version: it must
+	// match the project's current stored version or the update is rejected
+	// with ErrConflict instead of applied — never retried automatically
+	// (architecture.md §8, AGENTS.MD "do not retry the write"). On success
+	// the stored version increments by one.
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 
 	// CreateTask, GetTask, and ListTasks all take userID explicitly, same

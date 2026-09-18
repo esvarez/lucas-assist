@@ -197,6 +197,10 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 
 	time.Sleep(time.Millisecond)
 
+	if created.Version != 1 {
+		t.Errorf("Version = %d, want 1 on create", created.Version)
+	}
+
 	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	updated, err := repo.UpdateProject(ctx, "user_1", domain.Project{
 		ID:          created.ID,
@@ -205,6 +209,7 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 		Deadline:    &deadline,
 		Constraints: []string{"no VPC", "no SSR"},
 		Status:      "done",
+		Version:     created.Version,
 	})
 	if err != nil {
 		t.Fatalf("UpdateProject() error = %v", err)
@@ -222,6 +227,9 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 	if !reflect.DeepEqual(updated.Constraints, []string{"no VPC", "no SSR"}) {
 		t.Errorf("Constraints = %v, want updated", updated.Constraints)
 	}
+	if updated.Version != created.Version+1 {
+		t.Errorf("Version = %d, want %d (incremented)", updated.Version, created.Version+1)
+	}
 	if !updated.UpdatedAt.After(created.UpdatedAt) {
 		t.Errorf("UpdatedAt = %v, want after %v", updated.UpdatedAt, created.UpdatedAt)
 	}
@@ -235,6 +243,37 @@ func TestMemoryRepository_UpdateProject(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, updated) {
 		t.Errorf("GetProject() after update = %+v, want %+v", got, updated)
+	}
+}
+
+// TestMemoryRepository_UpdateProject_VersionConflict documents the
+// optimistic-concurrency path (architecture.md §8): a stale Version is
+// rejected with ErrConflict rather than silently applied or retried.
+func TestMemoryRepository_UpdateProject_VersionConflict(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge", Goal: "v1"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if _, err := repo.UpdateProject(ctx, "user_1", domain.Project{ID: created.ID, Goal: "v2", Version: created.Version}); err != nil {
+		t.Fatalf("first UpdateProject() error = %v", err)
+	}
+
+	// Retrying with the now-stale original version must not apply.
+	_, err = repo.UpdateProject(ctx, "user_1", domain.Project{ID: created.ID, Goal: "v3 (stale)", Version: created.Version})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("UpdateProject() with stale version error = %v, want %v", err, ErrConflict)
+	}
+
+	got, err := repo.GetProject(ctx, "user_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if got.Goal != "v2" {
+		t.Errorf("Goal = %q, want %q (the conflicting write must not have applied)", got.Goal, "v2")
 	}
 }
 
@@ -256,7 +295,7 @@ func TestMemoryRepository_UpdateProject_WrongUser(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	_, err = repo.UpdateProject(ctx, "user_2", domain.Project{ID: created.ID, Status: "done"})
+	_, err = repo.UpdateProject(ctx, "user_2", domain.Project{ID: created.ID, Status: "done", Version: created.Version})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}

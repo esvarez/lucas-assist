@@ -210,6 +210,9 @@ func TestDynamoRepository_UpdateProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
+	if created.Version != 1 {
+		t.Errorf("Version = %d, want 1 on create", created.Version)
+	}
 
 	deadline := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	updated, err := repo.UpdateProject(ctx, userID, domain.Project{
@@ -219,6 +222,7 @@ func TestDynamoRepository_UpdateProject(t *testing.T) {
 		Deadline:    &deadline,
 		Constraints: []string{"no VPC", "no SSR"},
 		Status:      "done",
+		Version:     created.Version,
 	})
 	if err != nil {
 		t.Fatalf("UpdateProject() error = %v", err)
@@ -236,6 +240,9 @@ func TestDynamoRepository_UpdateProject(t *testing.T) {
 	if !reflect.DeepEqual(updated.Constraints, []string{"no VPC", "no SSR"}) {
 		t.Errorf("Constraints = %v, want updated", updated.Constraints)
 	}
+	if updated.Version != created.Version+1 {
+		t.Errorf("Version = %d, want %d (incremented)", updated.Version, created.Version+1)
+	}
 	if !updated.UpdatedAt.After(created.UpdatedAt) {
 		t.Errorf("UpdatedAt = %v, want after %v", updated.UpdatedAt, created.UpdatedAt)
 	}
@@ -249,6 +256,38 @@ func TestDynamoRepository_UpdateProject(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, updated) {
 		t.Errorf("GetProject() after update = %+v, want %+v", got, updated)
+	}
+}
+
+// TestDynamoRepository_UpdateProject_VersionConflict documents the
+// optimistic-concurrency path (architecture.md §8): a stale Version is
+// rejected with ErrConflict rather than silently applied or retried.
+func TestDynamoRepository_UpdateProject_VersionConflict(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge", Goal: "v1"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	if _, err := repo.UpdateProject(ctx, userID, domain.Project{ID: created.ID, Goal: "v2", Version: created.Version}); err != nil {
+		t.Fatalf("first UpdateProject() error = %v", err)
+	}
+
+	// Retrying with the now-stale original version must not apply.
+	_, err = repo.UpdateProject(ctx, userID, domain.Project{ID: created.ID, Goal: "v3 (stale)", Version: created.Version})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("UpdateProject() with stale version error = %v, want %v", err, ErrConflict)
+	}
+
+	got, err := repo.GetProject(ctx, userID, created.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if got.Goal != "v2" {
+		t.Errorf("Goal = %q, want %q (the conflicting write must not have applied)", got.Goal, "v2")
 	}
 }
 
@@ -266,7 +305,7 @@ func TestDynamoRepository_UpdateProject_ClearsDeadline(t *testing.T) {
 		t.Fatalf("CreateProject() = %+v, want Deadline set", created)
 	}
 
-	updated, err := repo.UpdateProject(ctx, userID, domain.Project{ID: created.ID, Status: "active"})
+	updated, err := repo.UpdateProject(ctx, userID, domain.Project{ID: created.ID, Status: "active", Version: created.Version})
 	if err != nil {
 		t.Fatalf("UpdateProject() error = %v", err)
 	}
@@ -302,7 +341,7 @@ func TestDynamoRepository_UpdateProject_WrongUser(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	_, err = repo.UpdateProject(ctx, testUserID(), domain.Project{ID: created.ID, Status: "done"})
+	_, err = repo.UpdateProject(ctx, testUserID(), domain.Project{ID: created.ID, Status: "done", Version: created.Version})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateProject() with wrong userID error = %v, want %v", err, ErrNotFound)
 	}

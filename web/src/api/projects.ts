@@ -29,6 +29,10 @@ export interface Project {
   deadline: string | null
   constraints: string[]
   status: string
+  // Optimistic-concurrency version (architecture.md §8). Pass the value
+  // from the project you loaded back into updateProject — a stale value
+  // is rejected with a 409 (ApiError), not silently overwritten.
+  version: number
   created_at: string
   updated_at: string
 }
@@ -44,8 +48,11 @@ export interface CreateProjectRequest {
 }
 
 // name is intentionally absent too — PUT /projects/{id} never touches it
-// (docs/openapi.yaml's UpdateProjectRequest).
+// (docs/openapi.yaml's UpdateProjectRequest). version is required: pass
+// the value from the Project you loaded (see Project.version) so the
+// backend can detect a conflicting concurrent edit.
 export interface UpdateProjectRequest {
+  version: number
   goal?: string
   deadline?: string | null
   constraints?: string[]

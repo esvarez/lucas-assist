@@ -16,8 +16,17 @@ type Project struct {
 	Deadline    *time.Time `json:"deadline,omitempty"`
 	Constraints []string   `json:"constraints"`
 	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+
+	// Version supports optimistic concurrency on changeset commit
+	// (architecture.md §8): every proposed changeset records the version
+	// it was built against, and a commit is only applied if that still
+	// matches. CreateProject always sets this to 1, regardless of any
+	// caller-supplied value — like CreatedAt/UpdatedAt, it's repo-owned,
+	// not client-set.
+	Version int `json:"version"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ProposedProject is the content of a Project before the commit path
