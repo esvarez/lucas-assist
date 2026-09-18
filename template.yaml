@@ -23,10 +23,6 @@ Parameters:
     Default: dev
     AllowedValues: [dev, staging, prod]
     Description: Deployment environment
-  OpenAIApiKey:
-    Type: String
-    NoEcho: true
-    Description: OpenAI API key used by skill Lambdas
 
 # ─────────────────────────────────────────────
 # Resources
@@ -119,6 +115,18 @@ Resources:
   # CRUD API, not a regression. The IAM-signed Function URL is kept as a
   # narrower, SigV4-only calling path until GitHub OAuth lands; drop it
   # then if nothing still uses it.
+  #
+  # The OpenAI key is resolved at runtime from SSM Parameter Store, not a
+  # SAM parameter (architecture.md §18) — it never transits CloudFormation
+  # as plaintext. Deploy prerequisite, run once per environment before the
+  # first deploy:
+  #   aws ssm put-parameter \
+  #     --name /${Environment}/nudge/openai-api-key \
+  #     --type SecureString \
+  #     --value <key>
+  # Only this function's role can read it; ApiFunction has neither the env
+  # var nor the IAM permission (architecture.md §14: "Allow only the
+  # Worker to read the OpenAI credential").
   SkillsFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -134,7 +142,30 @@ Resources:
         AuthType: AWS_IAM
       Environment:
         Variables:
-          OPENAI_API_KEY: !Ref OpenAIApiKey
+          OPENAI_API_KEY_PARAM: !Sub /${Environment}/nudge/openai-api-key
+      Policies:
+        - Statement:
+            - Sid: ReadOpenAIKeyParameter
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Environment}/nudge/openai-api-key
+            # Resource must be "*" here: an alias ARN (e.g. alias/aws/ssm) in
+            # an IAM policy's Resource element does not authorize Decrypt
+            # against the underlying key — IAM does not resolve aliases for
+            # that purpose, so GetParameter's decrypt would be denied at
+            # runtime despite this statement existing. There's also no way
+            # to reference the AWS-managed key's real key ARN statically,
+            # since its key ID isn't known at template-authoring time. The
+            # kms:ViaService condition scopes this to calls KMS receives
+            # through SSM, rather than granting decrypt on every key in the
+            # account.
+            - Sid: DecryptOpenAIKeyParameter
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
       Events:
         SkillsApiEvent:
           Type: HttpApi

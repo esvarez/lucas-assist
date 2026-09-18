@@ -616,7 +616,15 @@ cli
 - AWS SAM as the initial infrastructure definition.
 - GitHub Actions for validation and deployment.
 
-Secrets are resolved at deployment or runtime and are never stored in the repository. Choose Parameter Store or Secrets Manager based on rotation, audit and operational requirements rather than a small monthly price difference.
+Secrets are resolved at deployment or runtime and are never stored in the repository.
+
+**Decision: SSM Parameter Store, `SecureString`, encrypted with the AWS-managed `aws/ssm` KMS key.** Applies to the OpenAI key now and to the JWT signing secret and GitHub client secret if those return (ADR 013 moved token issuance to Cognito, which removes the JWT signing secret from the application's scope).
+
+Standard-tier parameters and the AWS-managed KMS key are both free. Secrets Manager costs ~$0.40/secret/month for automated rotation, which doesn't apply here: none of these secrets is an AWS-rotatable credential (like an RDS password) with a rotation Lambda AWS ships. Rotating an OpenAI key or a GitHub OAuth secret means hand-writing a rotation Lambda regardless of which store holds it, so Secrets Manager's differentiator is moot. Both services log reads identically via CloudTrail.
+
+Parameters are provisioned **out-of-band** (`aws ssm put-parameter --type SecureString`), never as an `AWS::SSM::Parameter` resource in the SAM template — putting the value in CloudFormation means passing it through a deploy-time parameter as plaintext, which is exactly what this decision avoids. The template references only the parameter *name* (derived from `Environment`, e.g. `/${Environment}/nudge/openai-api-key`) and grants the consuming Lambda's role `ssm:GetParameter` scoped to that one parameter ARN — only the Worker/skill role, never the API Lambda (§14). The paired `kms:Decrypt` grant can't be scoped to the `aws/ssm` key's ARN the same way: an alias ARN in an IAM policy's `Resource` doesn't authorize the underlying key, and the AWS-managed key's real key ARN isn't knowable at template-authoring time. It's `Resource: "*"` with a `kms:ViaService` condition limiting it to calls made through SSM instead.
+
+Revisit if a compliance requirement forces scheduled rotation of externally-issued keys, or the per-secret API-call cost difference stops being negligible at scale.
 
 ---
 
@@ -653,6 +661,7 @@ This order validates the uncertain product and model behavior before investing i
 | ADR 011 | Use GitHub as the initial identity provider. | Accepted | Fits the developer audience and CLI. |
 | ADR 012 | Defer vector search. | Accepted | Structured queries and read tools cover the expected working set. |
 | ADR 013 | Use Amazon Cognito as the token issuer and verifier for both clients, with GitHub federated into the User Pool. | Accepted | Removes custom JWT signing, key rotation and refresh-token storage from the application; API Gateway can verify tokens with a built-in JWT authorizer. |
+| ADR 014 | Use SSM Parameter Store (`SecureString`) for the OpenAI key, provisioned out-of-band rather than through a SAM template parameter. | Accepted | Free tier covers it; Secrets Manager's paid rotation feature doesn't apply to externally-issued keys anyway; keeps the plaintext key out of CloudFormation entirely. |
 
 ---
 

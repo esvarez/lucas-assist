@@ -205,7 +205,6 @@ Do not build these. If a task seems to need one, stop and ask.
 Don't assume answers to these — ask.
 
 - **What `priority` means** — GSI2's sort key depends on it and it is undefined. Do not invent a scheme.
-- Secrets storage: SSM Parameter Store vs Secrets Manager
 - Optimistic concurrency (`version` attribute on project META)
 - Whether the sync path persists pending changesets or keeps them in client state
 - Idempotency key derivation for chunked commits
