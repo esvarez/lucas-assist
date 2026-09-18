@@ -4,7 +4,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
-import { listTasks } from '@/src/api/tasks'
+import { flattenTasks, listTasks } from '@/src/api/tasks'
 import type { Project } from '@/src/api/projects'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 
@@ -20,7 +20,8 @@ function ProjectCard({ project }: { project: Project }) {
     listTasks(project.id)
       .then((tasks) => {
         if (ignore) return
-        setTaskCounts({ done: tasks.filter((t) => t.status === 'done').length, total: tasks.length })
+        const all = flattenTasks(tasks)
+        setTaskCounts({ done: all.filter((t) => t.status === 'done').length, total: all.length })
       })
       .catch(() => {
         // Supplementary info — silently unavailable until the real
