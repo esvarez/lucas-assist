@@ -1,7 +1,9 @@
 import { useId, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { PlusIcon, XIcon } from 'lucide-react'
+import { format } from 'date-fns'
+import { CalendarIcon, PlusIcon, XIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Calendar } from '@/components/ui/calendar'
 import {
   Dialog,
   DialogContent,
@@ -12,18 +14,15 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, ValidationError, createProject } from '../api/projects'
+import { cn } from '@/lib/utils'
 
 // Fields this form renders — anything the server flags outside this set
 // (e.g. user_id or status, which have no input here) surfaces as a
 // general error instead of being silently dropped.
 const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'constraints'])
-
-function toISODeadline(dateInput: string): string | undefined {
-  if (!dateInput) return undefined
-  return new Date(`${dateInput}T00:00:00Z`).toISOString()
-}
 
 function NewProjectDialog() {
   const navigate = useNavigate()
@@ -34,7 +33,8 @@ function NewProjectDialog() {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [goal, setGoal] = useState('')
-  const [deadline, setDeadline] = useState('')
+  const [deadline, setDeadline] = useState<Date | undefined>(undefined)
+  const [deadlineOpen, setDeadlineOpen] = useState(false)
   const [constraints, setConstraints] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [generalError, setGeneralError] = useState<string | null>(null)
@@ -45,7 +45,7 @@ function NewProjectDialog() {
   function reset() {
     setName('')
     setGoal('')
-    setDeadline('')
+    setDeadline(undefined)
     setConstraints([])
     setGeneralError(null)
     setFieldErrors({})
@@ -72,7 +72,7 @@ function NewProjectDialog() {
       const project = await createProject({
         name: trimmedName,
         goal: goal.trim(),
-        deadline: toISODeadline(deadline),
+        deadline: deadline?.toISOString(),
         constraints: constraints.map((c) => c.trim()).filter(Boolean)
       })
       setOpen(false)
@@ -148,14 +148,38 @@ function NewProjectDialog() {
 
           <div className="flex flex-col gap-2">
             <Label htmlFor={deadlineId}>Deadline</Label>
-            <Input
-              id={deadlineId}
-              type="date"
-              value={deadline}
-              onChange={(e) => setDeadline(e.target.value)}
-              disabled={submitting}
-              aria-invalid={Boolean(fieldErrors.deadline)}
-            />
+            <Popover open={deadlineOpen} onOpenChange={setDeadlineOpen}>
+              <PopoverTrigger
+                render={
+                  <Button
+                    id={deadlineId}
+                    type="button"
+                    variant="outline"
+                    disabled={submitting}
+                    aria-invalid={Boolean(fieldErrors.deadline)}
+                    className={cn(
+                      'w-full justify-start font-normal',
+                      !deadline && 'text-muted-foreground'
+                    )}
+                  />
+                }
+              >
+                <CalendarIcon />
+                {deadline ? format(deadline, 'PPP') : 'Pick a date'}
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0">
+                <Calendar
+                  mode="single"
+                  selected={deadline}
+                  onSelect={(date) => {
+                    setDeadline(date)
+                    setDeadlineOpen(false)
+                  }}
+                  disabled={{ before: new Date() }}
+                  autoFocus
+                />
+              </PopoverContent>
+            </Popover>
             {fieldErrors.deadline && (
               <p className="text-xs text-destructive">{fieldErrors.deadline}</p>
             )}
