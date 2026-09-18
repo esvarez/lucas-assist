@@ -149,10 +149,23 @@ Resources:
               Effect: Allow
               Action: ssm:GetParameter
               Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Environment}/nudge/openai-api-key
+            # Resource must be "*" here: an alias ARN (e.g. alias/aws/ssm) in
+            # an IAM policy's Resource element does not authorize Decrypt
+            # against the underlying key — IAM does not resolve aliases for
+            # that purpose, so GetParameter's decrypt would be denied at
+            # runtime despite this statement existing. There's also no way
+            # to reference the AWS-managed key's real key ARN statically,
+            # since its key ID isn't known at template-authoring time. The
+            # kms:ViaService condition scopes this to calls KMS receives
+            # through SSM, rather than granting decrypt on every key in the
+            # account.
             - Sid: DecryptOpenAIKeyParameter
               Effect: Allow
               Action: kms:Decrypt
-              Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/ssm
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
       Events:
         SkillsApiEvent:
           Type: HttpApi
