@@ -5,6 +5,9 @@ function Layout() {
     <div className="app-shell">
       <header className="app-header">
         <nav>Nudge</nav>
+        <h1 className="text-3xl font-bold underline">
+    Hello world!
+  </h1>
       </header>
       <main>
         <Outlet />
