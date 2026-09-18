@@ -13,26 +13,16 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { ApiError, ValidationError, createProject } from '../api/projects'
 
-const STATUS_OPTIONS = [
-  { value: 'on-track', label: 'On track' },
-  { value: 'at-risk', label: 'At risk' },
-  { value: 'blocked', label: 'Blocked' },
-  { value: 'paused', label: 'Paused' },
-]
+// New projects start "on-track" — there's no status picker in this form,
+// so this is the value every created project gets until it's edited.
+const DEFAULT_STATUS = 'on-track'
 
 // Fields this form renders — anything the server flags outside this set
-// (e.g. user_id, which has no input here) surfaces as a general error
-// instead of being silently dropped.
-const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'status', 'constraints'])
+// (e.g. user_id or status, which have no input here) surfaces as a
+// general error instead of being silently dropped.
+const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'constraints'])
 
 function toISODeadline(dateInput: string): string | undefined {
   if (!dateInput) return undefined
@@ -44,13 +34,11 @@ function NewProjectDialog() {
   const nameId = useId()
   const goalId = useId()
   const deadlineId = useId()
-  const statusId = useId()
 
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [goal, setGoal] = useState('')
   const [deadline, setDeadline] = useState('')
-  const [status, setStatus] = useState('on-track')
   const [constraints, setConstraints] = useState<string[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [generalError, setGeneralError] = useState<string | null>(null)
@@ -62,7 +50,6 @@ function NewProjectDialog() {
     setName('')
     setGoal('')
     setDeadline('')
-    setStatus('on-track')
     setConstraints([])
     setGeneralError(null)
     setFieldErrors({})
@@ -91,7 +78,7 @@ function NewProjectDialog() {
         goal: goal.trim(),
         deadline: toISODeadline(deadline),
         constraints: constraints.map((c) => c.trim()).filter(Boolean),
-        status,
+        status: DEFAULT_STATUS,
       })
       setOpen(false)
       reset()
@@ -152,7 +139,7 @@ function NewProjectDialog() {
           </div>
 
           <div className="flex flex-col gap-2">
-            <Label htmlFor={goalId}>Goal</Label>
+            <Label htmlFor={goalId}>Description or Goal</Label>
             <Textarea
               id={goalId}
               value={goal}
@@ -176,25 +163,6 @@ function NewProjectDialog() {
             />
             {fieldErrors.deadline && (
               <p className="text-xs text-destructive">{fieldErrors.deadline}</p>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={statusId}>Status</Label>
-            <Select value={status} onValueChange={(next) => setStatus(next as string)}>
-              <SelectTrigger id={statusId} className="w-full" disabled={submitting}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STATUS_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {fieldErrors.status && (
-              <p className="text-xs text-destructive">{fieldErrors.status}</p>
             )}
           </div>
 
