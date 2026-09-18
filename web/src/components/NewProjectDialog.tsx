@@ -46,6 +46,7 @@ function NewProjectDialog() {
     setName('')
     setGoal('')
     setDeadline(undefined)
+    setDeadlineOpen(false)
     setConstraints([])
     setGeneralError(null)
     setFieldErrors({})
