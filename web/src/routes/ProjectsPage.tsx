@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { AlertCircleIcon } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 import NewProjectDialog from '../components/NewProjectDialog'
 import { listProjects, type Project } from '../api/projects'
 
@@ -14,8 +19,7 @@ function ProjectsPage() {
         if (!ignore) setProjects(p)
       })
       .catch((err) => {
-        if (ignore) return
-        setError(err instanceof Error ? err.message : 'Failed to load projects')
+        if (!ignore) setError(err instanceof Error ? err.message : 'Failed to load projects')
       })
     return () => {
       ignore = true
@@ -29,39 +33,49 @@ function ProjectsPage() {
         <NewProjectDialog />
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircleIcon />
+          <AlertTitle>Couldn't load projects</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {!error && projects === null && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
       )}
 
       {!error && projects !== null && projects.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          No projects yet — create one to get started.
-        </p>
+        <Card className="items-center py-8 text-center">
+          <CardHeader className="items-center">
+            <CardTitle>No projects yet</CardTitle>
+            <CardDescription>Create one to get started.</CardDescription>
+          </CardHeader>
+        </Card>
       )}
 
       {!error && projects && projects.length > 0 && (
-        <ul className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2">
           {projects.map((project) => (
-            <li key={project.id}>
-              <Link
-                to={`/projects/${project.id}`}
-                className="flex flex-col gap-1 rounded-md border border-border bg-card px-3 py-2 text-card-foreground transition-colors hover:bg-accent"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">{project.name}</span>
-                  <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
-                    {project.status}
-                  </span>
-                </div>
-                {project.goal && (
-                  <p className="line-clamp-2 text-xs text-muted-foreground">{project.goal}</p>
-                )}
-              </Link>
-            </li>
+            <Link key={project.id} to={`/projects/${project.id}`}>
+              <Card className="transition-colors hover:bg-accent">
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle>{project.name}</CardTitle>
+                    <Badge variant="secondary">{project.status}</Badge>
+                  </div>
+                  {project.goal && (
+                    <CardDescription className="line-clamp-2">{project.goal}</CardDescription>
+                  )}
+                </CardHeader>
+              </Card>
+            </Link>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   )
