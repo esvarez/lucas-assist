@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -767,5 +768,277 @@ func TestDynamoRepository_UpdateChangesetStatus_WrongUser(t *testing.T) {
 	_, err = repo.UpdateChangesetStatus(ctx, testUserID(), projectID, created.ID, domain.ChangesetAccepted)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateChangesetStatus() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_CreateAgentRun(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{
+		UserID:    userID,
+		ProjectID: projectID,
+		Skill:     "decompose_task",
+		Input:     json.RawMessage(`{"task_id":"task_1"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	if created.ID == "" {
+		t.Error("ID = \"\", want a generated ID")
+	}
+	if created.Status != domain.AgentRunQueued {
+		t.Errorf("Status = %q, want %q", created.Status, domain.AgentRunQueued)
+	}
+
+	got, err := repo.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(testTable),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, created.ID)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetItem() error = %v", err)
+	}
+	if got.Item == nil {
+		t.Fatalf("GetItem() found no item for agent run %q", created.ID)
+	}
+}
+
+// TestDynamoRepository_CreateAgentRun_EmptyProjectID documents the
+// ProjectID-empty scheme for create_project runs (architecture.md §3, issue
+// #96): the run is stored under a fixed placeholder SK segment rather than
+// a real project ID, and remains reachable by GetAgentRun with "" as the
+// projectID argument.
+func TestDynamoRepository_CreateAgentRun_EmptyProjectID(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, Skill: "create_project"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if created.ProjectID != "" {
+		t.Errorf("ProjectID = %q, want empty for a create_project run", created.ProjectID)
+	}
+
+	got, err := repo.GetAgentRun(ctx, userID, "", created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("GetAgentRun() = %+v, want %+v", got, created)
+	}
+}
+
+func TestDynamoRepository_GetAgentRun_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.GetAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_GetAgentRun_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: testUserID(), ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	_, err = repo.GetAgentRun(ctx, testUserID(), projectID, created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentRun() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_LeaseAgentRun(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	leaseUntil := time.Now().UTC().Add(time.Minute)
+	leased, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", leaseUntil)
+	if err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	if leased.Status != domain.AgentRunRunning {
+		t.Errorf("Status = %q, want %q", leased.Status, domain.AgentRunRunning)
+	}
+	if leased.WorkerID != "worker_1" {
+		t.Errorf("WorkerID = %q, want %q", leased.WorkerID, "worker_1")
+	}
+	if leased.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1 after first lease", leased.Attempt)
+	}
+}
+
+// TestDynamoRepository_LeaseAgentRun_Race documents the lease race
+// (architecture.md §15, issue #96 acceptance criteria): two lease attempts
+// on the same queued run must not both succeed.
+func TestDynamoRepository_LeaseAgentRun_Race(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	leaseUntil := time.Now().UTC().Add(time.Minute)
+	if _, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", leaseUntil); err != nil {
+		t.Fatalf("first LeaseAgentRun() error = %v", err)
+	}
+
+	_, err = repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_2", leaseUntil)
+	if !errors.Is(err, ErrRunLeased) {
+		t.Fatalf("second LeaseAgentRun() error = %v, want %v", err, ErrRunLeased)
+	}
+
+	got, err := repo.GetAgentRun(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.WorkerID != "worker_1" {
+		t.Errorf("WorkerID = %q, want %q (the losing lease attempt must not have applied)", got.WorkerID, "worker_1")
+	}
+}
+
+// TestDynamoRepository_LeaseAgentRun_ReclaimExpired documents reclaiming an
+// expired lease (architecture.md §15, issue #96 acceptance criteria): a
+// worker that never completed its attempt before LeaseUntil passed must not
+// block a later attempt from leasing the run.
+func TestDynamoRepository_LeaseAgentRun_ReclaimExpired(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	expiredLease := time.Now().UTC().Add(-time.Minute)
+	if _, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", expiredLease); err != nil {
+		t.Fatalf("first LeaseAgentRun() error = %v", err)
+	}
+
+	newLease := time.Now().UTC().Add(time.Minute)
+	reclaimed, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_2", newLease)
+	if err != nil {
+		t.Fatalf("LeaseAgentRun() reclaiming expired lease error = %v", err)
+	}
+	if reclaimed.WorkerID != "worker_2" {
+		t.Errorf("WorkerID = %q, want %q after reclaiming", reclaimed.WorkerID, "worker_2")
+	}
+	if reclaimed.Attempt != 2 {
+		t.Errorf("Attempt = %d, want 2 after reclaiming", reclaimed.Attempt)
+	}
+}
+
+func TestDynamoRepository_LeaseAgentRun_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.LeaseAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), "worker_1", time.Now().Add(time.Minute))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LeaseAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_CompleteAgentRun(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	completed, err := repo.CompleteAgentRun(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("CompleteAgentRun() error = %v", err)
+	}
+	if completed.Status != domain.AgentRunCompleted {
+		t.Errorf("Status = %q, want %q", completed.Status, domain.AgentRunCompleted)
+	}
+
+	got, err := repo.GetAgentRun(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunCompleted {
+		t.Errorf("GetAgentRun() after complete Status = %q, want %q", got.Status, domain.AgentRunCompleted)
+	}
+}
+
+func TestDynamoRepository_CompleteAgentRun_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.CompleteAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CompleteAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_FailAgentRun(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	failed, err := repo.FailAgentRun(ctx, userID, projectID, created.ID, "provider timeout")
+	if err != nil {
+		t.Fatalf("FailAgentRun() error = %v", err)
+	}
+	if failed.Status != domain.AgentRunFailed {
+		t.Errorf("Status = %q, want %q", failed.Status, domain.AgentRunFailed)
+	}
+	if failed.Error != "provider timeout" {
+		t.Errorf("Error = %q, want %q", failed.Error, "provider timeout")
+	}
+}
+
+func TestDynamoRepository_FailAgentRun_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.FailAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), "boom")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FailAgentRun() error = %v, want %v", err, ErrNotFound)
 	}
 }

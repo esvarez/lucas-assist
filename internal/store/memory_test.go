@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -659,5 +660,301 @@ func TestMemoryRepository_UpdateChangesetStatus_WrongUser(t *testing.T) {
 	_, err = repo.UpdateChangesetStatus(ctx, "user_2", "proj_1", created.ID, domain.ChangesetAccepted)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateChangesetStatus() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_CreateAgentRun(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateAgentRun(context.Background(), domain.AgentRun{
+		UserID:    "user_1",
+		ProjectID: "proj_1",
+		Skill:     "decompose_task",
+		Input:     json.RawMessage(`{"task_id":"task_1"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	if created.ID == "" {
+		t.Error("ID = \"\", want a generated ID")
+	}
+	if created.Status != domain.AgentRunQueued {
+		t.Errorf("Status = %q, want %q", created.Status, domain.AgentRunQueued)
+	}
+	if created.Attempt != 0 {
+		t.Errorf("Attempt = %d, want 0 on create", created.Attempt)
+	}
+	if created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() {
+		t.Errorf("CreateAgentRun() = %+v, want CreatedAt/UpdatedAt set", created)
+	}
+}
+
+// TestMemoryRepository_CreateAgentRun_EmptyProjectID documents the
+// ProjectID-empty scheme for create_project runs (architecture.md §3, issue
+// #96): CreateAgentRun accepts and preserves an empty ProjectID rather than
+// generating one or rejecting the run.
+func TestMemoryRepository_CreateAgentRun_EmptyProjectID(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateAgentRun(context.Background(), domain.AgentRun{UserID: "user_1", Skill: "create_project"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if created.ProjectID != "" {
+		t.Errorf("ProjectID = %q, want empty for a create_project run", created.ProjectID)
+	}
+
+	got, err := repo.GetAgentRun(context.Background(), "user_1", "", created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("GetAgentRun() = %+v, want %+v", got, created)
+	}
+}
+
+func TestMemoryRepository_CreateAgentRun_IgnoresCallerStatus(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateAgentRun(context.Background(), domain.AgentRun{
+		UserID:    "user_1",
+		ProjectID: "proj_1",
+		Status:    domain.AgentRunCompleted,
+		Attempt:   5,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if created.Status != domain.AgentRunQueued {
+		t.Errorf("Status = %q, want %q regardless of caller input", created.Status, domain.AgentRunQueued)
+	}
+	if created.Attempt != 0 {
+		t.Errorf("Attempt = %d, want 0 regardless of caller input", created.Attempt)
+	}
+}
+
+func TestMemoryRepository_GetAgentRun_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.GetAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetAgentRun_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	_, err = repo.GetAgentRun(ctx, "user_2", "proj_1", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentRun() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetAgentRun_WrongProject(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	_, err = repo.GetAgentRun(ctx, "user_1", "proj_2", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetAgentRun() with wrong projectID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_LeaseAgentRun(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	leaseUntil := time.Now().UTC().Add(time.Minute)
+	leased, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", leaseUntil)
+	if err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	if leased.Status != domain.AgentRunRunning {
+		t.Errorf("Status = %q, want %q", leased.Status, domain.AgentRunRunning)
+	}
+	if leased.WorkerID != "worker_1" {
+		t.Errorf("WorkerID = %q, want %q", leased.WorkerID, "worker_1")
+	}
+	if leased.LeaseUntil == nil || !leased.LeaseUntil.Equal(leaseUntil) {
+		t.Errorf("LeaseUntil = %v, want %v", leased.LeaseUntil, leaseUntil)
+	}
+	if leased.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1 after first lease", leased.Attempt)
+	}
+}
+
+// TestMemoryRepository_LeaseAgentRun_Race documents the lease race
+// (architecture.md §15, issue #96 acceptance criteria): two lease attempts
+// on the same queued run must not both succeed.
+func TestMemoryRepository_LeaseAgentRun_Race(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	leaseUntil := time.Now().UTC().Add(time.Minute)
+
+	if _, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", leaseUntil); err != nil {
+		t.Fatalf("first LeaseAgentRun() error = %v", err)
+	}
+
+	_, err = repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_2", leaseUntil)
+	if !errors.Is(err, ErrRunLeased) {
+		t.Fatalf("second LeaseAgentRun() error = %v, want %v", err, ErrRunLeased)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.WorkerID != "worker_1" {
+		t.Errorf("WorkerID = %q, want %q (the losing lease attempt must not have applied)", got.WorkerID, "worker_1")
+	}
+	if got.Attempt != 1 {
+		t.Errorf("Attempt = %d, want 1 (only the winning attempt counts)", got.Attempt)
+	}
+}
+
+// TestMemoryRepository_LeaseAgentRun_ReclaimExpired documents reclaiming an
+// expired lease (architecture.md §15, issue #96 acceptance criteria): a
+// worker that never completed its attempt before LeaseUntil passed must not
+// block a later attempt from leasing the run.
+func TestMemoryRepository_LeaseAgentRun_ReclaimExpired(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	expiredLease := time.Now().UTC().Add(-time.Minute)
+	if _, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", expiredLease); err != nil {
+		t.Fatalf("first LeaseAgentRun() error = %v", err)
+	}
+
+	newLease := time.Now().UTC().Add(time.Minute)
+	reclaimed, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_2", newLease)
+	if err != nil {
+		t.Fatalf("LeaseAgentRun() reclaiming expired lease error = %v", err)
+	}
+
+	if reclaimed.WorkerID != "worker_2" {
+		t.Errorf("WorkerID = %q, want %q after reclaiming", reclaimed.WorkerID, "worker_2")
+	}
+	if reclaimed.Attempt != 2 {
+		t.Errorf("Attempt = %d, want 2 after reclaiming", reclaimed.Attempt)
+	}
+}
+
+func TestMemoryRepository_LeaseAgentRun_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.LeaseAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist", "worker_1", time.Now().Add(time.Minute))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LeaseAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_LeaseAgentRun_TerminalRunNotLeasable(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.CompleteAgentRun(ctx, "user_1", "proj_1", created.ID); err != nil {
+		t.Fatalf("CompleteAgentRun() error = %v", err)
+	}
+
+	_, err = repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", time.Now().Add(time.Minute))
+	if !errors.Is(err, ErrRunLeased) {
+		t.Fatalf("LeaseAgentRun() on completed run error = %v, want %v", err, ErrRunLeased)
+	}
+}
+
+func TestMemoryRepository_CompleteAgentRun(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	completed, err := repo.CompleteAgentRun(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("CompleteAgentRun() error = %v", err)
+	}
+	if completed.Status != domain.AgentRunCompleted {
+		t.Errorf("Status = %q, want %q", completed.Status, domain.AgentRunCompleted)
+	}
+}
+
+func TestMemoryRepository_CompleteAgentRun_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.CompleteAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CompleteAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_FailAgentRun(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	failed, err := repo.FailAgentRun(ctx, "user_1", "proj_1", created.ID, "provider timeout")
+	if err != nil {
+		t.Fatalf("FailAgentRun() error = %v", err)
+	}
+	if failed.Status != domain.AgentRunFailed {
+		t.Errorf("Status = %q, want %q", failed.Status, domain.AgentRunFailed)
+	}
+	if failed.Error != "provider timeout" {
+		t.Errorf("Error = %q, want %q", failed.Error, "provider timeout")
+	}
+}
+
+func TestMemoryRepository_FailAgentRun_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.FailAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist", "boom")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FailAgentRun() error = %v, want %v", err, ErrNotFound)
 	}
 }

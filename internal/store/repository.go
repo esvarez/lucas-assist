@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/esvarez/lucas-assist/internal/domain"
 )
@@ -20,6 +21,11 @@ var ErrNotFound = errors.New("not found")
 // doesn't match the item's current version (architecture.md §8's "Project
 // version" — a stale baseVersion, not a missing item).
 var ErrConflict = errors.New("version conflict")
+
+// ErrRunLeased is returned by LeaseAgentRun when the run isn't eligible to
+// be leased: another attempt currently holds a live lease, or the run has
+// already reached a terminal status (architecture.md §3/§15).
+var ErrRunLeased = errors.New("agent run not eligible for lease")
 
 // Repository is the persistence interface every skill and the API Lambda
 // read and write through.
@@ -58,4 +64,36 @@ type Repository interface {
 	CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
 	UpdateChangesetStatus(ctx context.Context, userID, projectID, changesetID string, status domain.ChangesetStatus) (domain.Changeset, error)
+
+	// CreateAgentRun, GetAgentRun, LeaseAgentRun, CompleteAgentRun, and
+	// FailAgentRun implement the AgentRun lifecycle (architecture.md
+	// §3/§10): the API creates a run `queued`, a worker leases it, and the
+	// worker marks it `completed` or `failed` once the model call resolves.
+	// All five take userID and projectID explicitly, same reason as the
+	// Task and Changeset methods above; projectID may be "" since
+	// domain.AgentRun.ProjectID is empty for create_project runs.
+	//
+	// CreateAgentRun always sets Status to AgentRunQueued and resets
+	// Attempt/WorkerID/LeaseUntil/Error, regardless of what the caller
+	// passed in r — like Version on CreateProject, these are repo-owned on
+	// creation, not client-set.
+	CreateAgentRun(ctx context.Context, r domain.AgentRun) (domain.AgentRun, error)
+	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
+
+	// LeaseAgentRun conditionally moves a run from queued to running, or
+	// reclaims a running run whose LeaseUntil has already passed — the
+	// worker that held it crashed or timed out mid-attempt (architecture.md
+	// §15: SQS delivers at least once, and duplicate delivery must not let
+	// two workers process the same run concurrently). It increments
+	// Attempt and records workerID/leaseUntil on success, and returns
+	// ErrRunLeased if another attempt currently holds a live lease or the
+	// run has already reached a terminal status.
+	LeaseAgentRun(ctx context.Context, userID, projectID, runID, workerID string, leaseUntil time.Time) (domain.AgentRun, error)
+
+	// CompleteAgentRun and FailAgentRun set the run's terminal state. Like
+	// UpdateChangesetStatus, these are unconditional status sets once the
+	// run exists — enforcing that a run was actually leased before it's
+	// completed or failed belongs to the worker, not this primitive.
+	CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
+	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
 }

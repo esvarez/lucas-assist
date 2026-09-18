@@ -15,6 +15,7 @@ type MemoryRepository struct {
 	projects   map[string]domain.Project
 	tasks      map[string]taskRecord
 	changesets map[string]domain.Changeset
+	agentRuns  map[string]domain.AgentRun
 }
 
 // taskRecord pairs a Task with the userID it was created under. domain.Task
@@ -30,6 +31,7 @@ func NewMemoryRepository() *MemoryRepository {
 		projects:   make(map[string]domain.Project),
 		tasks:      make(map[string]taskRecord),
 		changesets: make(map[string]domain.Changeset),
+		agentRuns:  make(map[string]domain.AgentRun),
 	}
 }
 
@@ -189,4 +191,101 @@ func (r *MemoryRepository) UpdateChangesetStatus(ctx context.Context, userID, pr
 	c.Status = status
 	r.changesets[changesetID] = c
 	return c, nil
+}
+
+func (r *MemoryRepository) CreateAgentRun(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if run.ID == "" {
+		run.ID = domain.NewRunID()
+	} else if _, exists := r.agentRuns[run.ID]; exists {
+		return domain.AgentRun{}, ErrDuplicateID
+	}
+
+	now := time.Now().UTC()
+	run.Status = domain.AgentRunQueued
+	run.Attempt = 0
+	run.WorkerID = ""
+	run.LeaseUntil = nil
+	run.Error = ""
+	run.CreatedAt = now
+	run.UpdatedAt = now
+
+	r.agentRuns[run.ID] = run
+	return run, nil
+}
+
+func (r *MemoryRepository) GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run, ok := r.agentRuns[runID]
+	if !ok || run.UserID != userID || run.ProjectID != projectID {
+		return domain.AgentRun{}, ErrNotFound
+	}
+	return run, nil
+}
+
+// LeaseAgentRun is leasable when the run is still queued, or when it's
+// running but its previous lease has expired (reclaiming a crashed or
+// timed-out worker's attempt).
+func (r *MemoryRepository) LeaseAgentRun(ctx context.Context, userID, projectID, runID, workerID string, leaseUntil time.Time) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run, ok := r.agentRuns[runID]
+	if !ok || run.UserID != userID || run.ProjectID != projectID {
+		return domain.AgentRun{}, ErrNotFound
+	}
+
+	now := time.Now().UTC()
+	expiredLease := run.Status == domain.AgentRunRunning && run.LeaseUntil != nil && run.LeaseUntil.Before(now)
+	if run.Status != domain.AgentRunQueued && !expiredLease {
+		return domain.AgentRun{}, ErrRunLeased
+	}
+
+	run.Status = domain.AgentRunRunning
+	run.WorkerID = workerID
+	lease := leaseUntil
+	run.LeaseUntil = &lease
+	run.Attempt++
+	run.UpdatedAt = now
+
+	r.agentRuns[runID] = run
+	return run, nil
+}
+
+func (r *MemoryRepository) CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run, ok := r.agentRuns[runID]
+	if !ok || run.UserID != userID || run.ProjectID != projectID {
+		return domain.AgentRun{}, ErrNotFound
+	}
+
+	run.Status = domain.AgentRunCompleted
+	run.Error = ""
+	run.UpdatedAt = time.Now().UTC()
+
+	r.agentRuns[runID] = run
+	return run, nil
+}
+
+func (r *MemoryRepository) FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run, ok := r.agentRuns[runID]
+	if !ok || run.UserID != userID || run.ProjectID != projectID {
+		return domain.AgentRun{}, ErrNotFound
+	}
+
+	run.Status = domain.AgentRunFailed
+	run.Error = errMsg
+	run.UpdatedAt = time.Now().UTC()
+
+	r.agentRuns[runID] = run
+	return run, nil
 }
