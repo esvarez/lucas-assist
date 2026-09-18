@@ -304,3 +304,157 @@ func TestMemoryRepository_ListProjects_Empty(t *testing.T) {
 		t.Errorf("ListProjects() returned %d projects, want 0", len(projects))
 	}
 }
+
+func TestMemoryRepository_CreateTask(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateTask(context.Background(), "user_1", domain.Task{
+		ProjectID:          "proj_1",
+		Title:              "Add login command",
+		Description:        "Device-flow login for the CLI",
+		Status:             "pending",
+		AcceptanceCriteria: []string{"running `nudge login` prints a device code"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	if created.ID == "" {
+		t.Error("ID = \"\", want a generated ID")
+	}
+	if created.ProjectID != "proj_1" || created.Title != "Add login command" {
+		t.Errorf("CreateTask() = %+v, want ProjectID/Title preserved from input", created)
+	}
+}
+
+func TestMemoryRepository_CreateTask_ExplicitID(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateTask(context.Background(), "user_1", domain.Task{ID: "task_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if created.ID != "task_1" {
+		t.Errorf("ID = %q, want the caller-supplied ID %q", created.ID, "task_1")
+	}
+}
+
+func TestMemoryRepository_CreateTask_DuplicateID(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	if _, err := repo.CreateTask(ctx, "user_1", domain.Task{ID: "task_1", ProjectID: "proj_1", Title: "First"}); err != nil {
+		t.Fatalf("first CreateTask() error = %v", err)
+	}
+
+	_, err := repo.CreateTask(ctx, "user_1", domain.Task{ID: "task_1", ProjectID: "proj_1", Title: "Second"})
+	if !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("second CreateTask() error = %v, want %v", err, ErrDuplicateID)
+	}
+}
+
+func TestMemoryRepository_GetTask_Found(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_1", Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	got, err := repo.GetTask(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("GetTask() = %+v, want %+v", got, created)
+	}
+}
+
+func TestMemoryRepository_GetTask_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.GetTask(context.Background(), "user_1", "proj_1", "does-not-exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetTask_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_1", Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	_, err = repo.GetTask(ctx, "user_2", "proj_1", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetTask_WrongProject(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_1", Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	_, err = repo.GetTask(ctx, "user_1", "proj_2", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask() with wrong projectID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_ListTasks(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	want := make(map[string]bool)
+	for _, title := range []string{"First", "Second"} {
+		created, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_1", Title: title})
+		if err != nil {
+			t.Fatalf("CreateTask() error = %v", err)
+		}
+		want[created.ID] = true
+	}
+
+	if _, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_2", Title: "Different project"}); err != nil {
+		t.Fatalf("CreateTask() for other project error = %v", err)
+	}
+	if _, err := repo.CreateTask(ctx, "user_2", domain.Task{ProjectID: "proj_1", Title: "Different user"}); err != nil {
+		t.Fatalf("CreateTask() for other user error = %v", err)
+	}
+
+	tasks, err := repo.ListTasks(ctx, "user_1", "proj_1")
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != len(want) {
+		t.Errorf("ListTasks() returned %d tasks, want %d", len(tasks), len(want))
+	}
+	for _, task := range tasks {
+		if !want[task.ID] {
+			t.Errorf("ListTasks() returned unexpected task %q", task.ID)
+		}
+	}
+}
+
+func TestMemoryRepository_ListTasks_Empty(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", "proj_1")
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if tasks == nil {
+		t.Error("ListTasks() = nil, want an empty (non-nil) slice")
+	}
+	if len(tasks) != 0 {
+		t.Errorf("ListTasks() returned %d tasks, want 0", len(tasks))
+	}
+}

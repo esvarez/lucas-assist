@@ -3,6 +3,7 @@ package domain
 // Task is a unit of work within a project. Tree-shaped via ParentID.
 type Task struct {
 	ID                 string   `json:"id"`
+	ProjectID          string   `json:"project_id"`
 	ParentID           string   `json:"parent_id"`
 	Title              string   `json:"title"`
 	Description        string   `json:"description"`
