@@ -458,3 +458,167 @@ func TestMemoryRepository_ListTasks_Empty(t *testing.T) {
 		t.Errorf("ListTasks() returned %d tasks, want 0", len(tasks))
 	}
 }
+
+func TestMemoryRepository_CreateChangeset(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateChangeset(context.Background(), domain.Changeset{
+		ProjectID:   "proj_1",
+		UserID:      "user_1",
+		Skill:       "decompose_task",
+		BaseVersion: 1,
+		Status:      domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{
+			{Title: "Add login command", Description: "Device-flow login for the CLI"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	if created.ID == "" {
+		t.Error("ID = \"\", want a generated ID")
+	}
+	if created.ProjectID != "proj_1" || created.Skill != "decompose_task" {
+		t.Errorf("CreateChangeset() = %+v, want ProjectID/Skill preserved from input", created)
+	}
+	if created.Status != domain.ChangesetProposed {
+		t.Errorf("Status = %q, want %q", created.Status, domain.ChangesetProposed)
+	}
+	if created.CreatedAt.IsZero() {
+		t.Errorf("CreateChangeset() = %+v, want CreatedAt set", created)
+	}
+}
+
+func TestMemoryRepository_CreateChangeset_ExplicitID(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateChangeset(context.Background(), domain.Changeset{ID: "cs_1", ProjectID: "proj_1", UserID: "user_1"})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+	if created.ID != "cs_1" {
+		t.Errorf("ID = %q, want the caller-supplied ID %q", created.ID, "cs_1")
+	}
+}
+
+func TestMemoryRepository_CreateChangeset_DuplicateID(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	if _, err := repo.CreateChangeset(ctx, domain.Changeset{ID: "cs_1", ProjectID: "proj_1", UserID: "user_1"}); err != nil {
+		t.Fatalf("first CreateChangeset() error = %v", err)
+	}
+
+	_, err := repo.CreateChangeset(ctx, domain.Changeset{ID: "cs_1", ProjectID: "proj_1", UserID: "user_1"})
+	if !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("second CreateChangeset() error = %v, want %v", err, ErrDuplicateID)
+	}
+}
+
+func TestMemoryRepository_GetChangeset_Found(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: "proj_1", UserID: "user_1", Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	got, err := repo.GetChangeset(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("GetChangeset() = %+v, want %+v", got, created)
+	}
+}
+
+func TestMemoryRepository_GetChangeset_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.GetChangeset(context.Background(), "user_1", "proj_1", "does-not-exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChangeset() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetChangeset_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: "proj_1", UserID: "user_1"})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.GetChangeset(ctx, "user_2", "proj_1", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChangeset() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_GetChangeset_WrongProject(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: "proj_1", UserID: "user_1"})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.GetChangeset(ctx, "user_1", "proj_2", created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChangeset() with wrong projectID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_UpdateChangesetStatus(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: "proj_1", UserID: "user_1", Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	updated, err := repo.UpdateChangesetStatus(ctx, "user_1", "proj_1", created.ID, domain.ChangesetAccepted)
+	if err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+	if updated.Status != domain.ChangesetAccepted {
+		t.Errorf("Status = %q, want %q", updated.Status, domain.ChangesetAccepted)
+	}
+
+	got, err := repo.GetChangeset(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if got.Status != domain.ChangesetAccepted {
+		t.Errorf("GetChangeset() after update Status = %q, want %q", got.Status, domain.ChangesetAccepted)
+	}
+}
+
+func TestMemoryRepository_UpdateChangesetStatus_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.UpdateChangesetStatus(context.Background(), "user_1", "proj_1", "does-not-exist", domain.ChangesetAccepted)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateChangesetStatus() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_UpdateChangesetStatus_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: "proj_1", UserID: "user_1", Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.UpdateChangesetStatus(ctx, "user_2", "proj_1", created.ID, domain.ChangesetAccepted)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateChangesetStatus() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
