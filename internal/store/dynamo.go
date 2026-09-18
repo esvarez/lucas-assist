@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -86,6 +87,44 @@ func changesetSK(projectID, changesetID string) string {
 // one project's changesets (architecture.md §8).
 func changesetListSKPrefix(projectID string) string {
 	return projectScopeSKPrefix + projectID + "#CHANGESET#"
+}
+
+// agentRunNoProjectSegment is the fixed placeholder used in place of
+// <pid> for a create_project run, which has no ProjectID yet (that's the
+// whole point of the run — see domain.AgentRun). Every other skill's run
+// carries a real ProjectID and uses it directly.
+//
+// This is the concrete answer to the open question in issue #96: rather
+// than giving project-less runs a second, un-prefixed item shape (which
+// would need its own Query/Get code path for what's only ever one skill),
+// they get the same `P#<segment>#RUN#<run_id>` item as every other run,
+// just with a fixed segment instead of a real project ID. It's still
+// trivially distinguishable from a real project ID since NewID never
+// produces this exact string.
+const agentRunNoProjectSegment = "NOPROJECT"
+
+func agentRunProjectSegment(projectID string) string {
+	if projectID == "" {
+		return agentRunNoProjectSegment
+	}
+	return projectID
+}
+
+// agentRunSK builds an AgentRun's sort key. architecture.md §8 documents
+// this as `P#<pid>#RUN#<timestamp>#<run_id>`; the timestamp segment lives
+// inside run_id itself instead (domain.NewRunID), so the key GetAgentRun
+// needs is derivable from (projectID, runID) alone, no separate lookup for
+// the timestamp required — see NewRunID's doc comment.
+func agentRunSK(projectID, runID string) string {
+	return agentRunListSKPrefix(projectID) + runID
+}
+
+// agentRunListSKPrefix is the begins_with prefix that scopes a Query to one
+// project's (or the create_project placeholder's) agent runs. Because
+// run_id starts with a zero-padded timestamp, such a Query also returns
+// runs in chronological order.
+func agentRunListSKPrefix(projectID string) string {
+	return projectScopeSKPrefix + agentRunProjectSegment(projectID) + "#RUN#"
 }
 
 func toProjectItem(p domain.Project) projectItem {
@@ -615,6 +654,270 @@ func (r *DynamoRepository) UpdateChangesetStatus(ctx context.Context, userID, pr
 	var item changesetItem
 	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
 		return domain.Changeset{}, fmt.Errorf("unmarshal changeset item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// agentRunItem is the DynamoDB item shape for an agent run.
+type agentRunItem struct {
+	PK         string          `dynamodbav:"PK"`
+	SK         string          `dynamodbav:"SK"`
+	ID         string          `dynamodbav:"id"`
+	UserID     string          `dynamodbav:"user_id"`
+	ProjectID  string          `dynamodbav:"project_id,omitempty"`
+	Skill      string          `dynamodbav:"skill"`
+	Status     string          `dynamodbav:"status"`
+	Input      json.RawMessage `dynamodbav:"input,omitempty"`
+	Attempt    int             `dynamodbav:"attempt"`
+	WorkerID   string          `dynamodbav:"worker_id,omitempty"`
+	LeaseUntil *time.Time      `dynamodbav:"lease_until,omitempty"`
+	Error      string          `dynamodbav:"error,omitempty"`
+	CreatedAt  time.Time       `dynamodbav:"created_at"`
+	UpdatedAt  time.Time       `dynamodbav:"updated_at"`
+}
+
+func toAgentRunItem(r domain.AgentRun) agentRunItem {
+	return agentRunItem{
+		PK:         userPK(r.UserID),
+		SK:         agentRunSK(r.ProjectID, r.ID),
+		ID:         r.ID,
+		UserID:     r.UserID,
+		ProjectID:  r.ProjectID,
+		Skill:      r.Skill,
+		Status:     string(r.Status),
+		Input:      r.Input,
+		Attempt:    r.Attempt,
+		WorkerID:   r.WorkerID,
+		LeaseUntil: r.LeaseUntil,
+		Error:      r.Error,
+		CreatedAt:  r.CreatedAt,
+		UpdatedAt:  r.UpdatedAt,
+	}
+}
+
+func (i agentRunItem) toDomain() domain.AgentRun {
+	return domain.AgentRun{
+		ID:         i.ID,
+		UserID:     i.UserID,
+		ProjectID:  i.ProjectID,
+		Skill:      i.Skill,
+		Status:     domain.AgentRunStatus(i.Status),
+		Input:      i.Input,
+		Attempt:    i.Attempt,
+		WorkerID:   i.WorkerID,
+		LeaseUntil: i.LeaseUntil,
+		Error:      i.Error,
+		CreatedAt:  i.CreatedAt,
+		UpdatedAt:  i.UpdatedAt,
+	}
+}
+
+// CreateAgentRun writes a run item via a conditional PutItem
+// (attribute_not_exists(PK)) so an existing run is never overwritten. It
+// always sets Status to AgentRunQueued and resets Attempt/WorkerID/
+// LeaseUntil/Error, regardless of what the caller passed in run.
+func (r *DynamoRepository) CreateAgentRun(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
+	if run.ID == "" {
+		run.ID = domain.NewRunID()
+	}
+
+	now := time.Now().UTC()
+	run.Status = domain.AgentRunQueued
+	run.Attempt = 0
+	run.WorkerID = ""
+	run.LeaseUntil = nil
+	run.Error = ""
+	run.CreatedAt = now
+	run.UpdatedAt = now
+
+	item, err := attributevalue.MarshalMap(toAgentRunItem(run))
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal agent run item: %w", err)
+	}
+
+	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(r.table),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.AgentRun{}, ErrDuplicateID
+		}
+		return domain.AgentRun{}, fmt.Errorf("put agent run item: %w", err)
+	}
+
+	return run, nil
+}
+
+// GetAgentRun fetches a run by userID, projectID, and runID. Returns
+// ErrNotFound if no such item exists — including when it belongs to a
+// different user or a different project, since that item lives under a
+// different PK/SK entirely.
+func (r *DynamoRepository) GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	out, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
+		},
+	})
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("get agent run item: %w", err)
+	}
+	if out.Item == nil {
+		return domain.AgentRun{}, ErrNotFound
+	}
+
+	var item agentRunItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return domain.AgentRun{}, fmt.Errorf("unmarshal agent run item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// LeaseAgentRun conditionally moves a run from queued to running, or
+// reclaims a running run whose lease has already expired. The condition
+// mirrors MemoryRepository's: attribute_exists(#lease_until) guards the
+// expiry comparison so a queued run (which has no lease_until attribute at
+// all) can't make that branch error instead of simply evaluating false.
+//
+// ReturnValuesOnConditionCheckFailure distinguishes "no such run"
+// (ErrNotFound, no item at all) from "run exists but isn't leasable right
+// now" (ErrRunLeased) the same way UpdateProject distinguishes ErrNotFound
+// from ErrConflict.
+func (r *DynamoRepository) LeaseAgentRun(ctx context.Context, userID, projectID, runID, workerID string, leaseUntil time.Time) (domain.AgentRun, error) {
+	now := time.Now().UTC()
+
+	runningAV, err := attributevalue.Marshal(string(domain.AgentRunRunning))
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal running status: %w", err)
+	}
+	queuedAV, err := attributevalue.Marshal(string(domain.AgentRunQueued))
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal queued status: %w", err)
+	}
+	workerAV, err := attributevalue.Marshal(workerID)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal worker id: %w", err)
+	}
+	leaseUntilAV, err := attributevalue.Marshal(leaseUntil)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal lease until: %w", err)
+	}
+	nowAV, err := attributevalue.Marshal(now)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal now: %w", err)
+	}
+	updatedAtAV, err := attributevalue.Marshal(now)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal updated_at: %w", err)
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
+		},
+		UpdateExpression: aws.String("SET #status = :running, #worker_id = :worker_id, #lease_until = :lease_until, #updated_at = :updated_at ADD #attempt :one"),
+		ConditionExpression: aws.String(
+			"attribute_exists(PK) AND (#status = :queued OR (#status = :running AND attribute_exists(#lease_until) AND #lease_until < :now))",
+		),
+		ExpressionAttributeNames: map[string]string{
+			"#status":      "status",
+			"#worker_id":   "worker_id",
+			"#lease_until": "lease_until",
+			"#updated_at":  "updated_at",
+			"#attempt":     "attempt",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":running":     runningAV,
+			":queued":      queuedAV,
+			":worker_id":   workerAV,
+			":lease_until": leaseUntilAV,
+			":updated_at":  updatedAtAV,
+			":now":         nowAV,
+			":one":         &types.AttributeValueMemberN{Value: "1"},
+		},
+		ReturnValues:                        types.ReturnValueAllNew,
+		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			if len(condErr.Item) == 0 {
+				return domain.AgentRun{}, ErrNotFound
+			}
+			return domain.AgentRun{}, ErrRunLeased
+		}
+		return domain.AgentRun{}, fmt.Errorf("lease agent run item: %w", err)
+	}
+
+	var item agentRunItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.AgentRun{}, fmt.Errorf("unmarshal agent run item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// CompleteAgentRun sets a run's status to completed via a conditional
+// UpdateItem (attribute_exists(PK)). Like UpdateChangesetStatus, this is an
+// unconditional status set — enforcing that a run was actually leased
+// first belongs to the worker, not this primitive.
+func (r *DynamoRepository) CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunCompleted, "")
+}
+
+// FailAgentRun sets a run's status to failed and records errMsg, via the
+// same conditional UpdateItem as CompleteAgentRun.
+func (r *DynamoRepository) FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error) {
+	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunFailed, errMsg)
+}
+
+func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID, projectID, runID string, status domain.AgentRunStatus, errMsg string) (domain.AgentRun, error) {
+	now := time.Now().UTC()
+
+	statusAV, err := attributevalue.Marshal(string(status))
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal status: %w", err)
+	}
+	errAV, err := attributevalue.Marshal(errMsg)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal error: %w", err)
+	}
+	updatedAtAV, err := attributevalue.Marshal(now)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal updated_at: %w", err)
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
+		},
+		UpdateExpression:          aws.String("SET #status = :status, #error = :error, #updated_at = :updated_at"),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames:  map[string]string{"#status": "status", "#error": "error", "#updated_at": "updated_at"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":status": statusAV, ":error": errAV, ":updated_at": updatedAtAV},
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.AgentRun{}, ErrNotFound
+		}
+		return domain.AgentRun{}, fmt.Errorf("update agent run item: %w", err)
+	}
+
+	var item agentRunItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.AgentRun{}, fmt.Errorf("unmarshal agent run item: %w", err)
 	}
 
 	return item.toDomain(), nil
