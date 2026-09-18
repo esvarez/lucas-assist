@@ -5,6 +5,25 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>web</title>
+    <!--
+      Sets the .dark class before React (or even the stylesheet) has a
+      chance to paint, so there's no flash of the wrong theme on load.
+      Must run synchronously, inline, before body renders — a React
+      effect runs too late for this. Kept in sync with the resolution
+      order in hooks/use-theme.ts: stored preference, then OS preference.
+    -->
+    <script>
+      (function () {
+        var stored = localStorage.getItem('theme')
+        var theme =
+          stored === 'light' || stored === 'dark'
+            ? stored
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+        if (theme === 'dark') document.documentElement.classList.add('dark')
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>
