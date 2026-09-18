@@ -1,15 +1,12 @@
 import { Outlet } from 'react-router-dom'
-import { Button } from '@/components/ui/button'
+import ThemeToggle from '../components/ThemeToggle'
 
 function Layout() {
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <nav>Nudge</nav>
-        <h1 className="text-3xl font-bold underline">
-    Hello world!
-  </h1>
-  <Button>Click me</Button>
+    <div className="min-h-screen">
+      <header className="flex items-center justify-between border-b border-border px-4 py-3">
+        <nav className="text-sm font-bold">Nudge</nav>
+        <ThemeToggle />
       </header>
       <main>
         <Outlet />
