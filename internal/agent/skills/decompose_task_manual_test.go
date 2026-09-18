@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/esvarez/lucas-assist/internal/agent"
+	"github.com/esvarez/lucas-assist/internal/llm"
 )
 
 // These tests hit the real OpenAI API. They're skipped unless
@@ -17,9 +18,14 @@ import (
 
 func skipUnlessOpenAIKey(t *testing.T) {
 	t.Helper()
-	if os.Getenv("OPENAI_API_KEY") == "" {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
 		t.Skip("OPENAI_API_KEY not set; skipping real OpenAI call")
 	}
+	// llm.Client is a zero value until Init runs — cmd/local and
+	// cmd/skills call it at startup, but these tests exercise
+	// agent.Run() directly, so nothing else does.
+	llm.Init(apiKey)
 }
 
 func logDecomposeResult(t *testing.T, result DecomposeResult) {
