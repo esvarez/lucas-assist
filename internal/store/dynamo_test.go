@@ -79,7 +79,7 @@ func TestDynamoRepository_CreateProject(t *testing.T) {
 	got, err := repo.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(testTable),
 		Key: map[string]types.AttributeValue{
-			"PK": &types.AttributeValueMemberS{Value: projectPK(userID)},
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: projectSK(created.ID)},
 		},
 	})
@@ -366,5 +366,179 @@ func TestDynamoRepository_ListProjects_Empty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("ListProjects() = %+v, want empty", got)
+	}
+}
+
+func TestDynamoRepository_CreateTask(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateTask(ctx, userID, domain.Task{
+		ProjectID:          projectID,
+		Title:              "Add login command",
+		Description:        "Device-flow login for the CLI",
+		Status:             "pending",
+		AcceptanceCriteria: []string{"running `nudge login` prints a device code"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	if created.ID == "" {
+		t.Error("ID = \"\", want a generated ID")
+	}
+	if created.ProjectID != projectID || created.Title != "Add login command" {
+		t.Errorf("CreateTask() = %+v, want ProjectID/Title preserved from input", created)
+	}
+
+	got, err := repo.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(testTable),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: taskSK(projectID, created.ID)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetItem() error = %v", err)
+	}
+	if got.Item == nil {
+		t.Fatalf("GetItem() found no item for task %q", created.ID)
+	}
+}
+
+func TestDynamoRepository_CreateTask_DuplicateID(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	id := "dup-" + domain.NewID()
+
+	if _, err := repo.CreateTask(ctx, userID, domain.Task{ID: id, ProjectID: projectID, Title: "First"}); err != nil {
+		t.Fatalf("first CreateTask() error = %v", err)
+	}
+
+	_, err := repo.CreateTask(ctx, userID, domain.Task{ID: id, ProjectID: projectID, Title: "Second"})
+	if !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("second CreateTask() error = %v, want %v", err, ErrDuplicateID)
+	}
+}
+
+func TestDynamoRepository_GetTask(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateTask(ctx, userID, domain.Task{
+		ProjectID:          projectID,
+		Title:              "Add login command",
+		AcceptanceCriteria: []string{"running `nudge login` prints a device code"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	got, err := repo.GetTask(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, created) {
+		t.Errorf("GetTask() = %+v, want %+v", got, created)
+	}
+}
+
+func TestDynamoRepository_GetTask_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.GetTask(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_GetTask_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateTask(ctx, testUserID(), domain.Task{ProjectID: projectID, Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	_, err = repo.GetTask(ctx, testUserID(), projectID, created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_GetTask_WrongProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: "proj-" + domain.NewID(), Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	_, err = repo.GetTask(ctx, userID, "proj-"+domain.NewID(), created.ID)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask() with wrong projectID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_ListTasks(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+	otherProjectID := "proj-" + domain.NewID()
+
+	want := make(map[string]bool)
+	for _, title := range []string{"First", "Second"} {
+		created, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: projectID, Title: title})
+		if err != nil {
+			t.Fatalf("CreateTask() error = %v", err)
+		}
+		want[created.ID] = true
+	}
+
+	if _, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: otherProjectID, Title: "Different project"}); err != nil {
+		t.Fatalf("CreateTask() for other project error = %v", err)
+	}
+	if _, err := repo.CreateTask(ctx, testUserID(), domain.Task{ProjectID: projectID, Title: "Different user"}); err != nil {
+		t.Fatalf("CreateTask() for other user error = %v", err)
+	}
+
+	got, err := repo.ListTasks(ctx, userID, projectID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+
+	if len(got) != len(want) {
+		t.Errorf("ListTasks() returned %d tasks, want %d", len(got), len(want))
+	}
+	for _, task := range got {
+		if !want[task.ID] {
+			t.Errorf("ListTasks(%q, %q) returned unexpected task %q (projectID %q)", userID, projectID, task.ID, task.ProjectID)
+		}
+	}
+}
+
+func TestDynamoRepository_ListTasks_Empty(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	got, err := repo.ListTasks(ctx, testUserID(), "proj-"+domain.NewID())
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListTasks() = %+v, want empty", got)
 	}
 }

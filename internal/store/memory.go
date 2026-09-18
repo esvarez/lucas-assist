@@ -13,10 +13,22 @@ import (
 type MemoryRepository struct {
 	mu       sync.Mutex
 	projects map[string]domain.Project
+	tasks    map[string]taskRecord
+}
+
+// taskRecord pairs a Task with the userID it was created under. domain.Task
+// itself carries no UserID (only ProjectID) — see store.Repository's doc
+// comment — so the owning user has to be tracked alongside it here instead.
+type taskRecord struct {
+	domain.Task
+	UserID string
 }
 
 func NewMemoryRepository() *MemoryRepository {
-	return &MemoryRepository{projects: make(map[string]domain.Project)}
+	return &MemoryRepository{
+		projects: make(map[string]domain.Project),
+		tasks:    make(map[string]taskRecord),
+	}
 }
 
 func (r *MemoryRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
@@ -91,4 +103,42 @@ func (r *MemoryRepository) ListProjects(ctx context.Context, userID string) ([]d
 		}
 	}
 	return projects, nil
+}
+
+func (r *MemoryRepository) CreateTask(ctx context.Context, userID string, t domain.Task) (domain.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if t.ID == "" {
+		t.ID = domain.NewID()
+	} else if _, exists := r.tasks[t.ID]; exists {
+		return domain.Task{}, ErrDuplicateID
+	}
+
+	r.tasks[t.ID] = taskRecord{Task: t, UserID: userID}
+	return t, nil
+}
+
+func (r *MemoryRepository) GetTask(ctx context.Context, userID, projectID, taskID string) (domain.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, ok := r.tasks[taskID]
+	if !ok || rec.UserID != userID || rec.ProjectID != projectID {
+		return domain.Task{}, ErrNotFound
+	}
+	return rec.Task, nil
+}
+
+func (r *MemoryRepository) ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tasks := make([]domain.Task, 0)
+	for _, rec := range r.tasks {
+		if rec.UserID == userID && rec.ProjectID == projectID {
+			tasks = append(tasks, rec.Task)
+		}
+	}
+	return tasks, nil
 }
