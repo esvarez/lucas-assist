@@ -5,6 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '../api/projects'
+import { statusBadgeClassName } from '../lib/project-status'
 
 function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -58,7 +59,9 @@ function ProjectDetailPage() {
 
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold">{project.name}</h1>
-        <Badge variant="secondary">{project.status}</Badge>
+        <Badge variant="outline" className={statusBadgeClassName(project.status)}>
+          {project.status}
+        </Badge>
       </div>
 
       {project.goal && <p className="text-sm text-muted-foreground">{project.goal}</p>}
