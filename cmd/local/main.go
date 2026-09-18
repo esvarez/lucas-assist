@@ -13,6 +13,7 @@ import (
 	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/agent/skills"
 	"github.com/esvarez/lucas-assist/internal/api"
+	"github.com/esvarez/lucas-assist/internal/llm"
 	"github.com/esvarez/lucas-assist/internal/skillsapi"
 	"github.com/esvarez/lucas-assist/internal/store"
 )
@@ -26,6 +27,10 @@ func getenv(key, fallback string) string {
 
 func main() {
 	ctx := context.Background()
+
+	// Local dev is the one path allowed to read this straight from the
+	// environment (architecture.md §16); cmd/skills resolves it from SSM.
+	llm.Init(os.Getenv("OPENAI_API_KEY"))
 
 	endpoint := getenv("DYNAMODB_ENDPOINT", "http://localhost:8000")
 	client, err := store.NewLocalDynamoDBClient(ctx, endpoint)

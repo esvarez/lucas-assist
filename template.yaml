@@ -23,10 +23,6 @@ Parameters:
     Default: dev
     AllowedValues: [dev, staging, prod]
     Description: Deployment environment
-  OpenAIApiKey:
-    Type: String
-    NoEcho: true
-    Description: OpenAI API key used by skill Lambdas
 
 # ─────────────────────────────────────────────
 # Resources
@@ -119,6 +115,18 @@ Resources:
   # CRUD API, not a regression. The IAM-signed Function URL is kept as a
   # narrower, SigV4-only calling path until GitHub OAuth lands; drop it
   # then if nothing still uses it.
+  #
+  # The OpenAI key is resolved at runtime from SSM Parameter Store, not a
+  # SAM parameter (architecture.md §18) — it never transits CloudFormation
+  # as plaintext. Deploy prerequisite, run once per environment before the
+  # first deploy:
+  #   aws ssm put-parameter \
+  #     --name /${Environment}/nudge/openai-api-key \
+  #     --type SecureString \
+  #     --value <key>
+  # Only this function's role can read it; ApiFunction has neither the env
+  # var nor the IAM permission (architecture.md §14: "Allow only the
+  # Worker to read the OpenAI credential").
   SkillsFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -134,7 +142,17 @@ Resources:
         AuthType: AWS_IAM
       Environment:
         Variables:
-          OPENAI_API_KEY: !Ref OpenAIApiKey
+          OPENAI_API_KEY_PARAM: !Sub /${Environment}/nudge/openai-api-key
+      Policies:
+        - Statement:
+            - Sid: ReadOpenAIKeyParameter
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Environment}/nudge/openai-api-key
+            - Sid: DecryptOpenAIKeyParameter
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/ssm
       Events:
         SkillsApiEvent:
           Type: HttpApi
