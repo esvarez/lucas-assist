@@ -34,7 +34,7 @@ function ProjectCard({ project }: { project: Project }) {
 
   return (
     <Link to={`/projects/${project.id}`}>
-      <Card className="h-full transition-colors hover:bg-accent">
+      <Card className="h-full transition-colors">
         <CardHeader>
           <div className="flex items-start justify-between gap-2">
             <CardTitle>{project.name}</CardTitle>

@@ -14,6 +14,7 @@ import { listTasks, type Task } from '@/src/api/tasks'
 import WhatsNextCard from '@/src/components/WhatsNextCard'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
+import { LightRays } from '@/components/ui/light-rays'
 
 function ProjectDetailHeader({ project }: { project: Project }) {
   return (
@@ -151,6 +152,10 @@ function ProjectDetailPage() {
           Deadline: {new Date(project.deadline).toLocaleDateString()}
         </p>
       )}
+
+{/* <div className="relative h-[400px] w-full overflow-hidden rounded-xl border">
+  <LightRays color="rgba(0, 120, 111)"/>
+</div> */}
 
       {project.constraints.length > 0 && (
         <div className="flex flex-col gap-1">

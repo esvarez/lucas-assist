@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
+import { LightRays } from '@/components/ui/light-rays'
 
 export function pickNextTask(tasks: Task[]): Task | null {
   const sorted = [...tasks].sort((a, b) => a.order - b.order)
@@ -42,7 +43,8 @@ function WhatsNextCard({ projectId }: { projectId: string }) {
   const alreadyInProgress = task.status === 'in-progress'
 
   return (
-    <Card className="border border-primary ring-0">
+    <Card className="relative overflow-hidden border border-primary ring-0">
+      <LightRays color="rgba(0, 120, 111, 0.2)"/>
       <CardHeader>
         <div className="flex items-center gap-2">
           <span className="size-1.5 rounded-full bg-primary" aria-hidden />
@@ -67,6 +69,7 @@ function WhatsNextCard({ projectId }: { projectId: string }) {
           Ask Nudge
         </Button>
       </CardFooter>
+      
     </Card>
   )
 }
