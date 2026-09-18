@@ -6,7 +6,7 @@
 
 **Scope:** Proof of concept and MVP
 
-**Revision:** 2.0 · 10 September 2026
+**Revision:** 2.1 · 17 September 2026
 
 ---
 
@@ -23,10 +23,15 @@ flowchart TB
     Worker["Agent Worker Lambda in Go"]
     DDB[("DynamoDB single table")]
     OAI["OpenAI Responses API"]
+    Cognito[("Amazon Cognito User Pool")]
+    GitHub["GitHub OAuth"]
 
+    Client -->|"login"| Cognito
+    Cognito -->|"federated identity"| GitHub
     Client --> CF
     CF -->|"static assets"| S3
     CF -->|"API requests"| APIGW
+    APIGW -->|"verify JWT"| Cognito
     APIGW --> API
     API -->|"CRUD and approved commits"| DDB
     API -->|"agent request"| Queue
@@ -36,7 +41,7 @@ flowchart TB
     Client -->|"poll job and review changeset"| APIGW
 ```
 
-All compute runs outside a VPC. DynamoDB is accessed with IAM authorization and OpenAI through outbound internet access. The MVP does not require a NAT Gateway.
+All compute runs outside a VPC. DynamoDB is accessed with IAM authorization and OpenAI through outbound internet access. The MVP does not require a NAT Gateway. Amazon Cognito is the identity and token provider; API Gateway validates every request with a Cognito JWT authorizer before it reaches the API Lambda.
 
 The agent core is a set of shared Go packages compiled into the Agent Worker. It contains the context assembler, skill registry, deterministic selectors, changeset validator and provider adapter. It is not deployed as an independent service.
 
@@ -424,15 +429,16 @@ Add WebSocket or streaming only if user testing shows that waiting for a complet
 
 ## 11. Lambda deployment units
 
-Use two primary functions and one optional authentication function.
+Use two primary functions. Amazon Cognito owns login, token issuance and refresh, so the application no longer needs a dedicated auth Lambda for those responsibilities.
 
 | Function | Profile | Responsibility |
 | --- | --- | --- |
 | API Lambda | Small memory and short timeout | CRUD, validation, job creation and changeset commit. |
 | Agent Worker | Higher memory and controlled concurrency | Context assembly, Responses API, read tools and changeset validation. |
-| Auth Lambda | Small memory and short timeout | GitHub callback, device flow and refresh tokens if separation improves security. |
 
 Skills remain packages inside the Agent Worker. Function-per-skill is unnecessary until different workloads require independent scaling or permissions.
+
+If GitHub federation into the Cognito User Pool requires an OIDC shim (see §12), that shim is a small Lambda owned by the identity provider configuration, not by the application API.
 
 The API uses normal `net/http` handlers so local execution does not depend on SAM emulation. Router choice is an implementation detail and should not be fixed in the architecture unless a required feature depends on it.
 
@@ -440,27 +446,33 @@ The API uses normal `net/http` handlers so local execution does not depend on SA
 
 ## 12. Authentication
 
-GitHub remains the only MVP identity provider because the intended users are developers and the CLI is a first-class client.
+Amazon Cognito is the identity and token provider for both clients. GitHub remains the source of developer identity because the intended users are developers, but Cognito — not application code — issues, verifies and rotates every token used against the API.
 
 | Client | Flow |
 | --- | --- |
-| Web SPA | Authorization code with PKCE. |
-| CLI | GitHub device flow. |
+| Web SPA | Cognito Hosted UI, authorization code with PKCE, GitHub as a federated identity provider. |
+| CLI | Authorization code with PKCE against the same Cognito Hosted UI, using a local loopback redirect. |
 
-The application uses a generated internal UUID as the user ID. Provider identifiers never become DynamoDB ownership keys.
+GitHub does not publish an OIDC discovery document, so it cannot be added to the Cognito User Pool as a built-in social provider. Federating it requires one of:
+
+- A thin Lambda-backed OIDC shim in front of GitHub's OAuth endpoints, registered with Cognito as a generic OIDC identity provider, or
+- Native Cognito User Pool accounts linked to a verified GitHub identity through a pre-token-generation or post-confirmation Lambda trigger.
+
+This decision is open; see §21. Whichever option is chosen, it is the only authentication-specific compute the MVP still owns — Cognito itself is not a Lambda deployment unit.
+
+The application uses the Cognito `sub` claim, mapped to a generated internal UUID, as the user ID. Provider identifiers never become DynamoDB ownership keys.
 
 ### Application tokens
 
-- Short-lived access token.
-- Rotatable signing key.
-- Opaque refresh token stored hashed in DynamoDB.
-- Refresh-token TTL and revocation.
+- Cognito issues short-lived ID and access tokens (JWT) and manages refresh token TTL and revocation.
+- API Gateway validates every request with a Cognito JWT authorizer; the API Lambda trusts the authorizer and never re-verifies signatures itself.
+- Refresh tokens are held by Cognito, not stored or hashed by the application.
 - Secure, HttpOnly and SameSite cookie for the web client.
 - File with mode `0600` or operating-system credential store for the CLI.
 
-Use asymmetric signing if several independently deployed services must verify tokens or key rotation becomes difficult. HS256 is acceptable only while one tightly controlled backend owns both issuance and verification.
+Signing-key rotation, algorithm choice and refresh-token revocation are Cognito's responsibility, not an application concern.
 
-Do not store a GitHub access token until a shipped feature needs GitHub API access. When it becomes necessary, request the minimum scopes and encrypt the token separately from general project data.
+Do not store a GitHub access token until a shipped feature needs GitHub API access beyond identity. When it becomes necessary, request the minimum scopes and encrypt the token separately from general project data.
 
 The POC has no authentication.
 
@@ -594,7 +606,8 @@ cli
 
 ## 18. Infrastructure
 
-- API Gateway HTTP API.
+- API Gateway HTTP API with a Cognito JWT authorizer.
+- Amazon Cognito User Pool (and Hosted UI) for authentication, with GitHub federated as the identity provider.
 - Lambda using Go on Amazon Linux 2023.
 - SQS queue and dead letter queue.
 - DynamoDB single table with on-demand capacity initially.
@@ -637,8 +650,9 @@ This order validates the uncertain product and model behavior before investing i
 | ADR 008 | Defer Step Functions and EventBridge. | Accepted | No current workflow or subscriber requires them. |
 | ADR 009 | Limit accepted changesets to 50 mutations. | Accepted | Keeps each commit atomic and leaves room for bookkeeping. |
 | ADR 010 | Keep projects single-owner in the MVP. | Accepted | Matches the initial product and simplifies authorization. |
-| ADR 011 | Use GitHub as the initial identity provider. | Proposed | Fits the developer audience and CLI, but requires secure token lifecycle implementation. |
+| ADR 011 | Use GitHub as the initial identity provider. | Accepted | Fits the developer audience and CLI. |
 | ADR 012 | Defer vector search. | Accepted | Structured queries and read tools cover the expected working set. |
+| ADR 013 | Use Amazon Cognito as the token issuer and verifier for both clients, with GitHub federated into the User Pool. | Accepted | Removes custom JWT signing, key rotation and refresh-token storage from the application; API Gateway can verify tokens with a built-in JWT authorizer. |
 
 ---
 
@@ -655,8 +669,8 @@ This order validates the uncertain product and model behavior before investing i
 ### Resolve before authentication implementation
 
 - Does the MVP require both web and CLI, or can CLI wait?
-- Which component issues and rotates application signing keys?
-- Where are web refresh tokens scoped and revoked?
+- Does GitHub federation into Cognito use an OIDC shim Lambda or a Lambda trigger against native User Pool accounts?
+- Does the CLI's loopback-redirect PKCE flow need a fallback for headless or remote environments?
 - Is GitHub API access required in the MVP or only authentication?
 
 ### Decide from user testing
