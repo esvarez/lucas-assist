@@ -26,16 +26,17 @@ const projectsByUser = new Map()
 /** @type {Map<string, any[]>} tasks keyed by project id */
 const tasksByProject = new Map()
 
-function makeTask(projectId, order, title, status) {
+function makeTask(projectId, order, title, status, description = '', parentId = '') {
   return {
     id: randomUUID(),
     project_id: projectId,
-    parent_id: '',
+    parent_id: parentId,
     title,
-    description: '',
+    description,
     status,
     order,
     acceptance_criteria: [],
+    subtasks: [],
   }
 }
 
@@ -66,16 +67,43 @@ function seed(userId) {
 
   projectsByUser.set(userId, [tidepool, fernweg])
 
+  const cli = makeTask(
+    tidepool.id,
+    3,
+    'CLI sync command',
+    'in-progress',
+    'The storage layer and conflict resolution are done, but the CLI command has no clear next step yet.',
+  )
+  cli.subtasks.push(
+    makeTask(tidepool.id, 0, 'Add a sync command', 'done', '', cli.id),
+    makeTask(tidepool.id, 1, 'Handle auth errors', 'in-progress', '', cli.id),
+  )
+
+  const indicator = makeTask(tidepool.id, 4, 'Web app sync indicator', 'todo')
+  indicator.subtasks.push(makeTask(tidepool.id, 0, 'Show last-synced time', 'todo', '', indicator.id))
+
+  const pdf = makeTask(
+    fernweg.id,
+    1,
+    'Itinerary import from PDF',
+    'todo',
+    'The trip data model is in place, but PDF import has no clear next step yet.',
+  )
+  pdf.subtasks.push(
+    makeTask(fernweg.id, 0, 'Parse PDF layout', 'todo', '', pdf.id),
+    makeTask(fernweg.id, 1, 'Map fields to the trip model', 'blocked', '', pdf.id),
+  )
+
   tasksByProject.set(tidepool.id, [
     makeTask(tidepool.id, 0, 'Design the sync protocol', 'done'),
     makeTask(tidepool.id, 1, 'Local-first storage layer', 'done'),
     makeTask(tidepool.id, 2, 'Conflict resolution for offline edits', 'done'),
-    makeTask(tidepool.id, 3, 'CLI sync command', 'in-progress'),
-    makeTask(tidepool.id, 4, 'Web app sync indicator', 'todo'),
+    cli,
+    indicator,
   ])
   tasksByProject.set(fernweg.id, [
     makeTask(fernweg.id, 0, 'Trip data model', 'done'),
-    makeTask(fernweg.id, 1, 'Itinerary import from PDF', 'todo'),
+    pdf,
     makeTask(fernweg.id, 2, 'Offline maps cache', 'todo'),
     makeTask(fernweg.id, 3, 'Packing list generator', 'todo'),
   ])
@@ -90,9 +118,20 @@ function getProjects(userId) {
 // progress bar has something to show right after creating one in the demo.
 function getTasks(projectId) {
   if (!tasksByProject.has(projectId)) {
+    const scaffolding = makeTask(
+      projectId,
+      1,
+      'Set up the initial scaffolding',
+      'todo',
+      'Scope is defined, but the initial scaffolding has no clear next step yet.',
+    )
+    scaffolding.subtasks.push(
+      makeTask(projectId, 0, 'Create the repo', 'done', '', scaffolding.id),
+      makeTask(projectId, 1, 'Add CI', 'todo', '', scaffolding.id),
+    )
     tasksByProject.set(projectId, [
       makeTask(projectId, 0, 'Define the project scope', 'done'),
-      makeTask(projectId, 1, 'Set up the initial scaffolding', 'todo'),
+      scaffolding,
       makeTask(projectId, 2, 'Write the first test', 'todo'),
     ])
   }

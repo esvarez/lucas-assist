@@ -6,10 +6,9 @@
 // endpoint, is what would actually commit them). Only web/mock-server.mjs
 // serves GET /projects/:id/tasks right now.
 //
-// Task mirrors internal/domain.Task field-for-field, same convention as
-// Project in ./projects.ts, so this is a straight port once the real
-// endpoint exists.
-import { getUserId } from './projects'
+// Task mirrors internal/domain.Task field-for-field, plus `subtasks`
+// nested on the mock response (empty array when a task has none).
+import { getUserId } from '@/src/api/projects'
 
 export interface Task {
   id: string
@@ -20,6 +19,20 @@ export interface Task {
   status: string
   order: number
   acceptance_criteria: string[]
+  subtasks: Task[]
+}
+
+type TaskPayload = Omit<Task, 'subtasks'> & { subtasks?: TaskPayload[] }
+
+function normalizeTask(task: TaskPayload): Task {
+  return {
+    ...task,
+    subtasks: (task.subtasks ?? []).map(normalizeTask).sort((a, b) => a.order - b.order),
+  }
+}
+
+export function flattenTasks(tasks: Task[]): Task[] {
+  return tasks.flatMap((task) => [task, ...flattenTasks(task.subtasks)])
 }
 
 export async function listTasks(projectId: string): Promise<Task[]> {
@@ -28,5 +41,6 @@ export async function listTasks(projectId: string): Promise<Task[]> {
   if (!res.ok) {
     throw new Error(`list tasks failed with status ${res.status}`)
   }
-  return res.json() as Promise<Task[]>
+  const body = (await res.json()) as TaskPayload[]
+  return body.map(normalizeTask).sort((a, b) => a.order - b.order)
 }
