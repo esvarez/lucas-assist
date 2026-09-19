@@ -6,7 +6,13 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Label } from '@/components/ui/label'
+import {
+  Item,
+  ItemContent,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from '@/components/ui/item'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
@@ -27,6 +33,45 @@ function ProjectDetailHeader({ project }: { project: Project }) {
   )
 }
 
+function TaskCheckRow({
+  task,
+  onToggleDone,
+  variant = 'default',
+}: {
+  task: Task
+  onToggleDone: (done: boolean) => void
+  variant?: 'default' | 'outline'
+}) {
+  return (
+    <Item variant={variant} size="sm">
+      <ItemMedia>
+        <Checkbox
+          checked={task.status === 'done'}
+          onCheckedChange={(value) => onToggleDone(value === true)}
+        />
+      </ItemMedia>
+      <ItemContent className="flex-row items-center justify-between">
+        <ItemTitle className={task.status === 'done' ? 'text-muted-foreground line-through' : undefined}>
+          {task.title}
+        </ItemTitle>
+        <ItemTitle className={taskStatusClassName(task.status)}>{taskStatusLabel(task.status)}</ItemTitle>
+      </ItemContent>
+    </Item>
+  )
+}
+
+function LeafTask({ task: initial }: { task: Task }) {
+  const [task, setTask] = useState(initial)
+
+  return (
+    <TaskCheckRow
+      task={task}
+      variant="outline"
+      onToggleDone={(done) => setTask({ ...task, status: done ? 'done' : 'todo' })}
+    />
+  )
+}
+
 function TaskAccordion({ task }: { task: Task }) {
   const [subtasks, setSubtasks] = useState(task.subtasks)
   const done = subtasks.filter((subtask) => subtask.status === 'done').length
@@ -38,43 +83,31 @@ function TaskAccordion({ task }: { task: Task }) {
           <span className="flex flex-1 items-center justify-between gap-2">
             <span>{task.title}</span>
             <span>
-              {subtasks.length > 0 ? `${done}/${subtasks.length} ` : null}
+              {done}/{subtasks.length}{' '}
               <span className={taskStatusClassName(task.status)}>{taskStatusLabel(task.status)}</span>
             </span>
           </span>
         </AccordionTrigger>
-        {subtasks.length > 0 && (
-          <div>
-            <Progress
-              value={(done / subtasks.length) * 100}
-              className="[&_[data-slot=progress-track]]:rounded-none!"
-            />
-          </div>
-        )}
+        <div>
+          <Progress
+            value={(done / subtasks.length) * 100}
+            className="[&_[data-slot=progress-track]]:rounded-none!"
+          />
+        </div>
         <AccordionContent>
           <ul className="flex flex-col gap-2 pt-2">
             {subtasks.map((subtask) => (
-              <li key={subtask.id} className="flex items-center justify-between gap-2">
-                <Label className="min-w-0 flex-1 font-normal">
-                  <Checkbox
-                    checked={subtask.status === 'done'}
-                    onCheckedChange={(value) =>
-                      setSubtasks((current) =>
-                        current.map((item) =>
-                          item.id === subtask.id
-                            ? { ...item, status: value === true ? 'done' : 'todo' }
-                            : item,
-                        ),
-                      )
-                    }
-                  />
-                  <span className={subtask.status === 'done' ? 'text-muted-foreground line-through' : undefined}>
-                    {subtask.title}
-                  </span>
-                </Label>
-                <span className={`shrink-0 ${taskStatusClassName(subtask.status)}`}>
-                  {taskStatusLabel(subtask.status)}
-                </span>
+              <li key={subtask.id}>
+                <TaskCheckRow
+                  task={subtask}
+                  onToggleDone={(done) =>
+                    setSubtasks((current) =>
+                      current.map((item) =>
+                        item.id === subtask.id ? { ...item, status: done ? 'done' : 'todo' } : item,
+                      ),
+                    )
+                  }
+                />
               </li>
             ))}
           </ul>
@@ -82,6 +115,13 @@ function TaskAccordion({ task }: { task: Task }) {
       </AccordionItem>
     </Accordion>
   )
+}
+
+function TaskItem({ task }: { task: Task }) {
+  if (task.subtasks.length === 0) {
+    return <LeafTask task={task} />
+  }
+  return <TaskAccordion task={task} />
 }
 
 function ProjectDetailPage() {
@@ -165,9 +205,11 @@ function ProjectDetailPage() {
 
       <h2 className="text-lg font-bold">Tasks</h2>
 
-      {tasks.map((task) => (
-        <TaskAccordion key={task.id} task={task} />
-      ))}
+      <ItemGroup>
+        {tasks.map((task) => (
+          <TaskItem key={task.id} task={task} />
+        ))}
+      </ItemGroup>
 
     </div>
   )
