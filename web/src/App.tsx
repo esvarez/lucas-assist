@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import Layout from './layout/Layout'
-import ProjectsPage from './routes/ProjectsPage'
-import ProjectDetailPage from './routes/ProjectDetailPage'
+import Layout from '@/src/layout/Layout'
+import ProjectsPage from '@/src/routes/ProjectsPage'
+import ProjectDetailPage from '@/src/routes/ProjectDetailPage'
 
 function App() {
   return (

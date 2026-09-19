@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiError, ValidationError, createProject } from '../api/projects'
+import { ApiError, ValidationError, createProject } from '@/src/api/projects'
 import { cn } from '@/lib/utils'
 
 // Fields this form renders — anything the server flags outside this set
