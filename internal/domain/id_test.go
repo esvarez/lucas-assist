@@ -65,3 +65,25 @@ func TestNewRunID_ChronologicallySortable(t *testing.T) {
 		t.Errorf("NewRunID() = %q then %q, want lexically increasing IDs", first, second)
 	}
 }
+
+func TestNewEventID(t *testing.T) {
+	id := NewEventID()
+
+	if id == "" {
+		t.Fatal("NewEventID() = \"\", want a non-empty ID")
+	}
+
+	if esc := url.QueryEscape(id); esc != id {
+		t.Errorf("NewEventID() = %q, not URL-safe (escapes to %q)", id, esc)
+	}
+}
+
+func TestNewEventID_ChronologicallySortable(t *testing.T) {
+	first := NewEventID()
+	time.Sleep(time.Millisecond)
+	second := NewEventID()
+
+	if first >= second {
+		t.Errorf("NewEventID() = %q then %q, want lexically increasing IDs", first, second)
+	}
+}

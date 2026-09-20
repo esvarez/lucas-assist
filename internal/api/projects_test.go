@@ -96,6 +96,7 @@ type stubRepository struct {
 	updateErr error
 	getErr    error
 	listErr   error
+	acceptErr error
 }
 
 func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
@@ -116,6 +117,10 @@ func (s stubRepository) GetProject(ctx context.Context, userID, id string) (doma
 
 func (s stubRepository) ListProjects(ctx context.Context, userID string) ([]domain.Project, error) {
 	return nil, s.listErr
+}
+
+func (s stubRepository) AcceptChangeset(ctx context.Context, in store.AcceptChangesetInput) (store.AcceptChangesetResult, error) {
+	return store.AcceptChangesetResult{}, s.acceptErr
 }
 
 func TestCreateProject_DuplicateID(t *testing.T) {

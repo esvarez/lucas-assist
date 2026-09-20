@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/esvarez/lucas-assist/internal/domain"
+	"github.com/esvarez/lucas-assist/internal/store"
 )
 
 // ProjectRepository is the slice of store.Repository the API package
@@ -22,6 +23,10 @@ type ProjectRepository interface {
 	ListProjects(ctx context.Context, userID string) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, userID, id string) error
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
+
+	// AcceptChangeset backs POST /projects/{id}/changesets/{changesetId}/accept
+	// — see store.Repository's doc comment for the full contract.
+	AcceptChangeset(ctx context.Context, in store.AcceptChangesetInput) (store.AcceptChangesetResult, error)
 }
 
 // NewRouter builds the API's route table against repo.
@@ -32,5 +37,6 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("GET /projects/{id}", getProjectHandler(repo))
 	mux.HandleFunc("PUT /projects/{id}", updateProjectHandler(repo))
 	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
+	mux.HandleFunc("POST /projects/{id}/changesets/{changesetId}/accept", acceptChangesetHandler(repo))
 	return mux
 }

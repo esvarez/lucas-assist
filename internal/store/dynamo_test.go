@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
@@ -1040,5 +1041,242 @@ func TestDynamoRepository_FailAgentRun_NotFound(t *testing.T) {
 	_, err := repo.FailAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), "boom")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("FailAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+// setupDynamoAcceptChangeset creates a project and a proposed changeset
+// with n ProposedTasks against it, ready to accept.
+func setupDynamoAcceptChangeset(t *testing.T, repo *DynamoRepository, userID string, n int) (domain.Project, domain.Changeset) {
+	t.Helper()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge", Goal: "Ship the POC"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	proposed := make([]domain.ProposedTask, n)
+	for i := range proposed {
+		proposed[i] = domain.ProposedTask{Title: fmt.Sprintf("Task %d", i)}
+	}
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID:        userID,
+		ProjectID:     project.ID,
+		Skill:         "decompose_task",
+		BaseVersion:   project.Version,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: proposed,
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	return project, changeset
+}
+
+func TestDynamoRepository_AcceptChangeset(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	userID := testUserID()
+	project, changeset := setupDynamoAcceptChangeset(t, repo, userID, 2)
+
+	result, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         userID,
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key-" + domain.NewID(),
+		RequestHash:    "hash_1",
+	})
+	if err != nil {
+		t.Fatalf("AcceptChangeset() error = %v", err)
+	}
+
+	if len(result.Tasks) != 2 {
+		t.Fatalf("Tasks = %+v, want 2 tasks", result.Tasks)
+	}
+	for i, task := range result.Tasks {
+		if task.ProjectID != project.ID {
+			t.Errorf("Tasks[%d].ProjectID = %q, want %q", i, task.ProjectID, project.ID)
+		}
+	}
+	if result.Project.Version != project.Version+1 {
+		t.Errorf("Project.Version = %d, want %d (incremented)", result.Project.Version, project.Version+1)
+	}
+
+	gotChangeset, err := repo.GetChangeset(context.Background(), userID, project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetApplied {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetApplied)
+	}
+
+	// The Event isn't independently readable through store.Repository yet
+	// (no GetEvent — out of scope per #77), so confirm it landed by reading
+	// the raw item directly, same as the other Dynamo tests do for keys
+	// with no Get* method.
+	var foundEvent bool
+	paginator := dynamodb.NewQueryPaginator(repo.client, &dynamodb.QueryInput{
+		TableName:              aws.String(testTable),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":       &types.AttributeValueMemberS{Value: userPK(userID)},
+			":skPrefix": &types.AttributeValueMemberS{Value: eventListSKPrefix(project.ID)},
+		},
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(context.Background())
+		if err != nil {
+			t.Fatalf("query event items: %v", err)
+		}
+		if len(page.Items) > 0 {
+			foundEvent = true
+		}
+	}
+	if !foundEvent {
+		t.Error("no Event item found for the accepted changeset")
+	}
+}
+
+func TestDynamoRepository_AcceptChangeset_VersionConflict(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	userID := testUserID()
+	project, changeset := setupDynamoAcceptChangeset(t, repo, userID, 1)
+
+	// Bump the project's version out from under the changeset's BaseVersion.
+	if _, err := repo.UpdateProject(context.Background(), userID, domain.Project{ID: project.ID, Version: project.Version}); err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         userID,
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key-" + domain.NewID(),
+		RequestHash:    "hash_1",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrConflict)
+	}
+
+	gotChangeset, err := repo.GetChangeset(context.Background(), userID, project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetConflict {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetConflict)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), userID, project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("ListTasks() = %+v, want none created on a conflicting accept", tasks)
+	}
+}
+
+func TestDynamoRepository_AcceptChangeset_NotProposed(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	userID := testUserID()
+	project, changeset := setupDynamoAcceptChangeset(t, repo, userID, 1)
+
+	if _, err := repo.UpdateChangesetStatus(context.Background(), userID, project.ID, changeset.ID, domain.ChangesetRejected); err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         userID,
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key-" + domain.NewID(),
+		RequestHash:    "hash_1",
+	})
+	if !errors.Is(err, ErrChangesetNotProposed) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrChangesetNotProposed)
+	}
+}
+
+func TestDynamoRepository_AcceptChangeset_TooLarge(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	userID := testUserID()
+	project, changeset := setupDynamoAcceptChangeset(t, repo, userID, maxChangesetMutations+1)
+
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         userID,
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key-" + domain.NewID(),
+		RequestHash:    "hash_1",
+	})
+	if !errors.Is(err, ErrChangesetTooLarge) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrChangesetTooLarge)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), userID, project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("ListTasks() = %+v, want none created for a rejected oversized changeset", tasks)
+	}
+}
+
+func TestDynamoRepository_AcceptChangeset_IdempotentReplay(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	userID := testUserID()
+	project, changeset := setupDynamoAcceptChangeset(t, repo, userID, 2)
+
+	in := AcceptChangesetInput{
+		UserID:         userID,
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key-" + domain.NewID(),
+		RequestHash:    "hash_1",
+	}
+
+	first, err := repo.AcceptChangeset(context.Background(), in)
+	if err != nil {
+		t.Fatalf("first AcceptChangeset() error = %v", err)
+	}
+
+	second, err := repo.AcceptChangeset(context.Background(), in)
+	if err != nil {
+		t.Fatalf("replayed AcceptChangeset() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("replayed AcceptChangeset() = %+v, want identical result %+v", second, first)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), userID, project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Errorf("ListTasks() returned %d tasks, want 2 (replay must not create duplicates)", len(tasks))
+	}
+}
+
+func TestDynamoRepository_AcceptChangeset_IdempotencyKeyMismatch(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	userID := testUserID()
+	project, changeset := setupDynamoAcceptChangeset(t, repo, userID, 1)
+	key := "key-" + domain.NewID()
+
+	if _, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID: userID, ProjectID: project.ID, ChangesetID: changeset.ID,
+		IdempotencyKey: key, RequestHash: "hash_1",
+	}); err != nil {
+		t.Fatalf("first AcceptChangeset() error = %v", err)
+	}
+
+	project2, changeset2 := setupDynamoAcceptChangeset(t, repo, userID, 1)
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID: userID, ProjectID: project2.ID, ChangesetID: changeset2.ID,
+		IdempotencyKey: key, RequestHash: "hash_2",
+	})
+	if !errors.Is(err, ErrIdempotencyKeyMismatch) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrIdempotencyKeyMismatch)
 	}
 }

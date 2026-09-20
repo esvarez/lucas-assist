@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -956,5 +957,222 @@ func TestMemoryRepository_FailAgentRun_NotFound(t *testing.T) {
 	_, err := repo.FailAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist", "boom")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("FailAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+// setupAcceptChangeset creates a project and a proposed changeset with n
+// ProposedTasks against it, ready to accept.
+func setupAcceptChangeset(t *testing.T, repo *MemoryRepository, userID string, n int) (domain.Project, domain.Changeset) {
+	t.Helper()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge", Goal: "Ship the POC"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	proposed := make([]domain.ProposedTask, n)
+	for i := range proposed {
+		proposed[i] = domain.ProposedTask{Title: fmt.Sprintf("Task %d", i)}
+	}
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID:        userID,
+		ProjectID:     project.ID,
+		Skill:         "decompose_task",
+		BaseVersion:   project.Version,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: proposed,
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	return project, changeset
+}
+
+func TestMemoryRepository_AcceptChangeset(t *testing.T) {
+	repo := NewMemoryRepository()
+	project, changeset := setupAcceptChangeset(t, repo, "user_1", 2)
+
+	result, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         "user_1",
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key_1",
+		RequestHash:    "hash_1",
+	})
+	if err != nil {
+		t.Fatalf("AcceptChangeset() error = %v", err)
+	}
+
+	if len(result.Tasks) != 2 {
+		t.Fatalf("Tasks = %+v, want 2 tasks", result.Tasks)
+	}
+	for i, task := range result.Tasks {
+		if task.ProjectID != project.ID {
+			t.Errorf("Tasks[%d].ProjectID = %q, want %q", i, task.ProjectID, project.ID)
+		}
+		if task.ID == "" {
+			t.Errorf("Tasks[%d].ID = \"\", want a generated ID", i)
+		}
+	}
+	if result.Project.Version != project.Version+1 {
+		t.Errorf("Project.Version = %d, want %d (incremented)", result.Project.Version, project.Version+1)
+	}
+
+	gotChangeset, err := repo.GetChangeset(context.Background(), "user_1", project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetApplied {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetApplied)
+	}
+
+	foundEvent := false
+	for _, e := range repo.events {
+		if e.ChangesetID == changeset.ID && e.Type == domain.EventChangesetApplied {
+			foundEvent = true
+		}
+	}
+	if !foundEvent {
+		t.Error("no Event recorded for the accepted changeset")
+	}
+}
+
+func TestMemoryRepository_AcceptChangeset_VersionConflict(t *testing.T) {
+	repo := NewMemoryRepository()
+	project, changeset := setupAcceptChangeset(t, repo, "user_1", 1)
+
+	// Bump the project's version out from under the changeset's BaseVersion.
+	if _, err := repo.UpdateProject(context.Background(), "user_1", domain.Project{ID: project.ID, Version: project.Version}); err != nil {
+		t.Fatalf("UpdateProject() error = %v", err)
+	}
+
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         "user_1",
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key_1",
+		RequestHash:    "hash_1",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrConflict)
+	}
+
+	gotChangeset, err := repo.GetChangeset(context.Background(), "user_1", project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetConflict {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetConflict)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("ListTasks() = %+v, want none created on a conflicting accept", tasks)
+	}
+}
+
+func TestMemoryRepository_AcceptChangeset_NotProposed(t *testing.T) {
+	repo := NewMemoryRepository()
+	project, changeset := setupAcceptChangeset(t, repo, "user_1", 1)
+
+	if _, err := repo.UpdateChangesetStatus(context.Background(), "user_1", project.ID, changeset.ID, domain.ChangesetRejected); err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         "user_1",
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key_1",
+		RequestHash:    "hash_1",
+	})
+	if !errors.Is(err, ErrChangesetNotProposed) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrChangesetNotProposed)
+	}
+}
+
+func TestMemoryRepository_AcceptChangeset_TooLarge(t *testing.T) {
+	repo := NewMemoryRepository()
+	project, changeset := setupAcceptChangeset(t, repo, "user_1", maxChangesetMutations+1)
+
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID:         "user_1",
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key_1",
+		RequestHash:    "hash_1",
+	})
+	if !errors.Is(err, ErrChangesetTooLarge) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrChangesetTooLarge)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("ListTasks() = %+v, want none created for a rejected oversized changeset", tasks)
+	}
+}
+
+func TestMemoryRepository_AcceptChangeset_IdempotentReplay(t *testing.T) {
+	repo := NewMemoryRepository()
+	project, changeset := setupAcceptChangeset(t, repo, "user_1", 2)
+
+	in := AcceptChangesetInput{
+		UserID:         "user_1",
+		ProjectID:      project.ID,
+		ChangesetID:    changeset.ID,
+		IdempotencyKey: "key_1",
+		RequestHash:    "hash_1",
+	}
+
+	first, err := repo.AcceptChangeset(context.Background(), in)
+	if err != nil {
+		t.Fatalf("first AcceptChangeset() error = %v", err)
+	}
+
+	second, err := repo.AcceptChangeset(context.Background(), in)
+	if err != nil {
+		t.Fatalf("replayed AcceptChangeset() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("replayed AcceptChangeset() = %+v, want identical result %+v", second, first)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Errorf("ListTasks() returned %d tasks, want 2 (replay must not create duplicates)", len(tasks))
+	}
+}
+
+func TestMemoryRepository_AcceptChangeset_IdempotencyKeyMismatch(t *testing.T) {
+	repo := NewMemoryRepository()
+	project, changeset := setupAcceptChangeset(t, repo, "user_1", 1)
+
+	if _, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID: "user_1", ProjectID: project.ID, ChangesetID: changeset.ID,
+		IdempotencyKey: "key_1", RequestHash: "hash_1",
+	}); err != nil {
+		t.Fatalf("first AcceptChangeset() error = %v", err)
+	}
+
+	project2, changeset2 := setupAcceptChangeset(t, repo, "user_1", 1)
+	_, err := repo.AcceptChangeset(context.Background(), AcceptChangesetInput{
+		UserID: "user_1", ProjectID: project2.ID, ChangesetID: changeset2.ID,
+		IdempotencyKey: "key_1", RequestHash: "hash_2",
+	})
+	if !errors.Is(err, ErrIdempotencyKeyMismatch) {
+		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrIdempotencyKeyMismatch)
 	}
 }

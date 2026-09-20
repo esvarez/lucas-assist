@@ -27,6 +27,32 @@ var ErrConflict = errors.New("version conflict")
 // already reached a terminal status (architecture.md §3/§15).
 var ErrRunLeased = errors.New("agent run not eligible for lease")
 
+// ErrChangesetNotProposed is returned by AcceptChangeset when the
+// changeset's status isn't "proposed" — already applied, rejected,
+// expired, or in conflict. Accepting is only ever valid from "proposed".
+var ErrChangesetNotProposed = errors.New("changeset is not in the proposed state")
+
+// ErrChangesetTooLarge is returned by AcceptChangeset when a changeset's
+// mutation count exceeds the 50-mutation atomic-commit limit
+// (architecture.md §8, ADR 009). Splitting an oversized proposal into
+// multiple independently reviewable changesets is the worker's job (#76);
+// this is the backstop that refuses to apply one anyway.
+var ErrChangesetTooLarge = errors.New("changeset exceeds the maximum mutation count")
+
+// ErrIdempotencyKeyMismatch is returned by AcceptChangeset when an
+// idempotency key was already used for a different (project, changeset)
+// pair (architecture.md §15: "Reusing a key with a different request is
+// rejected").
+var ErrIdempotencyKeyMismatch = errors.New("idempotency key already used for a different request")
+
+// maxChangesetMutations is the atomic-commit limit (architecture.md §8,
+// ADR 009): a proposed changeset's task count above this is rejected
+// rather than applied, keeping one accept transaction comfortably below
+// TransactWriteItems' 100-item cap once the project version update, the
+// changeset status update, the event, and the idempotency record are
+// counted alongside the task writes.
+const maxChangesetMutations = 50
+
 // Repository is the persistence interface every skill and the API Lambda
 // read and write through.
 //
@@ -96,4 +122,44 @@ type Repository interface {
 	// completed or failed belongs to the worker, not this primitive.
 	CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
+
+	// AcceptChangeset atomically commits a proposed changeset: creates its
+	// ProposedTasks as real Task rows, bumps the project's version, appends
+	// one audit Event, and records the idempotency key — all in a single
+	// transaction (architecture.md §1/§8/§9/§15). It loads the changeset
+	// itself (by in.ChangesetID) rather than taking it pre-fetched, so it
+	// can validate status and mutation count against the same read it
+	// commits against.
+	//
+	// A stale BaseVersion (checked against the project's current version)
+	// returns ErrConflict and separately moves the changeset to
+	// ChangesetConflict — never retried automatically. A changeset not in
+	// ChangesetProposed returns ErrChangesetNotProposed. One over
+	// maxChangesetMutations returns ErrChangesetTooLarge without attempting
+	// the write. Replaying the same IdempotencyKey with the same RequestHash
+	// returns the original result instead of re-applying; a different
+	// RequestHash under the same key returns ErrIdempotencyKeyMismatch.
+	AcceptChangeset(ctx context.Context, in AcceptChangesetInput) (AcceptChangesetResult, error)
+}
+
+// AcceptChangesetInput is what AcceptChangeset needs beyond the changeset's
+// own stored data (BaseVersion, ProposedTasks, Status) to commit it.
+type AcceptChangesetInput struct {
+	UserID         string
+	ProjectID      string
+	ChangesetID    string
+	IdempotencyKey string
+	// RequestHash identifies the semantic request this IdempotencyKey was
+	// issued for — here, simply a hash of (UserID, ProjectID, ChangesetID),
+	// since those three fully determine what accepting does. Computed by
+	// the caller (internal/api) so this package stays agnostic to how a
+	// "request" is hashed.
+	RequestHash string
+}
+
+// AcceptChangesetResult is the outcome of a successful accept — or a
+// successful idempotent replay of one.
+type AcceptChangesetResult struct {
+	Project domain.Project `json:"project"`
+	Tasks   []domain.Task  `json:"tasks"`
 }

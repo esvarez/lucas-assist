@@ -148,6 +148,68 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /projects/{id}/changesets/{changesetId}/accept:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+      - name: changesetId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Accept a proposed changeset
+      description: >
+        Atomically commits a proposed changeset's mutations (architecture.md
+        §1/§8/§9): creates its proposed subtasks as real Task rows,
+        increments the project's version, and writes one audit Event, all in
+        a single transaction. Only valid from a changeset in the "proposed"
+        state.
+      operationId: acceptChangeset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptChangesetRequest"
+      responses:
+        "200":
+          description: >
+            The changeset was committed, or this exact request was already
+            committed once before (idempotency_key replay) — both return the
+            same body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptChangesetResult"
+        "400":
+          description: >
+            Invalid body, failed validation (missing user_id or
+            idempotency_key), or the changeset exceeds the maximum mutation
+            count (architecture.md §8, ADR 009).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "404":
+          description: No such project or changeset in this user's partition.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >
+            The changeset's baseVersion no longer matches the project's
+            current version (moves the changeset to "conflict" — re-propose
+            rather than retry), the changeset isn't in the "proposed" state,
+            or idempotency_key was already used for a different (project,
+            changeset) pair.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   parameters:
     UserIdQuery:
@@ -272,6 +334,39 @@ components:
       required:
         - user_id
         - version
+
+    AcceptChangesetRequest:
+      type: object
+      description: >
+        Deliberately minimal — everything the commit needs (baseVersion,
+        proposed mutations, status) already lives on the changeset itself.
+      properties:
+        user_id:
+          type: string
+        idempotency_key:
+          type: string
+          description: >
+            Required (architecture.md §15). Replaying the same key with the
+            same (project, changeset) pair returns the original result
+            instead of re-applying; reusing it for a different pair is
+            rejected with 409.
+      required:
+        - user_id
+        - idempotency_key
+
+    AcceptChangesetResult:
+      type: object
+      properties:
+        project:
+          $ref: "#/components/schemas/Project"
+        tasks:
+          type: array
+          items:
+            type: object
+            description: domain.Task — see internal/domain/task.go.
+      required:
+        - project
+        - tasks
 
     ErrorResponse:
       type: object

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,11 +12,13 @@ import (
 // MemoryRepository is an in-memory Repository for local dev and unit
 // tests. State lives only as long as the process — nothing is durable.
 type MemoryRepository struct {
-	mu         sync.Mutex
-	projects   map[string]domain.Project
-	tasks      map[string]taskRecord
-	changesets map[string]domain.Changeset
-	agentRuns  map[string]domain.AgentRun
+	mu          sync.Mutex
+	projects    map[string]domain.Project
+	tasks       map[string]taskRecord
+	changesets  map[string]domain.Changeset
+	agentRuns   map[string]domain.AgentRun
+	events      map[string]domain.Event
+	idempotency map[string]idempotencyRecord
 }
 
 // taskRecord pairs a Task with the userID it was created under. domain.Task
@@ -26,12 +29,25 @@ type taskRecord struct {
 	UserID string
 }
 
+// idempotencyRecord is AcceptChangeset's idempotency-key bookkeeping
+// (architecture.md §15): "the request hash and final result reference."
+// The result reference here is just the created Task IDs — everything
+// else needed to rebuild the same AcceptChangesetResult (the Project) is
+// already independently readable.
+type idempotencyRecord struct {
+	UserID      string
+	RequestHash string
+	TaskIDs     []string
+}
+
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		projects:   make(map[string]domain.Project),
-		tasks:      make(map[string]taskRecord),
-		changesets: make(map[string]domain.Changeset),
-		agentRuns:  make(map[string]domain.AgentRun),
+		projects:    make(map[string]domain.Project),
+		tasks:       make(map[string]taskRecord),
+		changesets:  make(map[string]domain.Changeset),
+		agentRuns:   make(map[string]domain.AgentRun),
+		events:      make(map[string]domain.Event),
+		idempotency: make(map[string]idempotencyRecord),
 	}
 }
 
@@ -288,4 +304,106 @@ func (r *MemoryRepository) FailAgentRun(ctx context.Context, userID, projectID, 
 
 	r.agentRuns[runID] = run
 	return run, nil
+}
+
+// AcceptChangeset commits a proposed changeset's Task mutations, bumps the
+// project version, appends an Event, and records the idempotency key — all
+// under the same lock, so there's no partial-application window to guard
+// against the way the DynamoDB implementation needs a real transaction for.
+func (r *MemoryRepository) AcceptChangeset(ctx context.Context, in AcceptChangesetInput) (AcceptChangesetResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if rec, ok := r.idempotency[in.IdempotencyKey]; ok {
+		if rec.UserID != in.UserID || rec.RequestHash != in.RequestHash {
+			return AcceptChangesetResult{}, ErrIdempotencyKeyMismatch
+		}
+		return r.loadAcceptResultLocked(in.UserID, in.ProjectID, rec.TaskIDs)
+	}
+
+	changeset, ok := r.changesets[in.ChangesetID]
+	if !ok || changeset.UserID != in.UserID || changeset.ProjectID != in.ProjectID {
+		return AcceptChangesetResult{}, ErrNotFound
+	}
+	if changeset.Status != domain.ChangesetProposed {
+		return AcceptChangesetResult{}, ErrChangesetNotProposed
+	}
+	if len(changeset.ProposedTasks) > maxChangesetMutations {
+		return AcceptChangesetResult{}, ErrChangesetTooLarge
+	}
+
+	project, ok := r.projects[in.ProjectID]
+	if !ok || project.UserID != in.UserID {
+		return AcceptChangesetResult{}, ErrNotFound
+	}
+	if project.Version != changeset.BaseVersion {
+		changeset.Status = domain.ChangesetConflict
+		r.changesets[in.ChangesetID] = changeset
+		return AcceptChangesetResult{}, ErrConflict
+	}
+
+	tasks := make([]domain.Task, 0, len(changeset.ProposedTasks))
+	taskIDs := make([]string, 0, len(changeset.ProposedTasks))
+	for i, pt := range changeset.ProposedTasks {
+		task := domain.Task{
+			ID:                 domain.NewID(),
+			ProjectID:          in.ProjectID,
+			Title:              pt.Title,
+			Description:        pt.Description,
+			AcceptanceCriteria: pt.AcceptanceCriteria,
+			Status:             "pending",
+			Order:              i,
+		}
+		r.tasks[task.ID] = taskRecord{Task: task, UserID: in.UserID}
+		tasks = append(tasks, task)
+		taskIDs = append(taskIDs, task.ID)
+	}
+
+	project.Version++
+	project.UpdatedAt = time.Now().UTC()
+	r.projects[in.ProjectID] = project
+
+	changeset.Status = domain.ChangesetApplied
+	r.changesets[in.ChangesetID] = changeset
+
+	event := domain.Event{
+		ID:          domain.NewEventID(),
+		ProjectID:   in.ProjectID,
+		UserID:      in.UserID,
+		Type:        domain.EventChangesetApplied,
+		ChangesetID: in.ChangesetID,
+		ActorID:     in.UserID,
+		BaseVersion: changeset.BaseVersion,
+		CreatedAt:   time.Now().UTC(),
+	}
+	r.events[event.ID] = event
+
+	r.idempotency[in.IdempotencyKey] = idempotencyRecord{
+		UserID:      in.UserID,
+		RequestHash: in.RequestHash,
+		TaskIDs:     taskIDs,
+	}
+
+	return AcceptChangesetResult{Project: project, Tasks: tasks}, nil
+}
+
+// loadAcceptResultLocked rebuilds an AcceptChangesetResult from an
+// idempotency record's stored task IDs, for a replayed accept request. The
+// caller must already hold r.mu.
+func (r *MemoryRepository) loadAcceptResultLocked(userID, projectID string, taskIDs []string) (AcceptChangesetResult, error) {
+	project, ok := r.projects[projectID]
+	if !ok || project.UserID != userID {
+		return AcceptChangesetResult{}, ErrNotFound
+	}
+
+	tasks := make([]domain.Task, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		rec, ok := r.tasks[id]
+		if !ok {
+			return AcceptChangesetResult{}, fmt.Errorf("replay accept changeset: task %q from idempotency record not found", id)
+		}
+		tasks = append(tasks, rec.Task)
+	}
+
+	return AcceptChangesetResult{Project: project, Tasks: tasks}, nil
 }
