@@ -322,7 +322,6 @@ The verified internal user ID is always the partition key source. It is never ac
 | --- | --- | --- |
 | User profile | `USER#<uid>` | `PROFILE` |
 | Identity lookup | `IDENTITY#github#<github_id>` | `IDENTITY` |
-| Session | `USER#<uid>` | `SESSION#<refresh_hash>` |
 | Project | `USER#<uid>` | `META#<pid>` |
 | Task | `USER#<uid>` | `P#<pid>#TASK#<task_id>` |
 | Decision | `USER#<uid>` | `P#<pid>#DEC#<timestamp>#<decision_id>` |
@@ -453,16 +452,24 @@ Amazon Cognito is the identity and token provider for both clients. GitHub remai
 | Client | Flow |
 | --- | --- |
 | Web SPA | Cognito Hosted UI, authorization code with PKCE, GitHub as a federated identity provider. |
-| CLI | Authorization code with PKCE against the same Cognito Hosted UI, using a local loopback redirect. |
+| CLI | Cognito Hosted UI, authorization code with PKCE, using a local loopback redirect. |
 
-GitHub does not publish an OIDC discovery document, so it cannot be added to the Cognito User Pool as a built-in social provider. Federating it requires one of:
+The CLI does **not** use device flow (RFC 8628) — Cognito's Hosted UI doesn't support it. A local loopback listener completes the same authorization-code + PKCE exchange the web client uses; earlier drafts of this project's auth issue referenced device flow, which was a mistake carried over from a pre-Cognito design and has since been corrected.
 
-- A thin Lambda-backed OIDC shim in front of GitHub's OAuth endpoints, registered with Cognito as a generic OIDC identity provider, or
+### GitHub federation
+
+GitHub does not publish an OIDC discovery document, so it cannot be added to the Cognito User Pool as a built-in social provider. Two ways to close that gap were considered:
+
+- A thin Lambda-backed OIDC shim in front of GitHub's OAuth endpoints, registered with Cognito as a generic OIDC identity provider.
 - Native Cognito User Pool accounts linked to a verified GitHub identity through a pre-token-generation or post-confirmation Lambda trigger.
 
-This decision is open; see §21. Whichever option is chosen, it is the only authentication-specific compute the MVP still owns — Cognito itself is not a Lambda deployment unit.
+**Decision: native User Pool accounts plus a Lambda trigger (ADR 015).** The shim means standing up and operating a second always-on Lambda-backed OIDC surface — its own discovery document, token endpoint, and failure modes — to solve something a trigger handles without a permanent service. The trigger only runs at sign-in; nothing about it stays running between logins, unlike the shim.
 
-The application uses the Cognito `sub` claim, mapped to a generated internal UUID, as the user ID. Provider identifiers never become DynamoDB ownership keys.
+On first sign-in, the trigger calls GitHub's OAuth API to resolve the GitHub user ID, resolves-or-creates the internal UUID via the existing `IDENTITY#github#<gh_id>` → `USER#<uid>` lookup (§8 — no GSI, the provider ID never becomes a partition key), and writes that UUID onto the Cognito user as a custom attribute. Later sign-ins read the attribute directly; the DynamoDB lookup only runs once per user.
+
+This trigger is the only authentication-specific compute the MVP owns — Cognito itself is not a Lambda deployment unit.
+
+The application uses the Cognito `sub` claim, mapped to the internal UUID via that custom attribute, as the user ID. Provider identifiers never become DynamoDB ownership keys.
 
 ### Application tokens
 
@@ -666,6 +673,7 @@ This order validates the uncertain product and model behavior before investing i
 | ADR 012 | Defer vector search. | Accepted | Structured queries and read tools cover the expected working set. |
 | ADR 013 | Use Amazon Cognito as the token issuer and verifier for both clients, with GitHub federated into the User Pool. | Accepted | Removes custom JWT signing, key rotation and refresh-token storage from the application; API Gateway can verify tokens with a built-in JWT authorizer. |
 | ADR 014 | Use SSM Parameter Store (`SecureString`) for the OpenAI key, provisioned out-of-band rather than through a SAM template parameter. | Accepted | Free tier covers it; Secrets Manager's paid rotation feature doesn't apply to externally-issued keys anyway; keeps the plaintext key out of CloudFormation entirely. |
+| ADR 015 | Federate GitHub into the Cognito User Pool via native User Pool accounts and a sign-in Lambda trigger, not an OIDC shim Lambda. | Accepted | GitHub publishes no OIDC discovery document, so it can't be a built-in Cognito social provider either way. A shim means running a second always-on Lambda-backed OIDC surface; the trigger only runs at sign-in and needs no standing service. |
 
 ---
 
@@ -682,7 +690,6 @@ This order validates the uncertain product and model behavior before investing i
 ### Resolve before authentication implementation
 
 - Does the MVP require both web and CLI, or can CLI wait?
-- Does GitHub federation into Cognito use an OIDC shim Lambda or a Lambda trigger against native User Pool accounts?
 - Does the CLI's loopback-redirect PKCE flow need a fallback for headless or remote environments?
 - Is GitHub API access required in the MVP or only authentication?
 
