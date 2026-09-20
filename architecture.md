@@ -6,7 +6,7 @@
 
 **Scope:** Proof of concept and MVP
 
-**Revision:** 2.1 · 17 September 2026
+**Revision:** 2.2 · 20 September 2026
 
 ---
 
@@ -480,7 +480,9 @@ The POC has no authentication.
 
 ## 13. Frontend and edge
 
-The web client is a static authenticated SPA served from a private S3 bucket through CloudFront.
+The web client is a static authenticated SPA served from a private S3 bucket through CloudFront, built with Vite and React.
+
+The component library is [shadcn/ui](https://ui.shadcn.com/) — Radix primitives styled with Tailwind CSS and copied into the repository rather than pulled in as an opaque dependency. New UI elements are added with the shadcn CLI (`npx shadcn add <component>`) into `web/src/components/ui` and customized in place; hand-rolled equivalents for primitives shadcn already covers (buttons, dialogs, dropdowns, forms, toasts) are not added.
 
 One CloudFront distribution can route:
 
@@ -718,3 +720,4 @@ Add infrastructure only when an observed signal justifies it.
 - [AWS DynamoDB Streams and Lambda](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.Lambda.html)
 - [AWS API Gateway HTTP API Quotas](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-quotas.html)
 - [Amazon CloudFront Pricing](https://aws.amazon.com/cloudfront/pricing/)
+- [shadcn/ui](https://ui.shadcn.com/)

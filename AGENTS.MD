@@ -35,7 +35,7 @@ Requires Go 1.22+, Node 20+, Docker (for DynamoDB Local).
 /internal/agent       Context assembler, skill router, changeset applier
 /internal/agent/skills  One file per skill
 /internal/llm         OpenAI client wrapper + schema helpers
-/web                  Vite + React SPA
+/web                  Vite + React SPA (shadcn/ui components)
 /infra                SAM or Terraform templates
 /docs                 architecture-decisions.md
 ```
@@ -166,6 +166,8 @@ Single-user is not single-session — two browser tabs hit the same conflict a s
 ## Frontend rules
 
 - Vite + React SPA in `/web`. Assets get hashed filenames; `index.html` is served `no-cache`.
+- **UI components come from [shadcn/ui](https://ui.shadcn.com/)** (Radix primitives + Tailwind CSS). Add new components with `npx shadcn add <component>`, which copies the source into `web/src/components/ui` for local customization — it is not an opaque npm dependency to upgrade blindly.
+- Don't hand-roll a primitive shadcn already provides (button, dialog, dropdown, form, toast, etc.). Check `web/src/components/ui` and the shadcn catalog before writing a new one from scratch.
 - The API is same-origin at `/api/*` via CloudFront. **Do not add CORS handling or configure a separate API domain** — that would undo the single-distribution setup.
 - The proposed changeset lives in client state between the propose and commit round trips. A refresh loses it; that's accepted for the MVP.
 
