@@ -1,18 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
-import { AlertCircleIcon, ChevronLeftIcon, Trash2Icon } from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+import { AlertCircleIcon, ChevronLeftIcon } from 'lucide-react'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -26,59 +15,21 @@ import {
 } from '@/components/ui/item'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ApiError, deleteProject, getProject, type Project } from '@/src/api/projects'
+import { getProject, type Project } from '@/src/api/projects'
 import { listTasks, type Task } from '@/src/api/tasks'
+import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
+import EditProjectDialog from '@/src/components/EditProjectDialog'
 import WhatsNextCard from '@/src/components/WhatsNextCard'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
 
-function DeleteProjectAction({ project }: { project: Project }) {
-  const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function handleDelete() {
-    setDeleting(true)
-    setError(null)
-    try {
-      await deleteProject(project.id)
-      navigate('/projects')
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        navigate('/projects')
-        return
-      }
-      setError(err instanceof Error ? err.message : 'Failed to delete project')
-      setDeleting(false)
-    }
-  }
-
-  return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger render={<Button variant="outline" size="icon" aria-label="Delete project" />}>
-        <Trash2Icon />
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete "{project.name}"?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This can't be undone — the project and its tasks are deleted permanently.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {error && <p className="text-xs text-destructive">{error}</p>}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" disabled={deleting} onClick={handleDelete}>
-            {deleting ? 'Deleting…' : 'Delete'}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-function ProjectDetailHeader({ project }: { project: Project }) {
+function ProjectDetailHeader({
+  project,
+  onUpdated,
+}: {
+  project: Project
+  onUpdated: (project: Project) => void
+}) {
   return (
     <div className="flex items-center justify-between gap-2">
       <div className="flex items-center gap-2">
@@ -88,7 +39,8 @@ function ProjectDetailHeader({ project }: { project: Project }) {
         <h1 className="text-lg font-bold">{project.name}</h1>
         <Badge className={statusBadgeClassName(project.status)}>{project.status}</Badge>
       </div>
-      <DeleteProjectAction project={project} />
+      <EditProjectDialog project={project} onUpdated={onUpdated} />
+      <DeleteProjectDialog project={project} />
     </div>
   )
 }
@@ -240,7 +192,7 @@ function ProjectDetailPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <ProjectDetailHeader project={project} />
+      <ProjectDetailHeader project={project} onUpdated={setProject} />
 
       <WhatsNextCard projectId={project.id} />
 
