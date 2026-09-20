@@ -39,8 +39,10 @@ function ProjectDetailHeader({
         <h1 className="text-lg font-bold">{project.name}</h1>
         <Badge className={statusBadgeClassName(project.status)}>{project.status}</Badge>
       </div>
-      <EditProjectDialog project={project} onUpdated={onUpdated} />
-      <DeleteProjectDialog project={project} />
+      <div className="flex shrink-0 items-center gap-2">
+        <EditProjectDialog project={project} onUpdated={onUpdated} />
+        <DeleteProjectDialog project={project} />
+      </div>
     </div>
   )
 }
