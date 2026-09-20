@@ -17,18 +17,28 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
 import { listTasks, type Task } from '@/src/api/tasks'
+import EditProjectDialog from '@/src/components/EditProjectDialog'
 import WhatsNextCard from '@/src/components/WhatsNextCard'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
 
-function ProjectDetailHeader({ project }: { project: Project }) {
+function ProjectDetailHeader({
+  project,
+  onUpdated,
+}: {
+  project: Project
+  onUpdated: (project: Project) => void
+}) {
   return (
-    <div className="flex items-center gap-2">
-      <Button variant="ghost" className="self-start" render={<Link to="/projects" />}>
-        <ChevronLeftIcon data-icon="inline-start" />
-      </Button>
-      <h1 className="text-lg font-bold">{project.name}</h1>
-      <Badge className={statusBadgeClassName(project.status)}>{project.status}</Badge>
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" className="self-start" render={<Link to="/projects" />}>
+          <ChevronLeftIcon data-icon="inline-start" />
+        </Button>
+        <h1 className="text-lg font-bold">{project.name}</h1>
+        <Badge className={statusBadgeClassName(project.status)}>{project.status}</Badge>
+      </div>
+      <EditProjectDialog project={project} onUpdated={onUpdated} />
     </div>
   )
 }
@@ -180,7 +190,7 @@ function ProjectDetailPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <ProjectDetailHeader project={project} />
+      <ProjectDetailHeader project={project} onUpdated={setProject} />
 
       <WhatsNextCard projectId={project.id} />
 

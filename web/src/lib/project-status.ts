@@ -14,3 +14,13 @@ const STATUS_BADGE_CLASSES: Record<string, string> = {
 export function statusBadgeClassName(status: string): string {
   return STATUS_BADGE_CLASSES[status] ?? 'bg-muted text-muted-foreground'
 }
+
+// Editable statuses offered by the edit form (#67) — same set the badge
+// colors above know how to render.
+export const PROJECT_STATUS_OPTIONS = [
+  { value: 'on-track', label: 'On track' },
+  { value: 'at-risk', label: 'At risk' },
+  { value: 'blocked', label: 'Blocked' },
+  { value: 'done', label: 'Done' },
+  { value: 'paused', label: 'Paused' },
+]
