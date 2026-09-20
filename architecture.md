@@ -447,23 +447,18 @@ The API uses normal `net/http` handlers so local execution does not depend on SA
 
 ## 12. Authentication
 
-Amazon Cognito is the identity and token provider for both clients. GitHub remains the source of developer identity because the intended users are developers, but Cognito — not application code — issues, verifies and rotates every token used against the API.
+Amazon Cognito is the identity and token provider for both clients. GitHub remains the source of developer identity because the intended users are developers, but Cognito — not application code — issues, verifies and rotates every token used against the API. For how Cognito's pieces (User Pool, Hosted UI, JWT authorizer, PKCE, federation) actually work, independent of this project, see `Notes/aws_cognito.md`. This section covers only what's decided here.
 
 | Client | Flow |
 | --- | --- |
 | Web SPA | Cognito Hosted UI, authorization code with PKCE, GitHub as a federated identity provider. |
-| CLI | Cognito Hosted UI, authorization code with PKCE, using a local loopback redirect. |
-
-The CLI does **not** use device flow (RFC 8628) — Cognito's Hosted UI doesn't support it. A local loopback listener completes the same authorization-code + PKCE exchange the web client uses; earlier drafts of this project's auth issue referenced device flow, which was a mistake carried over from a pre-Cognito design and has since been corrected.
+| CLI | Cognito Hosted UI, authorization code with PKCE, using a local loopback redirect — not device flow (RFC 8628), which Cognito's Hosted UI doesn't support. |
 
 ### GitHub federation
 
-GitHub does not publish an OIDC discovery document, so it cannot be added to the Cognito User Pool as a built-in social provider. Two ways to close that gap were considered:
+GitHub does not publish an OIDC discovery document, so it cannot be added to the Cognito User Pool as a built-in social provider (`Notes/aws_cognito.md` explains why, and the shim-Lambda alternative this rejects).
 
-- A thin Lambda-backed OIDC shim in front of GitHub's OAuth endpoints, registered with Cognito as a generic OIDC identity provider.
-- Native Cognito User Pool accounts linked to a verified GitHub identity through a pre-token-generation or post-confirmation Lambda trigger.
-
-**Decision: native User Pool accounts plus a Lambda trigger (ADR 015).** The shim means standing up and operating a second always-on Lambda-backed OIDC surface — its own discovery document, token endpoint, and failure modes — to solve something a trigger handles without a permanent service. The trigger only runs at sign-in; nothing about it stays running between logins, unlike the shim.
+**Decision: native User Pool accounts plus a Lambda trigger, not an OIDC shim Lambda (ADR 015).** A shim means standing up and operating a second always-on Lambda-backed OIDC surface; the trigger only runs at sign-in and needs no standing service.
 
 On first sign-in, the trigger calls GitHub's OAuth API to resolve the GitHub user ID, resolves-or-creates the internal UUID via the existing `IDENTITY#github#<gh_id>` → `USER#<uid>` lookup (§8 — no GSI, the provider ID never becomes a partition key), and writes that UUID onto the Cognito user as a custom attribute. Later sign-ins read the attribute directly; the DynamoDB lookup only runs once per user.
 
