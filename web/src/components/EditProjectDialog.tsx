@@ -16,7 +16,7 @@ import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiError, ValidationError, updateProject, type Project } from '@/src/api/projects'
+import { ApiError, ValidationError, getProject, updateProject, type Project } from '@/src/api/projects'
 import { PROJECT_STATUS_OPTIONS } from '@/src/lib/project-status'
 import { cn } from '@/lib/utils'
 
@@ -34,6 +34,17 @@ function toUTCMidnightISO(date: Date): string {
   return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())).toISOString()
 }
 
+// Inverse of toUTCMidnightISO: project.deadline is UTC midnight for a
+// calendar day. new Date(iso) keeps that instant, so reading it back with
+// local getters (Calendar's `selected`, or re-encoding through
+// toUTCMidnightISO on save) shifts the day in any timezone behind UTC.
+// Rebuild a Date whose *local* Y/M/D match the ISO string's *UTC* Y/M/D
+// so the calendar day round-trips correctly.
+function parseDeadline(iso: string): Date {
+  const utc = new Date(iso)
+  return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate())
+}
+
 function EditProjectDialog({
   project,
   onUpdated,
@@ -48,7 +59,7 @@ function EditProjectDialog({
   const [open, setOpen] = useState(false)
   const [goal, setGoal] = useState(project.goal)
   const [deadline, setDeadline] = useState<Date | undefined>(
-    project.deadline ? new Date(project.deadline) : undefined
+    project.deadline ? parseDeadline(project.deadline) : undefined
   )
   const [deadlineOpen, setDeadlineOpen] = useState(false)
   const [constraints, setConstraints] = useState<string[]>(project.constraints)
@@ -59,7 +70,7 @@ function EditProjectDialog({
 
   function resetToProject() {
     setGoal(project.goal)
-    setDeadline(project.deadline ? new Date(project.deadline) : undefined)
+    setDeadline(project.deadline ? parseDeadline(project.deadline) : undefined)
     setDeadlineOpen(false)
     setConstraints(project.constraints)
     setStatus(project.status)
@@ -104,9 +115,20 @@ function EditProjectDialog({
         if (unknown.length > 0) setGeneralError(unknown.join(', '))
       } else if (err instanceof ApiError) {
         if (err.status === 409) {
-          setGeneralError(
-            'This project changed elsewhere since you opened it. Close and reopen to see the latest before editing.'
-          )
+          // Reload the current version so a retry can actually succeed —
+          // just telling the user to reopen doesn't help if this dialog
+          // keeps handing the next save the same stale version.
+          try {
+            const fresh = await getProject(project.id)
+            onUpdated(fresh)
+            setGeneralError(
+              'This project changed elsewhere since you opened it — reloaded the latest version. Review your edits and save again.'
+            )
+          } catch {
+            setGeneralError(
+              'This project changed elsewhere since you opened it, and the latest version failed to load. Close and reopen to try again.'
+            )
+          }
         } else {
           setGeneralError(err.message)
         }
