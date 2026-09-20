@@ -90,6 +90,40 @@ Resources:
             Method: ANY
             ApiId: !Ref NudgeApi
 
+  # ── Agent job queue ──────────────────────────
+  # SQS as the only async work transport (architecture.md §10/§11/§18,
+  # ADR 006) for AgentRun jobs — no Lambda sends to this yet (#99) and none
+  # consumes it yet (#101); this resource just exists so both can be built
+  # against a real queue instead of each inventing its own placeholder.
+  #
+  # VisibilityTimeout is 360s: AWS's own guidance for Lambda-consumed
+  # queues is at least 6x the consumer function's timeout, so a message
+  # being processed isn't redelivered to a second worker before the first
+  # one finishes. SkillsFunction's Timeout (60s) is the only Lambda timeout
+  # that exists yet; #101's Worker Lambda should reuse or exceed it, and
+  # this value should be revisited against the Worker's actual timeout
+  # once #101 sets one.
+  AgentJobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${Environment}-nudge-agent-jobs
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AgentJobsDLQ.Arn
+        # 3 total attempts: architecture.md §15 wants transient-failure
+        # tolerance, but a model call has a real per-attempt cost, so a
+        # systematically failing job (bad input, a skill bug) shouldn't
+        # retry indefinitely before landing in the DLQ.
+        maxReceiveCount: 3
+
+  # Dead-letter queue for AgentJobsQueue (architecture.md §15: "Move
+  # exhausted jobs to a dead letter queue and raise an alarm" — the alarm
+  # is separate follow-up work, not this issue).
+  AgentJobsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${Environment}-nudge-agent-jobs-dlq
+
   # ── Skill Lambda ─────────────────────────────
   # Consolidated entrypoint (architecture.md §4/§11): one Lambda dispatches
   # by skill name from the request body to a registered agent.Skill, so
@@ -181,3 +215,11 @@ Outputs:
   ApiUrl:
     Description: Base URL of the Nudge HTTP API (POST /projects, POST /skills)
     Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+  AgentJobsQueueUrl:
+    Description: >
+      URL of the agent job queue — #99 sends AgentRun job messages here,
+      #101's Worker Lambda consumes them.
+    Value: !Ref AgentJobsQueue
+  AgentJobsQueueArn:
+    Description: ARN of the agent job queue, for #101's event-source mapping.
+    Value: !GetAtt AgentJobsQueue.Arn
