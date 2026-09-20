@@ -1,75 +1,45 @@
-# React + TypeScript + Vite
+# Nudge web
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Vite + React SPA for Nudge. Client-rendered only — no SSR (see [`../AGENTS.MD`](../AGENTS.MD), "No SSR, ever").
 
-Currently, two official plugins are available:
+## Prerequisites
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Node 20+.
 
-## React Compiler
+## Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+By default this proxies `/api/*` to `http://localhost:8080` (see `vite.config.ts`), so pair it with one of:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- The real backend: `make local` from the repo root (needs Docker + `OPENAI_API_KEY`, see the [root README](../README.md)).
+- The mock backend, for UI work without Go/Docker: `npm run mock` in this directory (`mock-server.mjs`), in a separate terminal.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Scripts
 
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Vite dev server on :5173. |
+| `npm run mock` | In-memory Node mock of the API on :8080 — same routes as `docs/openapi.yaml`, plus a couple that don't exist on the real backend yet (see comments in `mock-server.mjs`). |
+| `npm run build` | Type-check (`tsc -b`) then production build to `dist/`. |
+| `npm run preview` | Serve the production build locally. |
+| `npm run lint` | ESLint. |
+
+## Stack
+
+- [Vite](https://vite.dev/) + React 19 + TypeScript.
+- [shadcn/ui](https://ui.shadcn.com/) (Radix + Tailwind CSS v4) for components — added via `npx shadcn add <component>` into `src/components/ui`, not an opaque dependency. See `../architecture.md` §13 and `../AGENTS.MD` "Frontend rules" before adding UI.
+- `react-router-dom` for client-side routing.
+
+## Layout
+
+```
+src/api        Fetch wrappers for the backend (projects, tasks)
+src/routes     Route-level pages (ProjectsPage, ProjectDetailPage)
+src/layout     Shared page chrome
+src/components Reusable and feature components
+src/lib        Small client-side helpers (status derivation, etc.)
 ```
