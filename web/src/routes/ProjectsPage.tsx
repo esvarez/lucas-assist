@@ -18,6 +18,7 @@ import { listProjects, type Project } from '@/src/api/projects'
 function ProjectsPage() {
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const isEmpty = projects !== null && projects.length === 0
 
   useEffect(() => {
     let ignore = false
@@ -44,7 +45,9 @@ function ProjectsPage() {
             </p>
           )}
         </div>
-        <NewProjectDialog />
+        {/* The empty state below has its own, more prominent create CTA —
+            showing this one too would be redundant. */}
+        {!isEmpty && <NewProjectDialog />}
       </div>
 
       {error && (
@@ -63,7 +66,7 @@ function ProjectsPage() {
         </div>
       )}
 
-      {!error && projects !== null && projects.length === 0 && (
+      {!error && isEmpty && (
         <Empty className="border border-dashed">
           <EmptyHeader>
             <EmptyMedia variant="icon">
