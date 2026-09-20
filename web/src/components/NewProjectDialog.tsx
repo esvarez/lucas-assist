@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent, type ReactElement } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
 import { CalendarIcon, PlusIcon, XIcon } from 'lucide-react'
@@ -32,7 +32,9 @@ function toUTCMidnightISO(date: Date): string {
   return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())).toISOString()
 }
 
-function NewProjectDialog() {
+// trigger lets callers swap in a more prominent CTA (e.g. the empty
+// state, #93) without duplicating the dialog/form itself.
+function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigger?: ReactElement } = {}) {
   const navigate = useNavigate()
   const nameId = useId()
   const goalId = useId()
@@ -119,7 +121,7 @@ function NewProjectDialog() {
         if (!next) reset()
       }}
     >
-      <DialogTrigger render={<Button />}>+ New project</DialogTrigger>
+      <DialogTrigger render={trigger} />
       <DialogContent className="sm:max-w-md">
         <form onSubmit={handleSubmit} className="flex max-h-[80vh] flex-col gap-4 overflow-y-auto">
           <DialogHeader>

@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react'
-import { AlertCircleIcon } from 'lucide-react'
+import { AlertCircleIcon, FolderOpenIcon, PlusIcon } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import NewProjectDialog from '@/src/components/NewProjectDialog'
 import ProjectCard from '@/src/components/ProjectCard'
@@ -10,6 +18,7 @@ import { listProjects, type Project } from '@/src/api/projects'
 function ProjectsPage() {
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const isEmpty = projects !== null && projects.length === 0
 
   useEffect(() => {
     let ignore = false
@@ -36,7 +45,9 @@ function ProjectsPage() {
             </p>
           )}
         </div>
-        <NewProjectDialog />
+        {/* The empty state below has its own, more prominent create CTA —
+            showing this one too would be redundant. */}
+        {!isEmpty && <NewProjectDialog />}
       </div>
 
       {error && (
@@ -55,13 +66,25 @@ function ProjectsPage() {
         </div>
       )}
 
-      {!error && projects !== null && projects.length === 0 && (
-        <Card className="items-center py-8 text-center">
-          <CardHeader className="items-center">
-            <CardTitle>No projects yet</CardTitle>
-            <CardDescription>Create one to get started.</CardDescription>
-          </CardHeader>
-        </Card>
+      {!error && isEmpty && (
+        <Empty className="border border-dashed">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <FolderOpenIcon />
+            </EmptyMedia>
+            <EmptyTitle>No projects yet</EmptyTitle>
+            <EmptyDescription>Create one to get started.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <NewProjectDialog
+              trigger={
+                <Button size="lg">
+                  <PlusIcon /> Create your first project
+                </Button>
+              }
+            />
+          </EmptyContent>
+        </Empty>
       )}
 
       {!error && projects && projects.length > 0 && (
