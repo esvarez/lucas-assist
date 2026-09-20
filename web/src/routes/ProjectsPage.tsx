@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react'
-import { AlertCircleIcon, PlusIcon } from 'lucide-react'
+import { AlertCircleIcon, FolderOpenIcon, PlusIcon } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import NewProjectDialog from '@/src/components/NewProjectDialog'
 import ProjectCard from '@/src/components/ProjectCard'
@@ -57,19 +64,24 @@ function ProjectsPage() {
       )}
 
       {!error && projects !== null && projects.length === 0 && (
-        <Card className="items-center gap-4 py-10 text-center">
-          <CardHeader className="items-center">
-            <CardTitle>No projects yet</CardTitle>
-            <CardDescription>Create one to get started.</CardDescription>
-          </CardHeader>
-          <NewProjectDialog
-            trigger={
-              <Button size="lg">
-                <PlusIcon /> Create your first project
-              </Button>
-            }
-          />
-        </Card>
+        <Empty className="border border-dashed">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <FolderOpenIcon />
+            </EmptyMedia>
+            <EmptyTitle>No projects yet</EmptyTitle>
+            <EmptyDescription>Create one to get started.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <NewProjectDialog
+              trigger={
+                <Button size="lg">
+                  <PlusIcon /> Create your first project
+                </Button>
+              }
+            />
+          </EmptyContent>
+        </Empty>
       )}
 
       {!error && projects && projects.length > 0 && (
