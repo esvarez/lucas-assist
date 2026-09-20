@@ -323,7 +323,7 @@ The verified internal user ID is always the partition key source. It is never ac
 | User profile | `USER#<uid>` | `PROFILE` |
 | Identity lookup | `IDENTITY#github#<github_id>` | `IDENTITY` |
 | Session | `USER#<uid>` | `SESSION#<refresh_hash>` |
-| Project | `USER#<uid>` | `P#<pid>#META` |
+| Project | `USER#<uid>` | `META#<pid>` |
 | Task | `USER#<uid>` | `P#<pid>#TASK#<task_id>` |
 | Decision | `USER#<uid>` | `P#<pid>#DEC#<timestamp>#<decision_id>` |
 | Note | `USER#<uid>` | `P#<pid>#NOTE#<timestamp>#<note_id>` |
@@ -332,7 +332,9 @@ The verified internal user ID is always the partition key source. It is never ac
 | Event | `USER#<uid>` | `P#<pid>#EVT#<timestamp>#<event_id>` |
 | Idempotency record | `USER#<uid>` | `IDEMP#<key>` |
 
-The common `P#<pid>#` prefix means a single paginated Query can retrieve all items belonging to one project, including its project card.
+Task, Decision, Note, Changeset, AgentRun and Event all share a `P#<pid>#` prefix, so a single paginated Query against one project ID retrieves all of that project's items together.
+
+The project's own item is a deliberate exception, keyed `META#<pid>` rather than `P#<pid>#META`. It needs to be listed across every project a user owns via one cheap `begins_with(SK, "META#")` Query; folding it into the shared `P#<pid>#` prefix would mean either scanning a user's entire partition — every task, changeset, run and event — just to list their projects, or adding a sparse GSI purely for that. Neither is worth it for an item this small and this frequently read. Loading one project's own card alongside its other items therefore takes a separate `GetItem`, not the same Query.
 
 Never assume a project remains below DynamoDB's 1 MB Query response limit. Every repository Query supports pagination even if the UI initially requests only the first page.
 
@@ -340,9 +342,9 @@ Never assume a project remains below DynamoDB's 1 MB Query response limit. Every
 
 | Access pattern | Implementation |
 | --- | --- |
-| List projects | Query `PK = USER#<uid>` and `begins_with(SK, "P#")`, filtered to metadata or through a sparse listing index. |
-| Load project card | GetItem `USER#<uid>`, `P#<pid>#META`. |
-| Load project items | Query `USER#<uid>` with prefix `P#<pid>#`. |
+| List projects | Query `PK = USER#<uid>` and `begins_with(SK, "META#")` — isolates project cards directly, no per-item filtering or a separate index needed. |
+| Load project card | GetItem `USER#<uid>`, `META#<pid>`. |
+| Load project items | Query `USER#<uid>` with prefix `P#<pid>#` — every other item belonging to the project; its own card is loaded separately (see above). |
 | Load recent runs | Query project prefix and run range, or use a sparse operational index if needed. |
 | Cross-project next action | Sparse GSI containing actionable tasks only. |
 
