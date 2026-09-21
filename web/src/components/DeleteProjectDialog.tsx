@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { ApiError, deleteProject, type Project } from '@/src/api/projects'
+import { notify } from '@/src/lib/notify'
 
 function DeleteProjectDialog({ project }: { project: Project }) {
   const navigate = useNavigate()
@@ -26,14 +27,17 @@ function DeleteProjectDialog({ project }: { project: Project }) {
     setError(null)
     try {
       await deleteProject(project.id)
+      notify.success('Project deleted')
       navigate('/projects')
     } catch (err) {
       // Already gone is the outcome we wanted anyway — no need to make
       // the user acknowledge an error for it.
       if (err instanceof ApiError && err.status === 404) {
+        notify.success('Project deleted')
         navigate('/projects')
         return
       }
+      notify.error('Failed to delete project')
       setError(err instanceof Error ? err.message : 'Failed to delete project')
       setDeleting(false)
     }
