@@ -1201,6 +1201,48 @@ func TestDynamoRepository_AcceptChangeset_VersionConflict(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_AcceptChangeset_ConcurrentAcceptDoesNotOverwriteApplied
+// documents the race two concurrent AcceptChangeset calls on the *same*
+// changeset would hit: both read the changeset as "proposed" before either
+// commits, one wins the transaction (changeset -> applied, tasks created,
+// project version bumped), and the loser must not then stomp that "applied"
+// status back to "conflict" via a non-transactional write. Modeled here as
+// two sequential calls against the same in-flight (pre-accept) changeset
+// value, which reproduces the loser's exact code path once the winner has
+// already committed.
+func TestDynamoRepository_AcceptChangeset_ConcurrentAcceptDoesNotOverwriteApplied(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	project, changeset := newTestAcceptableChangeset(t, repo, userID, []domain.ProposedTask{{Title: "First"}})
+
+	if _, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-winner"); err != nil {
+		t.Fatalf("winner AcceptChangeset() error = %v", err)
+	}
+
+	_, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-loser")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("loser AcceptChangeset() error = %v, want %v", err, ErrConflict)
+	}
+
+	gotChangeset, err := repo.GetChangeset(ctx, userID, project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetApplied {
+		t.Errorf("Changeset.Status = %q, want %q — the loser must not overwrite the winner's applied status", gotChangeset.Status, domain.ChangesetApplied)
+	}
+
+	tasks, err := repo.ListTasks(ctx, userID, project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("ListTasks() = %+v, want the winner's single task, none from the loser", tasks)
+	}
+}
+
 // TestDynamoRepository_AcceptChangeset_IdempotentReplay documents
 // architecture.md §15: replaying an accept with the same idempotency key
 // returns the original result instead of re-applying it (no duplicate

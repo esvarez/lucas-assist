@@ -1134,6 +1134,10 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	if err != nil {
 		return AcceptChangesetResult{}, fmt.Errorf("marshal applied status: %w", err)
 	}
+	proposedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetProposed))
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal proposed status: %w", err)
+	}
 
 	const projectItemIndex = 0
 
@@ -1201,6 +1205,9 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		},
 	})
 
+	// changesetItemIndex is computed rather than a constant since it shifts
+	// with len(tasks) — it's the last item appended above.
+	changesetItemIndex := len(transactItems)
 	transactItems = append(transactItems, types.TransactWriteItem{
 		Update: &types.Update{
 			TableName: aws.String(r.table),
@@ -1208,10 +1215,15 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 				"PK": &types.AttributeValueMemberS{Value: userPK(c.UserID)},
 				"SK": &types.AttributeValueMemberS{Value: changesetSK(c.ProjectID, c.ID)},
 			},
-			UpdateExpression:          aws.String("SET #status = :applied"),
-			ConditionExpression:       aws.String("attribute_exists(PK)"),
-			ExpressionAttributeNames:  map[string]string{"#status": "status"},
-			ExpressionAttributeValues: map[string]types.AttributeValue{":applied": appliedStatusAV},
+			UpdateExpression:    aws.String("SET #status = :applied"),
+			ConditionExpression: aws.String("attribute_exists(PK) AND #status = :proposed"),
+			ExpressionAttributeNames: map[string]string{
+				"#status": "status",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":applied":  appliedStatusAV,
+				":proposed": proposedStatusAV,
+			},
 		},
 	})
 
@@ -1219,9 +1231,28 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	if err != nil {
 		var canceled *types.TransactionCanceledException
 		if errors.As(err, &canceled) {
+			// The changeset item's own condition (#status = :proposed) now
+			// catches the case this guards against: two concurrent accepts
+			// on the *same* changeset. If that condition is what failed,
+			// the changeset was already applied (or otherwise changed) by
+			// the winner of the race, and the whole transaction rolled
+			// back — nothing here was written. Overwriting that outcome
+			// with a non-transactional UpdateChangesetStatus(conflict) call
+			// would corrupt an already-applied changeset, so this case
+			// leaves it untouched and just reports the conflict.
+			if len(canceled.CancellationReasons) > changesetItemIndex {
+				reason := canceled.CancellationReasons[changesetItemIndex]
+				if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+					return AcceptChangesetResult{}, ErrConflict
+				}
+			}
 			if len(canceled.CancellationReasons) > projectItemIndex {
 				reason := canceled.CancellationReasons[projectItemIndex]
 				if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+					// Only the project item's version check failed — the
+					// changeset itself was still "proposed" at evaluation
+					// time (e.g. a concurrent PUT /projects/{id} moved the
+					// version), so it's safe to mark it conflict here.
 					if _, failErr := r.UpdateChangesetStatus(ctx, c.UserID, c.ProjectID, c.ID, domain.ChangesetConflict); failErr != nil {
 						return AcceptChangesetResult{}, fmt.Errorf("version conflict (and failed to mark changeset conflict: %w)", failErr)
 					}
