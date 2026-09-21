@@ -886,7 +886,7 @@ func TestMemoryRepository_LeaseAgentRun_TerminalRunNotLeasable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
-	if _, err := repo.CompleteAgentRun(ctx, "user_1", "proj_1", created.ID); err != nil {
+	if _, err := repo.CompleteAgentRun(ctx, "user_1", "proj_1", created.ID, "cs_1"); err != nil {
 		t.Fatalf("CompleteAgentRun() error = %v", err)
 	}
 
@@ -908,19 +908,22 @@ func TestMemoryRepository_CompleteAgentRun(t *testing.T) {
 		t.Fatalf("LeaseAgentRun() error = %v", err)
 	}
 
-	completed, err := repo.CompleteAgentRun(ctx, "user_1", "proj_1", created.ID)
+	completed, err := repo.CompleteAgentRun(ctx, "user_1", "proj_1", created.ID, "cs_1")
 	if err != nil {
 		t.Fatalf("CompleteAgentRun() error = %v", err)
 	}
 	if completed.Status != domain.AgentRunCompleted {
 		t.Errorf("Status = %q, want %q", completed.Status, domain.AgentRunCompleted)
 	}
+	if completed.ChangesetID != "cs_1" {
+		t.Errorf("ChangesetID = %q, want %q", completed.ChangesetID, "cs_1")
+	}
 }
 
 func TestMemoryRepository_CompleteAgentRun_NotFound(t *testing.T) {
 	repo := NewMemoryRepository()
 
-	_, err := repo.CompleteAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist")
+	_, err := repo.CompleteAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist", "cs_1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CompleteAgentRun() error = %v, want %v", err, ErrNotFound)
 	}

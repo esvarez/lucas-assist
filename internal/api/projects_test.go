@@ -91,11 +91,13 @@ func TestCreateProject_InvalidBody(t *testing.T) {
 // only way to exercise the handlers' error-status mapping for errors the
 // memory repo won't naturally produce via the API.
 type stubRepository struct {
-	createErr error
-	deleteErr error
-	updateErr error
-	getErr    error
-	listErr   error
+	createErr    error
+	deleteErr    error
+	updateErr    error
+	getErr       error
+	listErr      error
+	getRunErr    error
+	getChangeErr error
 }
 
 func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
@@ -116,6 +118,14 @@ func (s stubRepository) GetProject(ctx context.Context, userID, id string) (doma
 
 func (s stubRepository) ListProjects(ctx context.Context, userID string) ([]domain.Project, error) {
 	return nil, s.listErr
+}
+
+func (s stubRepository) GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	return domain.AgentRun{}, s.getRunErr
+}
+
+func (s stubRepository) GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error) {
+	return domain.Changeset{}, s.getChangeErr
 }
 
 func TestCreateProject_DuplicateID(t *testing.T) {

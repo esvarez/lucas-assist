@@ -58,6 +58,13 @@ type AgentRun struct {
 	// Error holds the failure reason when Status is AgentRunFailed.
 	Error string `json:"error,omitempty"`
 
+	// ChangesetID is set by CompleteAgentRun once the worker has saved the
+	// Changeset the run produced — empty until then, and always empty for
+	// a run that ends AgentRunFailed or AgentRunCancelled. This is the link
+	// GET /agent-runs/{id} (#100) uses to fetch and include the changeset
+	// alongside a completed run's status.
+	ChangesetID string `json:"changeset_id,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
