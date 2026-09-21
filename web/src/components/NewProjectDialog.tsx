@@ -15,8 +15,10 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, ValidationError, createProject } from '@/src/api/projects'
+import { notify } from '@/src/lib/notify'
 import { cn } from '@/lib/utils'
 
 // Fields this form renders — anything the server flags outside this set
@@ -88,8 +90,10 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
       })
       setOpen(false)
       reset()
+      notify.success('Project created')
       navigate(`/projects/${project.id}`)
     } catch (err) {
+      notify.error('Failed to create project')
       if (err instanceof ValidationError) {
         const known: Record<string, string> = {}
         const unknown: string[] = []
@@ -243,7 +247,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
               Cancel
             </Button>
             <Button type="submit" disabled={!trimmedName || submitting}>
-              {submitting ? 'Creating…' : 'Create'}
+              {submitting ? <Spinner /> : 'Create'}
             </Button>
           </DialogFooter>
         </form>

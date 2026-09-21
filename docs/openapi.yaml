@@ -194,6 +194,47 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /skills:
+    post:
+      summary: Dispatch a skill asynchronously
+      description: >
+        Creates a queued AgentRun for the named skill and enqueues it for
+        the Agent Worker (architecture.md §1/§10). Does not call the model
+        itself — poll GET /agent-runs/{id} (#100) for the result once one
+        exists. Registry lookup and input-shape validation still happen
+        synchronously: an unknown skill or malformed input is rejected
+        before any AgentRun is created or enqueued.
+      operationId: dispatchSkill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DispatchSkillRequest"
+      responses:
+        "202":
+          description: AgentRun created and enqueued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DispatchSkillResponse"
+        "400":
+          description: >
+            Invalid body, missing user_id, or input that fails the skill's
+            own shape validation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No skill registered under this name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
   parameters:
     UserIdQuery:
@@ -402,6 +443,41 @@ components:
         - base_version
         - status
         - created_at
+
+    DispatchSkillRequest:
+      type: object
+      properties:
+        skill:
+          type: string
+          description: Name of a registered agent.Skill (e.g. decompose_task).
+        input:
+          type: object
+          description: >
+            The skill's raw input, validated against that skill's own
+            expected shape (see e.g. DecomposeInput, CreateProjectInput) —
+            not a shape this spec constrains generically.
+        user_id:
+          type: string
+          description: >
+            Required — every AgentRun needs an owner (architecture.md §8).
+        project_id:
+          type: string
+          description: >
+            Optional. Empty for create_project, which doesn't have a
+            project yet — that's the point of the run.
+      required:
+        - skill
+        - input
+        - user_id
+
+    DispatchSkillResponse:
+      type: object
+      properties:
+        run_id:
+          type: string
+          description: ID of the AgentRun created for this request.
+      required:
+        - run_id
 
     ErrorResponse:
       type: object

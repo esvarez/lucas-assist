@@ -92,17 +92,17 @@ Resources:
 
   # ── Agent job queue ──────────────────────────
   # SQS as the only async work transport (architecture.md §10/§11/§18,
-  # ADR 006) for AgentRun jobs — no Lambda sends to this yet (#99) and none
-  # consumes it yet (#101); this resource just exists so both can be built
-  # against a real queue instead of each inventing its own placeholder.
+  # ADR 006) for AgentRun jobs — SkillsFunction sends to this (#99); none
+  # consumes it yet (#101).
   #
   # VisibilityTimeout is 360s: AWS's own guidance for Lambda-consumed
   # queues is at least 6x the consumer function's timeout, so a message
   # being processed isn't redelivered to a second worker before the first
-  # one finishes. SkillsFunction's Timeout (60s) is the only Lambda timeout
-  # that exists yet; #101's Worker Lambda should reuse or exceed it, and
-  # this value should be revisited against the Worker's actual timeout
-  # once #101 sets one.
+  # one finishes. No Lambda consumes this queue yet — SkillsFunction only
+  # sends to it, at 60s per its own Timeout, but that's no longer the
+  # relevant number here since it's not what dequeues these messages.
+  # #101's Worker Lambda is the actual consumer; revisit this value against
+  # its Timeout once #101 sets one.
   AgentJobsQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -135,13 +135,16 @@ Resources:
   # origins would push toward CORS, which architecture.md §13 and
   # AGENTS.md forbid.
   #
-  # Timeout mismatch: HTTP API's AWS_PROXY integration timeout caps at
-  # 30000ms and isn't configurable past that, while this function's own
-  # Timeout is 60s. A model call that runs past 30s completes in the
-  # Lambda but the caller sees a 504 from the gateway first. Acceptable
-  # for this slice (architecture.md §19 step 6 — AgentRun/SQS/polling —
-  # is where long-running model calls get a real async path instead of a
-  # synchronous HTTP round trip).
+  # Skill dispatch is asynchronous (architecture.md §1/§10, issue #99): this
+  # function validates the request, creates a queued AgentRun, and sends
+  # its run ID to AgentJobsQueue — it returns 202 before any model call
+  # happens. It no longer calls OpenAI itself (that moves to the Agent
+  # Worker, #101, once it exists), so it holds no OpenAI credential and
+  # needs no SSM/KMS permissions — only DynamoDB write (to create the run)
+  # and SQS send (to enqueue it). This also resolves the old timeout
+  # mismatch between this function's 60s Timeout and API Gateway's
+  # non-configurable 30s AWS_PROXY integration timeout: nothing this
+  # function does runs anywhere near 30s anymore.
   #
   # Function URL stays alongside the new route rather than being removed.
   # NudgeApi has no authorizer yet, so POST /skills is now exactly as
@@ -149,18 +152,6 @@ Resources:
   # CRUD API, not a regression. The IAM-signed Function URL is kept as a
   # narrower, SigV4-only calling path until GitHub OAuth lands; drop it
   # then if nothing still uses it.
-  #
-  # The OpenAI key is resolved at runtime from SSM Parameter Store, not a
-  # SAM parameter (architecture.md §18) — it never transits CloudFormation
-  # as plaintext. Deploy prerequisite, run once per environment before the
-  # first deploy:
-  #   aws ssm put-parameter \
-  #     --name /${Environment}/nudge/openai-api-key \
-  #     --type SecureString \
-  #     --value <key>
-  # Only this function's role can read it; ApiFunction has neither the env
-  # var nor the IAM permission (architecture.md §14: "Allow only the
-  # Worker to read the OpenAI credential").
   SkillsFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -176,30 +167,13 @@ Resources:
         AuthType: AWS_IAM
       Environment:
         Variables:
-          OPENAI_API_KEY_PARAM: !Sub /${Environment}/nudge/openai-api-key
+          DYNAMODB_TABLE: !Ref NudgeTable
+          AGENT_JOBS_QUEUE_URL: !Ref AgentJobsQueue
       Policies:
-        - Statement:
-            - Sid: ReadOpenAIKeyParameter
-              Effect: Allow
-              Action: ssm:GetParameter
-              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Environment}/nudge/openai-api-key
-            # Resource must be "*" here: an alias ARN (e.g. alias/aws/ssm) in
-            # an IAM policy's Resource element does not authorize Decrypt
-            # against the underlying key — IAM does not resolve aliases for
-            # that purpose, so GetParameter's decrypt would be denied at
-            # runtime despite this statement existing. There's also no way
-            # to reference the AWS-managed key's real key ARN statically,
-            # since its key ID isn't known at template-authoring time. The
-            # kms:ViaService condition scopes this to calls KMS receives
-            # through SSM, rather than granting decrypt on every key in the
-            # account.
-            - Sid: DecryptOpenAIKeyParameter
-              Effect: Allow
-              Action: kms:Decrypt
-              Resource: "*"
-              Condition:
-                StringEquals:
-                  kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NudgeTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt AgentJobsQueue.QueueName
       Events:
         SkillsApiEvent:
           Type: HttpApi
