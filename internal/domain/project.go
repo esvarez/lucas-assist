@@ -31,10 +31,12 @@ type Project struct {
 
 // ProposedProject is the content of a Project before the commit path
 // (POST /projects) assigns it an ID, status, and timestamps. It's what
-// the create_project skill proposes.
+// the create_project skill proposes, and what a Changeset stores until
+// it's accepted — hence the dynamodbav tags alongside the json/jsonschema
+// ones (same reasoning as ProposedTask).
 type ProposedProject struct {
-	Name        string     `json:"name" jsonschema:"description=Short memorable project name"`
-	Goal        string     `json:"goal" jsonschema:"description=What shipping or done looks like for this project"`
-	Deadline    *time.Time `json:"deadline" jsonschema:"nullable,description=Target completion date if the user gave one"`
-	Constraints []string   `json:"constraints" jsonschema:"description=Constraints or must-haves the user mentioned such as tech stack budget or timeline limits"`
+	Name        string     `json:"name" dynamodbav:"name" jsonschema:"description=Short memorable project name"`
+	Goal        string     `json:"goal" dynamodbav:"goal" jsonschema:"description=What shipping or done looks like for this project"`
+	Deadline    *time.Time `json:"deadline" dynamodbav:"deadline,omitempty" jsonschema:"nullable,description=Target completion date if the user gave one"`
+	Constraints []string   `json:"constraints" dynamodbav:"constraints,omitempty" jsonschema:"description=Constraints or must-haves the user mentioned such as tech stack budget or timeline limits"`
 }

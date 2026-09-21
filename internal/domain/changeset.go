@@ -41,11 +41,17 @@ type Changeset struct {
 	Status      ChangesetStatus `json:"status"`
 
 	// ProposedTasks is the mutation payload for decompose_task's
-	// changesets — the only proposal shape needed today. A skill that
-	// proposes something else (e.g. create_project) gets its own field
-	// here when that's actually needed, rather than a premature generic
-	// "mutations" abstraction.
-	ProposedTasks []ProposedTask `json:"proposed_tasks"`
+	// changesets. Exactly one of ProposedTasks/ProposedProject is
+	// populated, matching Skill — there's no dedicated "changeset kind"
+	// field, since Skill already says which shape to expect.
+	ProposedTasks []ProposedTask `json:"proposed_tasks,omitempty"`
+
+	// ProposedProject is create_project's mutation payload (#101) — the
+	// second proposal shape #73 anticipated needing "when actually
+	// needed." A create_project run has no ProjectID yet (that's the
+	// point of the run), so BaseVersion is meaningless for these
+	// changesets: there's no existing project version to check against.
+	ProposedProject *ProposedProject `json:"proposed_project,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 }

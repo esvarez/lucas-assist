@@ -84,28 +84,31 @@ func changesetSK(projectID, changesetID string) string {
 }
 
 // changesetListSKPrefix is the begins_with prefix that scopes a Query to
-// one project's changesets (architecture.md §8).
+// one project's changesets (architecture.md §8). A create_project
+// changeset uses the same noProjectSegment placeholder as its AgentRun
+// (see below) — it has no ProjectID either, for the same reason.
 func changesetListSKPrefix(projectID string) string {
-	return projectScopeSKPrefix + projectID + "#CHANGESET#"
+	return projectScopeSKPrefix + projectSegment(projectID) + "#CHANGESET#"
 }
 
-// agentRunNoProjectSegment is the fixed placeholder used in place of
-// <pid> for a create_project run, which has no ProjectID yet (that's the
-// whole point of the run — see domain.AgentRun). Every other skill's run
-// carries a real ProjectID and uses it directly.
+// noProjectSegment is the fixed placeholder used in place of <pid> for a
+// create_project run or changeset, neither of which has a ProjectID yet
+// (that's the whole point of create_project — see domain.AgentRun and
+// domain.Changeset.ProposedProject). Every other skill carries a real
+// ProjectID and uses it directly.
 //
 // This is the concrete answer to the open question in issue #96: rather
-// than giving project-less runs a second, un-prefixed item shape (which
-// would need its own Query/Get code path for what's only ever one skill),
-// they get the same `P#<segment>#RUN#<run_id>` item as every other run,
-// just with a fixed segment instead of a real project ID. It's still
-// trivially distinguishable from a real project ID since NewID never
-// produces this exact string.
-const agentRunNoProjectSegment = "NOPROJECT"
+// than giving project-less items a second, un-prefixed item shape (which
+// would need its own Query/Get code path), they get the same
+// `P#<segment>#TYPE#<id>` item as every other one of that type, just with
+// a fixed segment instead of a real project ID. It's still trivially
+// distinguishable from a real project ID since NewID never produces this
+// exact string.
+const noProjectSegment = "NOPROJECT"
 
-func agentRunProjectSegment(projectID string) string {
+func projectSegment(projectID string) string {
 	if projectID == "" {
-		return agentRunNoProjectSegment
+		return noProjectSegment
 	}
 	return projectID
 }
@@ -124,7 +127,7 @@ func agentRunSK(projectID, runID string) string {
 // run_id starts with a zero-padded timestamp, such a Query also returns
 // runs in chronological order.
 func agentRunListSKPrefix(projectID string) string {
-	return projectScopeSKPrefix + agentRunProjectSegment(projectID) + "#RUN#"
+	return projectScopeSKPrefix + projectSegment(projectID) + "#RUN#"
 }
 
 func toProjectItem(p domain.Project) projectItem {
@@ -525,43 +528,46 @@ func (r *DynamoRepository) ListTasks(ctx context.Context, userID, projectID stri
 // being carried solely for key-building — Changeset owns its UserID
 // directly.
 type changesetItem struct {
-	PK            string                `dynamodbav:"PK"`
-	SK            string                `dynamodbav:"SK"`
-	UserID        string                `dynamodbav:"user_id"`
-	ID            string                `dynamodbav:"id"`
-	ProjectID     string                `dynamodbav:"project_id"`
-	Skill         string                `dynamodbav:"skill"`
-	BaseVersion   int                   `dynamodbav:"base_version"`
-	Status        string                `dynamodbav:"status"`
-	ProposedTasks []domain.ProposedTask `dynamodbav:"proposed_tasks,omitempty"`
-	CreatedAt     time.Time             `dynamodbav:"created_at"`
+	PK              string                  `dynamodbav:"PK"`
+	SK              string                  `dynamodbav:"SK"`
+	UserID          string                  `dynamodbav:"user_id"`
+	ID              string                  `dynamodbav:"id"`
+	ProjectID       string                  `dynamodbav:"project_id,omitempty"`
+	Skill           string                  `dynamodbav:"skill"`
+	BaseVersion     int                     `dynamodbav:"base_version"`
+	Status          string                  `dynamodbav:"status"`
+	ProposedTasks   []domain.ProposedTask   `dynamodbav:"proposed_tasks,omitempty"`
+	ProposedProject *domain.ProposedProject `dynamodbav:"proposed_project,omitempty"`
+	CreatedAt       time.Time               `dynamodbav:"created_at"`
 }
 
 func toChangesetItem(c domain.Changeset) changesetItem {
 	return changesetItem{
-		PK:            userPK(c.UserID),
-		SK:            changesetSK(c.ProjectID, c.ID),
-		UserID:        c.UserID,
-		ID:            c.ID,
-		ProjectID:     c.ProjectID,
-		Skill:         c.Skill,
-		BaseVersion:   c.BaseVersion,
-		Status:        string(c.Status),
-		ProposedTasks: c.ProposedTasks,
-		CreatedAt:     c.CreatedAt,
+		PK:              userPK(c.UserID),
+		SK:              changesetSK(c.ProjectID, c.ID),
+		UserID:          c.UserID,
+		ID:              c.ID,
+		ProjectID:       c.ProjectID,
+		Skill:           c.Skill,
+		BaseVersion:     c.BaseVersion,
+		Status:          string(c.Status),
+		ProposedTasks:   c.ProposedTasks,
+		ProposedProject: c.ProposedProject,
+		CreatedAt:       c.CreatedAt,
 	}
 }
 
 func (i changesetItem) toDomain() domain.Changeset {
 	return domain.Changeset{
-		ID:            i.ID,
-		ProjectID:     i.ProjectID,
-		UserID:        i.UserID,
-		Skill:         i.Skill,
-		BaseVersion:   i.BaseVersion,
-		Status:        domain.ChangesetStatus(i.Status),
-		ProposedTasks: i.ProposedTasks,
-		CreatedAt:     i.CreatedAt,
+		ID:              i.ID,
+		ProjectID:       i.ProjectID,
+		UserID:          i.UserID,
+		Skill:           i.Skill,
+		BaseVersion:     i.BaseVersion,
+		Status:          domain.ChangesetStatus(i.Status),
+		ProposedTasks:   i.ProposedTasks,
+		ProposedProject: i.ProposedProject,
+		CreatedAt:       i.CreatedAt,
 	}
 }
 

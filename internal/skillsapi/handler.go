@@ -50,7 +50,7 @@ type AgentRunStore interface {
 // Enqueuer is the slice of *queue.Enqueuer skillsapi actually calls,
 // narrowed so tests can stub it without a real SQS client.
 type Enqueuer interface {
-	EnqueueRun(ctx context.Context, runID string) error
+	EnqueueRun(ctx context.Context, userID, projectID, runID string) error
 }
 
 // NewHandler builds the skill-dispatch HTTP handler against reg, runs, and
@@ -98,7 +98,7 @@ func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http
 			return
 		}
 
-		if err := enqueuer.EnqueueRun(r.Context(), run.ID); err != nil {
+		if err := enqueuer.EnqueueRun(r.Context(), run.UserID, run.ProjectID, run.ID); err != nil {
 			// The run was already persisted as queued, but nothing will
 			// ever send it to the queue a second time — left as-is, it
 			// would sit queued forever with no worker able to lease it, and

@@ -92,17 +92,14 @@ Resources:
 
   # ── Agent job queue ──────────────────────────
   # SQS as the only async work transport (architecture.md §10/§11/§18,
-  # ADR 006) for AgentRun jobs — SkillsFunction sends to this (#99); none
-  # consumes it yet (#101).
+  # ADR 006) for AgentRun jobs — SkillsFunction sends to this (#99);
+  # WorkerFunction consumes it (#101).
   #
   # VisibilityTimeout is 360s: AWS's own guidance for Lambda-consumed
   # queues is at least 6x the consumer function's timeout, so a message
   # being processed isn't redelivered to a second worker before the first
-  # one finishes. No Lambda consumes this queue yet — SkillsFunction only
-  # sends to it, at 60s per its own Timeout, but that's no longer the
-  # relevant number here since it's not what dequeues these messages.
-  # #101's Worker Lambda is the actual consumer; revisit this value against
-  # its Timeout once #101 sets one.
+  # one finishes. WorkerFunction's Timeout is 60s, so this sits exactly at
+  # that 6x minimum.
   AgentJobsQueue:
     Type: AWS::SQS::Queue
     Properties:
@@ -182,6 +179,73 @@ Resources:
             Method: POST
             ApiId: !Ref NudgeApi
 
+  # ── Agent Worker Lambda ──────────────────────
+  # Consumes AgentJobsQueue (architecture.md §1/§10/§11, issue #101): leases
+  # the referenced AgentRun, calls the model via agent.Run, and saves the
+  # result as a Changeset. This is the only function that holds the OpenAI
+  # credential (architecture.md §14) — SkillsFunction stopped needing it
+  # once dispatch became asynchronous (#99).
+  #
+  # BatchSize: 1 keeps this simple: one invocation processes exactly one
+  # run, so a slow or failing model call never blocks or fails a batch of
+  # unrelated runs. No FunctionUrlConfig — this Lambda is never invoked
+  # over HTTP, only via the SQS event source below.
+  #
+  # The OpenAI key is resolved at runtime from SSM Parameter Store, not a
+  # SAM parameter (architecture.md §18) — it never transits CloudFormation
+  # as plaintext. Deploy prerequisite, run once per environment before the
+  # first deploy (same parameter SkillsFunction used before #99):
+  #   aws ssm put-parameter \
+  #     --name /${Environment}/nudge/openai-api-key \
+  #     --type SecureString \
+  #     --value <key>
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ./
+      Handler: bootstrap
+      FunctionName: !Sub ${Environment}-nudge-worker
+      Description: "Agent Worker Lambda: consumes AgentJobsQueue, calls the model, saves the Changeset"
+      MemorySize: 1024
+      Timeout: 60
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref NudgeTable
+          OPENAI_API_KEY_PARAM: !Sub /${Environment}/nudge/openai-api-key
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NudgeTable
+        - Statement:
+            - Sid: ReadOpenAIKeyParameter
+              Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Environment}/nudge/openai-api-key
+            # Resource must be "*" here: an alias ARN (e.g. alias/aws/ssm) in
+            # an IAM policy's Resource element does not authorize Decrypt
+            # against the underlying key — IAM does not resolve aliases for
+            # that purpose, so GetParameter's decrypt would be denied at
+            # runtime despite this statement existing. There's also no way
+            # to reference the AWS-managed key's real key ARN statically,
+            # since its key ID isn't known at template-authoring time. The
+            # kms:ViaService condition scopes this to calls KMS receives
+            # through SSM, rather than granting decrypt on every key in the
+            # account.
+            - Sid: DecryptOpenAIKeyParameter
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+      Events:
+        AgentJobsQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt AgentJobsQueue.Arn
+            BatchSize: 1
+
 Outputs:
   SkillsFunctionUrl:
     Description: Function URL for the Skill Lambda
@@ -190,10 +254,8 @@ Outputs:
     Description: Base URL of the Nudge HTTP API (POST /projects, POST /skills)
     Value: !Sub https://${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
   AgentJobsQueueUrl:
-    Description: >
-      URL of the agent job queue — #99 sends AgentRun job messages here,
-      #101's Worker Lambda consumes them.
+    Description: URL of the agent job queue — #99 sends AgentRun job messages here.
     Value: !Ref AgentJobsQueue
   AgentJobsQueueArn:
-    Description: ARN of the agent job queue, for #101's event-source mapping.
+    Description: ARN of the agent job queue — WorkerFunction consumes it.
     Value: !GetAtt AgentJobsQueue.Arn
