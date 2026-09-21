@@ -22,7 +22,10 @@ export interface Task {
 }
 
 // FlatTask is the wire shape: internal/domain.Task as-is, no subtasks.
-type FlatTask = Omit<Task, 'subtasks'>
+// Exported so other clients returning the same shape (e.g.
+// web/src/api/skills.ts's accept-changeset response) can reuse it instead
+// of redefining it.
+export type FlatTask = Omit<Task, 'subtasks'>
 
 // buildTaskTree groups a flat, parent_id-linked list into a tree: tasks
 // with no parent_id (or one that isn't present in the list) are roots.
