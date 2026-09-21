@@ -37,7 +37,7 @@ func (f fakeSkill) ResponseFormat() openai.ResponseFormatJSONSchemaParam {
 func (f fakeSkill) Tools() []openai.ChatCompletionToolParam { return nil }
 func (f fakeSkill) Parse(json.RawMessage) (any, error)      { return nil, nil }
 
-// fakeAgentRunCreator stubs AgentRunCreator so tests don't need a real
+// fakeAgentRunCreator stubs AgentRunStore so tests don't need a real
 // store.Repository. domain.AgentRun embeds a json.RawMessage (a slice), so
 // it isn't comparable with == — called tracks invocation instead of
 // comparing lastInput against a zero value.
@@ -47,6 +47,11 @@ type fakeAgentRunCreator struct {
 
 	called    bool
 	lastInput domain.AgentRun
+
+	failErr      error
+	failCalled   bool
+	failRunID    string
+	failErrorMsg string
 }
 
 func (f *fakeAgentRunCreator) CreateAgentRun(_ context.Context, r domain.AgentRun) (domain.AgentRun, error) {
@@ -60,6 +65,16 @@ func (f *fakeAgentRunCreator) CreateAgentRun(_ context.Context, r domain.AgentRu
 		f.created.ID = "run_1"
 	}
 	return f.created, nil
+}
+
+func (f *fakeAgentRunCreator) FailAgentRun(_ context.Context, _, _, runID, errMsg string) (domain.AgentRun, error) {
+	f.failCalled = true
+	f.failRunID = runID
+	f.failErrorMsg = errMsg
+	if f.failErr != nil {
+		return domain.AgentRun{}, f.failErr
+	}
+	return domain.AgentRun{ID: runID, Status: domain.AgentRunFailed, Error: errMsg}, nil
 }
 
 // fakeEnqueuer stubs Enqueuer so tests don't need a real SQS client.
@@ -193,8 +208,49 @@ func TestHandler_CreateAgentRunError(t *testing.T) {
 	}
 }
 
-func TestHandler_EnqueueError(t *testing.T) {
+// TestHandler_EnqueueError_MarksRunFailed documents the fix for the review
+// finding on PR #115: a run whose enqueue fails must not stay "queued"
+// forever with no worker able to ever lease it and no run_id the caller can
+// retry against. The handler marks it failed instead of orphaning it.
+func TestHandler_EnqueueError_MarksRunFailed(t *testing.T) {
 	runs := &fakeAgentRunCreator{}
+	enqueueErr := errors.New("sqs unavailable")
+	enqueuer := &fakeEnqueuer{enqueueErr: enqueueErr}
+	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), runs, enqueuer)
+
+	body := `{"skill": "widget", "input": {}, "user_id": "user_1", "project_id": "proj_1"}`
+	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+
+	if !runs.failCalled {
+		t.Fatal("FailAgentRun() was not called after EnqueueRun failed — the run is left orphaned in queued")
+	}
+	if runs.failRunID != "run_1" {
+		t.Errorf("FailAgentRun() runID = %q, want %q", runs.failRunID, "run_1")
+	}
+	if runs.failErrorMsg != enqueueErr.Error() {
+		t.Errorf("FailAgentRun() errMsg = %q, want %q", runs.failErrorMsg, enqueueErr.Error())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["run_id"] != "run_1" {
+		t.Errorf("response run_id = %q, want %q so the caller can still identify the failed run", resp["run_id"], "run_1")
+	}
+}
+
+// TestHandler_EnqueueError_FailAgentRunAlsoFails documents that the handler
+// still reports the original enqueue error (rather than panicking or
+// masking it) when marking the run failed doesn't work either.
+func TestHandler_EnqueueError_FailAgentRunAlsoFails(t *testing.T) {
+	runs := &fakeAgentRunCreator{failErr: errors.New("dynamo unavailable")}
 	enqueuer := &fakeEnqueuer{enqueueErr: errors.New("sqs unavailable")}
 	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), runs, enqueuer)
 
@@ -205,6 +261,9 @@ func TestHandler_EnqueueError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !runs.failCalled {
+		t.Fatal("FailAgentRun() was not called")
 	}
 }
 

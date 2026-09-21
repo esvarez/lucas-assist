@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/esvarez/lucas-assist/internal/agent"
@@ -36,10 +37,14 @@ type requestEnvelope struct {
 	ProjectID string `json:"project_id"`
 }
 
-// AgentRunCreator is the slice of store.Repository skillsapi actually
-// calls — same narrowing convention as internal/api's ProjectRepository.
-type AgentRunCreator interface {
+// AgentRunStore is the slice of store.Repository skillsapi actually calls —
+// same narrowing convention as internal/api's ProjectRepository.
+// FailAgentRun exists alongside CreateAgentRun so a run that was created
+// but never made it onto the queue doesn't stay queued forever with
+// nothing left to lease it (see NewHandler's enqueue-failure handling).
+type AgentRunStore interface {
 	CreateAgentRun(ctx context.Context, r domain.AgentRun) (domain.AgentRun, error)
+	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
 }
 
 // Enqueuer is the slice of *queue.Enqueuer skillsapi actually calls,
@@ -50,7 +55,7 @@ type Enqueuer interface {
 
 // NewHandler builds the skill-dispatch HTTP handler against reg, runs, and
 // enqueuer.
-func NewHandler(reg *agent.Registry, runs AgentRunCreator, enqueuer Enqueuer) http.Handler {
+func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope requestEnvelope
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
@@ -91,7 +96,18 @@ func NewHandler(reg *agent.Registry, runs AgentRunCreator, enqueuer Enqueuer) ht
 		}
 
 		if err := enqueuer.EnqueueRun(r.Context(), run.ID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			// The run was already persisted as queued, but nothing will
+			// ever send it to the queue a second time — left as-is, it
+			// would sit queued forever with no worker able to lease it, and
+			// the caller has no run_id to poll or retry against (#100).
+			// Marking it failed here surfaces that plainly instead of
+			// silently orphaning the row. Best-effort: if this also fails,
+			// the run stays orphaned, but the caller still gets the
+			// original enqueue error.
+			if _, failErr := runs.FailAgentRun(r.Context(), run.UserID, run.ProjectID, run.ID, err.Error()); failErr != nil {
+				err = fmt.Errorf("%w (and failed to mark run %q failed: %v)", err, run.ID, failErr)
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error(), "run_id": run.ID})
 			return
 		}
 
