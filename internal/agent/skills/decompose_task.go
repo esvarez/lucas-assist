@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/llm"
+	"github.com/esvarez/lucas-assist/internal/store"
 )
 
 // Domain picks which system prompt frames the decomposition.
@@ -34,13 +36,19 @@ type Clarification struct {
 }
 
 // DecomposeInput is what the caller knows about the task to break down.
-// There's no datastore yet, so this comes straight from the request body.
 type DecomposeInput struct {
 	TaskTitle       string `json:"task_title"`
 	TaskDescription string `json:"task_description"`
 	// Domain selects the system prompt. Empty or unrecognized falls back
 	// to DomainGeneral.
 	Domain Domain `json:"domain"`
+
+	// ProjectID is optional — when set, BuildContext loads the project and
+	// its existing tasks and includes them in the prompt (architecture.md
+	// §7's project card + active task subset), so the model doesn't
+	// propose a subtask duplicating one that already exists. Omit it for
+	// ad-hoc decomposition with no project behind it yet.
+	ProjectID string `json:"project_id"`
 
 	// ClarificationRound is 0 on the first call. A caller resubmitting
 	// with Clarifications answered increments it. Round 1+ must never
@@ -74,7 +82,9 @@ Always return status "ok" with 3-7 subtasks, plus assumptions: every choice you 
 
 Only return status "needs_clarification" — and only on clarification_round 0 — if you cannot identify what the task actually is at all, not merely how to do it. At most 3 questions, and only if the answer would change which subtasks exist, not merely their contents.
 
-If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where information is still missing, choose a sensible default and record it in assumptions. Never re-ask anything already present in clarifications.`
+If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where information is still missing, choose a sensible default and record it in assumptions. Never re-ask anything already present in clarifications.
+
+If existing tasks for this project are listed below, none of your subtasks may duplicate one — check titles and intent, not just exact wording, and decompose only the remaining work.`
 
 const decomposeSystemPromptSoftware = `You break a software development task into small, concrete subtasks an indie developer can ship one at a time, each with a title, description, and acceptance criteria.
 
@@ -86,7 +96,9 @@ Stay inside the task you were given. Don't add subtasks for deployment, CI, moni
 
 Only return status "needs_clarification" — and only on clarification_round 0 — if you cannot identify what is being built at all, not merely how. A missing stack, scale, audience, or polish level is never grounds to ask; those are assumptions. At most 3 questions, and only if the answer would change which subtasks exist, not merely their contents.
 
-If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where information is still missing, choose a sensible default and record it in assumptions. Never re-ask anything already present in clarifications.`
+If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where information is still missing, choose a sensible default and record it in assumptions. Never re-ask anything already present in clarifications.
+
+If existing tasks for this project are listed below, none of your subtasks may duplicate one — check titles and intent, not just exact wording, and decompose only the remaining work.`
 
 func systemPrompt(d Domain) string {
 	if d == DomainSoftware {
@@ -114,8 +126,46 @@ func buildUserMessage(in DecomposeInput) string {
 	return b.String()
 }
 
+// buildProjectContextMessage renders the project card and existing task
+// titles (architecture.md §7's "always included" project card plus the
+// "active task subset") so the model can see what already exists and
+// avoid proposing a duplicate. It's a separate system message, placed
+// after the domain system prompt but before the user's task — stable per
+// project, so it changes far less often than the per-call task
+// (architecture.md §6, prompt-caching).
+func buildProjectContextMessage(proj domain.Project, tasks []domain.Task) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Project: %s\n\nGoal: %s", proj.Name, proj.Goal)
+	if len(proj.Constraints) > 0 {
+		b.WriteString("\n\nConstraints:\n")
+		for _, c := range proj.Constraints {
+			fmt.Fprintf(&b, "- %s\n", c)
+		}
+	}
+
+	if len(tasks) > 0 {
+		b.WriteString("\nExisting tasks for this project (do not propose a subtask duplicating any of these):\n")
+		for _, t := range tasks {
+			fmt.Fprintf(&b, "- %s\n", t.Title)
+		}
+	} else {
+		b.WriteString("\nThis project has no tasks yet.\n")
+	}
+
+	return b.String()
+}
+
 // DecomposeTaskSkill implements agent.Skill for decompose_task.
-type DecomposeTaskSkill struct{}
+type DecomposeTaskSkill struct {
+	repo store.Repository
+}
+
+// NewDecomposeTaskSkill builds a DecomposeTaskSkill backed by repo, used by
+// BuildContext to load the project and its existing tasks when the input
+// carries a ProjectID.
+func NewDecomposeTaskSkill(repo store.Repository) DecomposeTaskSkill {
+	return DecomposeTaskSkill{repo: repo}
+}
 
 // Name implements agent.Skill.
 func (DecomposeTaskSkill) Name() string { return "decompose_task" }
@@ -123,9 +173,16 @@ func (DecomposeTaskSkill) Name() string { return "decompose_task" }
 // BuildContext implements agent.Skill: strictly decodes the request body
 // (unknown fields rejected — a caller's field-name typo should be a loud
 // 400, not a silently-dropped value, see #41) and assembles the chat
-// messages — stable content (system prompt) first, variable content (the
-// task, and any prior clarifications) last (architecture.md §6).
-func (DecomposeTaskSkill) BuildContext(_ context.Context, rawInput json.RawMessage) ([]openai.ChatCompletionMessageParamUnion, error) {
+// messages — stable content (system prompt, then project context) first,
+// variable content (the task, and any prior clarifications) last
+// (architecture.md §6).
+//
+// When the input carries a ProjectID, the caller must have attached the
+// verified user ID to ctx via agent.WithUserID first — every
+// store.Repository lookup is scoped by user (architecture.md §8), and
+// unlike a malformed request body, a missing context user ID is this
+// service's own bug, not the caller's.
+func (d DecomposeTaskSkill) BuildContext(ctx context.Context, rawInput json.RawMessage) ([]openai.ChatCompletionMessageParamUnion, error) {
 	var in DecomposeInput
 	dec := json.NewDecoder(bytes.NewReader(rawInput))
 	dec.DisallowUnknownFields()
@@ -133,10 +190,34 @@ func (DecomposeTaskSkill) BuildContext(_ context.Context, rawInput json.RawMessa
 		return nil, fmt.Errorf("decompose_task: unmarshal input: %w: %w", agent.ErrInvalidInput, err)
 	}
 
-	return []openai.ChatCompletionMessageParamUnion{
+	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(systemPrompt(in.Domain)),
-		openai.UserMessage(buildUserMessage(in)),
-	}, nil
+	}
+
+	if in.ProjectID != "" {
+		userID, ok := agent.UserIDFromContext(ctx)
+		if !ok {
+			return nil, fmt.Errorf("decompose_task: build context: no user id in context")
+		}
+
+		proj, err := d.repo.GetProject(ctx, userID, in.ProjectID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, fmt.Errorf("decompose_task: project %q not found: %w: %w", in.ProjectID, agent.ErrInvalidInput, err)
+			}
+			return nil, fmt.Errorf("decompose_task: get project: %w", err)
+		}
+
+		tasks, err := d.repo.ListTasks(ctx, userID, in.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("decompose_task: list tasks: %w", err)
+		}
+
+		messages = append(messages, openai.SystemMessage(buildProjectContextMessage(proj, tasks)))
+	}
+
+	messages = append(messages, openai.UserMessage(buildUserMessage(in)))
+	return messages, nil
 }
 
 // ResponseFormat implements agent.Skill.

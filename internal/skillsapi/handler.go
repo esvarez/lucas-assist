@@ -78,8 +78,11 @@ func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http
 		// its chat messages are discarded; the model call itself happens
 		// later in the Agent Worker (#101), once this run is leased off
 		// the queue. No point creating and enqueueing a run for a request
-		// that can't possibly succeed.
-		if _, err := skill.BuildContext(r.Context(), envelope.Input); err != nil {
+		// that can't possibly succeed. envelope.UserID is attached to ctx
+		// first since a skill (e.g. decompose_task with a project_id) may
+		// need it to load that user's data (architecture.md §8).
+		ctx := agent.WithUserID(r.Context(), envelope.UserID)
+		if _, err := skill.BuildContext(ctx, envelope.Input); err != nil {
 			writeJSON(w, statusForBuildContextError(err), map[string]string{"error": err.Error()})
 			return
 		}
