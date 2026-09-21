@@ -15,6 +15,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, ValidationError, createProject } from '@/src/api/projects'
 import { notify } from '@/src/lib/notify'
@@ -246,7 +247,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
               Cancel
             </Button>
             <Button type="submit" disabled={!trimmedName || submitting}>
-              {submitting ? 'Creating…' : 'Create'}
+              {submitting ? <Spinner /> : 'Create'}
             </Button>
           </DialogFooter>
         </form>

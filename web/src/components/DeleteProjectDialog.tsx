@@ -13,6 +13,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
 import { ApiError, deleteProject, type Project } from '@/src/api/projects'
 import { notify } from '@/src/lib/notify'
 
@@ -59,7 +60,7 @@ function DeleteProjectDialog({ project }: { project: Project }) {
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction variant="destructive" disabled={deleting} onClick={handleDelete}>
-            {deleting ? 'Deleting…' : 'Delete'}
+            {deleting ? <Spinner /> : 'Delete'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
