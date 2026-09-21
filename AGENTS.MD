@@ -94,14 +94,14 @@ The SPA is client-rendered and served as static files. Do not introduce Next.js,
 
 ## Auth rules
 
-GitHub OAuth is the **only** identity provider. Nudge issues its own JWTs. See `docs/architecture-decisions.md` §15.
+Amazon Cognito is the **only** token issuer and verifier, for both clients. GitHub is federated into the Cognito User Pool as the identity provider — the application never signs, verifies, or stores a token itself. See `architecture.md` §12, ADR 013, ADR 015.
 
-- **Web:** authorization code + PKCE. **CLI:** device flow (RFC 8628). The CLI is first-class — don't build web-only auth paths.
-- **Access token:** self-issued JWT, HS256, 15min. **Refresh token:** opaque, stored as `sha256` hash in DynamoDB with a TTL attribute. Never store a refresh token in plaintext.
-- Both clients send `Authorization: Bearer <access_token>`. One middleware path. Web keeps the refresh token in an httpOnly/Secure/SameSite=Strict cookie; the CLI in `~/.nudge/credentials` mode 0600.
-- **Never send the GitHub access token to the client.** It stays server-side on the user record.
-- **The internal user ID is a generated UUID, not the GitHub user ID.** Login resolves GitHub ID → UUID via a `GetItem` on the `IDENTITY#github#<gh_id>` item. Don't add a GSI for this and don't use the provider ID as the partition key — that would make a second provider a full re-key.
-- Validation is Go middleware, not an API Gateway JWT authorizer.
+- **Web:** Cognito Hosted UI, authorization code + PKCE. **CLI:** Cognito Hosted UI, authorization code + PKCE via a local loopback redirect — **not** device flow (RFC 8628); Cognito's Hosted UI doesn't support it. The CLI is first-class — don't build web-only auth paths.
+- **Tokens are Cognito's, not ours.** No self-issued JWT, no application-side signing key, no refresh-token hash in DynamoDB. Cognito issues short-lived ID/access tokens and manages refresh TTL and revocation.
+- Both clients send `Authorization: Bearer <access_token>`. Web keeps it in an httpOnly/Secure/SameSite=Strict cookie; the CLI in `~/.nudge/credentials` mode 0600.
+- **Never send the GitHub access token to the client.** It stays server-side on the user record, and isn't stored at all until a shipped feature needs GitHub API access beyond identity.
+- **The internal user ID is a generated UUID, not the GitHub user ID.** GitHub is federated via native Cognito User Pool accounts plus a sign-in Lambda trigger (ADR 015) — on first sign-in the trigger resolves GitHub ID → UUID via a `GetItem` on the `IDENTITY#github#<gh_id>` item and writes the UUID onto the Cognito user as a custom attribute; later sign-ins read the attribute directly. Don't add a GSI for this and don't use the provider ID as the partition key — that would make a second provider a full re-key.
+- Validation is API Gateway's Cognito JWT authorizer, not Go middleware — the API Lambda trusts the authorizer's claims and never re-verifies a signature itself.
 
 ## DynamoDB rules
 
@@ -115,7 +115,6 @@ Single table, **partitioned by user**. The project ID lives in the sort key pref
 | Event | `USER#<uid>` | `P#<pid>#EVT#<ts>` |
 | Pending changeset | `USER#<uid>` | `P#<pid>#PENDING#<job_id>` |
 | User profile | `USER#<uid>` | `PROFILE` |
-| Session | `USER#<uid>` | `SESSION#<sha256(refresh)>` |
 | Identity lookup | `IDENTITY#github#<gh_id>` | `IDENTITY` |
 
 GSI2 (sparse): `PK = USER#<uid>`, `SK = <priority>#<updated_at>`. There is no GSI1.
