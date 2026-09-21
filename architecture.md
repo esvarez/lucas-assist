@@ -6,7 +6,7 @@
 
 **Scope:** Proof of concept and MVP
 
-**Revision:** 2.2 · 20 September 2026
+**Revision:** 2.3 · 21 September 2026
 
 ---
 
@@ -24,10 +24,8 @@ flowchart TB
     DDB[("DynamoDB single table")]
     OAI["OpenAI Responses API"]
     Cognito[("Amazon Cognito User Pool")]
-    GitHub["GitHub OAuth"]
 
-    Client -->|"login"| Cognito
-    Cognito -->|"federated identity"| GitHub
+    Client -->|"sign up / sign in"| Cognito
     Client --> CF
     CF -->|"static assets"| S3
     CF -->|"API requests"| APIGW
@@ -41,7 +39,7 @@ flowchart TB
     Client -->|"poll job and review changeset"| APIGW
 ```
 
-All compute runs outside a VPC. DynamoDB is accessed with IAM authorization and OpenAI through outbound internet access. The MVP does not require a NAT Gateway. Amazon Cognito is the identity and token provider; API Gateway validates every request with a Cognito JWT authorizer before it reaches the API Lambda.
+All compute runs outside a VPC. DynamoDB is accessed with IAM authorization and OpenAI through outbound internet access. The MVP does not require a NAT Gateway. Amazon Cognito is the sole identity and token provider; API Gateway validates every request with a Cognito JWT authorizer before it reaches the API Lambda. GitHub is not part of this diagram — it is an optional, per-user integration a client reaches only after authenticating, not an identity provider (§12).
 
 The agent core is a set of shared Go packages compiled into the Agent Worker. It contains the context assembler, skill registry, deterministic selectors, changeset validator and provider adapter. It is not deployed as an independent service.
 
@@ -101,8 +99,8 @@ Its only goal is to determine whether the initial `Task` and `Changeset` structu
 The MVP contains:
 
 - Project and task persistence.
-- GitHub login for the web application.
-- CLI authentication through GitHub device flow.
+- Cognito-based sign-up and sign-in, with a custom-built UI, for the web application and CLI.
+- Optional per-user GitHub connection for features that need GitHub API access.
 - Project status and next-action recommendations.
 - Task decomposition.
 - Decision logging.
@@ -321,7 +319,8 @@ The verified internal user ID is always the partition key source. It is never ac
 | Item | PK | SK |
 | --- | --- | --- |
 | User profile | `USER#<uid>` | `PROFILE` |
-| Identity lookup | `IDENTITY#github#<github_id>` | `IDENTITY` |
+| GitHub connection (optional, per user) | `USER#<uid>` | `INTEGRATION#github` |
+| GitHub reverse lookup (one Nudge account per GitHub account) | `IDENTITY#github#<github_id>` | `IDENTITY` |
 | Project | `USER#<uid>` | `META#<pid>` |
 | Task | `USER#<uid>` | `P#<pid>#TASK#<task_id>` |
 | Decision | `USER#<uid>` | `P#<pid>#DEC#<timestamp>#<decision_id>` |
@@ -439,7 +438,7 @@ Use two primary functions. Amazon Cognito owns login, token issuance and refresh
 
 Skills remain packages inside the Agent Worker. Function-per-skill is unnecessary until different workloads require independent scaling or permissions.
 
-If GitHub federation into the Cognito User Pool requires an OIDC shim (see §12), that shim is a small Lambda owned by the identity provider configuration, not by the application API.
+The optional GitHub connection flow (§12) is a route on the existing API Lambda, not a separate function and not a Cognito Lambda trigger — Cognito has no involvement in it at all.
 
 The API uses normal `net/http` handlers so local execution does not depend on SAM emulation. Router choice is an implementation detail and should not be fixed in the architecture unless a required feature depends on it.
 
@@ -447,24 +446,30 @@ The API uses normal `net/http` handlers so local execution does not depend on SA
 
 ## 12. Authentication
 
-Amazon Cognito is the identity and token provider for both clients. GitHub remains the source of developer identity because the intended users are developers, but Cognito — not application code — issues, verifies and rotates every token used against the API. For how Cognito's pieces (User Pool, Hosted UI, JWT authorizer, PKCE, federation) actually work, independent of this project, see `Notes/aws_cognito.md`. This section covers only what's decided here.
+Amazon Cognito is the **sole** identity and token provider, for both clients, via **native User Pool accounts** — there is no external identity provider in the sign-up/sign-in path. Cognito — not application code — issues, verifies and rotates every token used against the API. For how Cognito's pieces (User Pool, tokens, JWT authorizer, SRP) actually work, independent of this project, see `Notes/aws_cognito.md`. This section covers only what's decided here.
 
 | Client | Flow |
 | --- | --- |
-| Web SPA | Cognito Hosted UI, authorization code with PKCE, GitHub as a federated identity provider. |
-| CLI | Cognito Hosted UI, authorization code with PKCE, using a local loopback redirect — not device flow (RFC 8628), which Cognito's Hosted UI doesn't support. |
+| Web SPA | Custom-built login UI, calling the User Pool's `InitiateAuth` API directly (SRP) — no Hosted UI, no OAuth redirect. |
+| CLI | Same: a prompt-based login calling `InitiateAuth` (SRP) directly against the same User Pool. |
 
-### GitHub federation
+**Decision: native `InitiateAuth` with a custom UI, not the Hosted UI (ADR 017).** With no external identity provider to broker, there is nothing an OAuth2 redirect buys either client — Hosted UI exists to make that redirect dance turnkey, and a Hosted UI without it just constrains the UI unnecessarily. Both clients call the User Pool API directly and own their own screens.
 
-GitHub does not publish an OIDC discovery document, so it cannot be added to the Cognito User Pool as a built-in social provider (`Notes/aws_cognito.md` explains why, and the shim-Lambda alternative this rejects).
+The application uses the Cognito `sub` claim directly as the user ID. It is already an opaque, provider-independent UUID assigned by Cognito itself, so no separate internal UUID, sign-in Lambda trigger, or identity-mapping table is needed to produce one.
 
-**Decision: native User Pool accounts plus a Lambda trigger, not an OIDC shim Lambda (ADR 015).** A shim means standing up and operating a second always-on Lambda-backed OIDC surface; the trigger only runs at sign-in and needs no standing service.
+### GitHub: an optional, per-user connected account
 
-On first sign-in, the trigger calls GitHub's OAuth API to resolve the GitHub user ID, resolves-or-creates the internal UUID via the existing `IDENTITY#github#<gh_id>` → `USER#<uid>` lookup (§8 — no GSI, the provider ID never becomes a partition key), and writes that UUID onto the Cognito user as a custom attribute. Later sign-ins read the attribute directly; the DynamoDB lookup only runs once per user.
+GitHub is not a Cognito identity provider and is not involved in authentication at all. **Decision: GitHub is an opt-in integration a user connects after signing in, authorized directly against GitHub's own OAuth API — not federated into the User Pool (ADR 016).**
 
-This trigger is the only authentication-specific compute the MVP owns — Cognito itself is not a Lambda deployment unit.
+1. An already-authenticated user (valid Cognito access token) clicks "Connect GitHub" in the client.
+2. The client sends the user to GitHub's own OAuth authorize endpoint (standard authorization code flow, this application's own registered GitHub OAuth App).
+3. GitHub redirects back to a callback route on the **existing API Lambda** — not Cognito, not a separate function.
+4. The API Lambda exchanges the code for a GitHub access token, resolves the caller's internal `uid` from their verified Cognito access token (never from the callback request itself), and stores the GitHub token under that user (§8: `USER#<uid>` / `INTEGRATION#github`).
+5. `IDENTITY#github#<github_id>` → `USER#<uid>` (§8) prevents the same GitHub account from being linked to a second Nudge user.
 
-The application uses the Cognito `sub` claim, mapped to the internal UUID via that custom attribute, as the user ID. Provider identifiers never become DynamoDB ownership keys.
+This sidesteps GitHub's lack of an OIDC discovery document entirely — that only mattered for federating GitHub *into* Cognito, which this design no longer does — and removes the sign-in Lambda trigger the earlier design needed (ADR 015, superseded by ADR 016).
+
+Do not store a GitHub access token until a shipped feature needs GitHub API access. When it becomes necessary, request the minimum scopes and encrypt the token separately from general project data, and only for users who explicitly connected the integration.
 
 ### Application tokens
 
@@ -475,8 +480,6 @@ The application uses the Cognito `sub` claim, mapped to the internal UUID via th
 - File with mode `0600` or operating-system credential store for the CLI.
 
 Signing-key rotation, algorithm choice and refresh-token revocation are Cognito's responsibility, not an application concern.
-
-Do not store a GitHub access token until a shipped feature needs GitHub API access beyond identity. When it becomes necessary, request the minimum scopes and encrypt the token separately from general project data.
 
 The POC has no authentication.
 
@@ -513,9 +516,10 @@ No SSR is required for an authenticated project-management application.
 
 ## 14. Security
 
-- Derive `USER#<uid>` from the verified access token only.
+- Derive `USER#<uid>` from the verified Cognito access token only, never from a callback request or path parameter.
 - Give API and Worker different IAM roles.
 - Allow only the Worker to read the OpenAI credential.
+- Encrypt a stored GitHub integration token separately from project data, and only after the owning user explicitly connects it (§12).
 - Validate every structured response against JSON Schema and domain rules.
 - Treat notes and imported text as untrusted data, not instructions.
 - Limit note size and accepted content types.
@@ -613,7 +617,7 @@ cli
 ## 18. Infrastructure
 
 - API Gateway HTTP API with a Cognito JWT authorizer.
-- Amazon Cognito User Pool (and Hosted UI) for authentication, with GitHub federated as the identity provider.
+- Amazon Cognito User Pool for authentication (native accounts, custom UI — no Hosted UI, no federation).
 - Lambda using Go on Amazon Linux 2023.
 - SQS queue and dead letter queue.
 - DynamoDB single table with on-demand capacity initially.
@@ -643,7 +647,7 @@ Revisit if a compliance requirement forces scheduled rotation of externally-issu
 5. Add `Changeset` review, version checking and atomic commit.
 6. Add `AgentRun`, SQS, retries and polling.
 7. Add decision logging and note ingestion.
-8. Add GitHub OAuth and CLI device flow.
+8. Add Cognito sign-up/sign-in (custom UI) for web and CLI; add the optional GitHub connection flow.
 9. Add metrics, evaluation datasets, alarms and spend controls.
 
 This order validates the uncertain product and model behavior before investing in authentication and asynchronous infrastructure.
@@ -664,11 +668,13 @@ This order validates the uncertain product and model behavior before investing i
 | ADR 008 | Defer Step Functions and EventBridge. | Accepted | No current workflow or subscriber requires them. |
 | ADR 009 | Limit accepted changesets to 50 mutations. | Accepted | Keeps each commit atomic and leaves room for bookkeeping. |
 | ADR 010 | Keep projects single-owner in the MVP. | Accepted | Matches the initial product and simplifies authorization. |
-| ADR 011 | Use GitHub as the initial identity provider. | Accepted | Fits the developer audience and CLI. |
+| ADR 011 | Use GitHub as the initial identity provider. | Superseded by ADR 016 | Fits the developer audience and CLI. |
 | ADR 012 | Defer vector search. | Accepted | Structured queries and read tools cover the expected working set. |
-| ADR 013 | Use Amazon Cognito as the token issuer and verifier for both clients, with GitHub federated into the User Pool. | Accepted | Removes custom JWT signing, key rotation and refresh-token storage from the application; API Gateway can verify tokens with a built-in JWT authorizer. |
+| ADR 013 | Use Amazon Cognito as the sole token issuer and verifier for both clients, via native User Pool accounts. | Accepted | Removes custom JWT signing, key rotation and refresh-token storage from the application; API Gateway can verify tokens with a built-in JWT authorizer. |
 | ADR 014 | Use SSM Parameter Store (`SecureString`) for the OpenAI key, provisioned out-of-band rather than through a SAM template parameter. | Accepted | Free tier covers it; Secrets Manager's paid rotation feature doesn't apply to externally-issued keys anyway; keeps the plaintext key out of CloudFormation entirely. |
-| ADR 015 | Federate GitHub into the Cognito User Pool via native User Pool accounts and a sign-in Lambda trigger, not an OIDC shim Lambda. | Accepted | GitHub publishes no OIDC discovery document, so it can't be a built-in Cognito social provider either way. A shim means running a second always-on Lambda-backed OIDC surface; the trigger only runs at sign-in and needs no standing service. |
+| ADR 015 | Federate GitHub into the Cognito User Pool via native User Pool accounts and a sign-in Lambda trigger, not an OIDC shim Lambda. | Superseded by ADR 016 | GitHub publishes no OIDC discovery document, so it can't be a built-in Cognito social provider either way. A shim means running a second always-on Lambda-backed OIDC surface; the trigger only runs at sign-in and needs no standing service. |
+| ADR 016 | Treat GitHub as an optional, per-user connected account authorized directly against GitHub's own OAuth API, not federated into the Cognito User Pool. | Accepted | Decouples mandatory authentication (Cognito, every user) from an optional integration (GitHub API access, opt-in); avoids GitHub's missing OIDC discovery document instead of working around it with a shim or a sign-in trigger; needs no Cognito Lambda trigger at all. |
+| ADR 017 | Use the Cognito User Pool's native `InitiateAuth` API (SRP) with a custom-built login UI for both clients, instead of the Hosted UI. | Accepted | With GitHub no longer federated (ADR 016), there is no external identity provider to broker via an OAuth redirect, so Hosted UI has nothing left to buy either client — a direct API call lets both clients own a fully custom screen instead. |
 
 ---
 
@@ -685,8 +691,9 @@ This order validates the uncertain product and model behavior before investing i
 ### Resolve before authentication implementation
 
 - Does the MVP require both web and CLI, or can CLI wait?
-- Does the CLI's loopback-redirect PKCE flow need a fallback for headless or remote environments?
-- Is GitHub API access required in the MVP or only authentication?
+- Which SRP client library backs `InitiateAuth` for the CLI (Go) versus the web SPA (JS), and do both support `USER_SRP_AUTH` out of the box?
+- Which GitHub features (if any) gate the MVP, given the connection is now opt-in rather than required at sign-up?
+- What scopes does the GitHub OAuth App request, and are they fixed or feature-dependent?
 
 ### Decide from user testing
 
