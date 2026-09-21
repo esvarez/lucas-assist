@@ -148,6 +148,67 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /projects/{id}/changesets/{changesetId}/accept:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+      - name: changesetId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Accept a proposed changeset
+      description: >
+        Atomically commits a changeset's proposed tasks: creates each as a
+        Task, increments the project's version, and appends one Event, all
+        in a single transaction (architecture.md §1/§9's "Accept changeset
+        -> conditional transaction -> applied result"). A changeset over 50
+        mutations (ADR 009) is rejected before any write. idempotency_key
+        deduplicates retries (architecture.md §15) — replaying the same key
+        against the same changeset returns the original result unchanged.
+      operationId: acceptChangeset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptChangesetRequest"
+      responses:
+        "200":
+          description: Changeset accepted and applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptChangesetResponse"
+        "400":
+          description: >
+            Invalid body, missing user_id/idempotency_key, or the
+            changeset exceeds the 50-mutation cap
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "404":
+          description: No project or changeset with these ids in this user's partition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >
+            The changeset isn't in "proposed" status (already applied with
+            a different idempotency key, rejected, expired, or already
+            conflict), the project's version no longer matches the
+            changeset's base_version (moved to "conflict" — re-propose,
+            don't retry this request), or idempotency_key was already used
+            for a different changeset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /agent-runs/{id}:
     get:
       summary: Poll an agent run
@@ -478,6 +539,100 @@ components:
           description: ID of the AgentRun created for this request.
       required:
         - run_id
+
+    AcceptChangesetRequest:
+      type: object
+      properties:
+        user_id:
+          type: string
+          description: Required — caller-supplied for now, same as every other route.
+        idempotency_key:
+          type: string
+          description: >
+            Required. Replaying an accept with the same key against the
+            same changeset returns the original result instead of
+            re-applying it (architecture.md §15).
+      required:
+        - user_id
+        - idempotency_key
+
+    AcceptChangesetResponse:
+      type: object
+      properties:
+        project:
+          $ref: "#/components/schemas/Project"
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        event:
+          $ref: "#/components/schemas/Event"
+      required:
+        - project
+        - tasks
+        - event
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        parent_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        order:
+          type: integer
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+      required:
+        - id
+        - project_id
+        - title
+        - status
+        - order
+
+    Event:
+      type: object
+      description: >
+        Append-only audit record of an accepted project change
+        (architecture.md §9). There's no GET route for these yet.
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        user_id:
+          type: string
+        type:
+          type: string
+          description: Only "changeset_accepted" exists today.
+        changeset_id:
+          type: string
+        actor_id:
+          type: string
+        base_version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - project_id
+        - user_id
+        - type
+        - changeset_id
+        - actor_id
+        - base_version
+        - created_at
 
     ErrorResponse:
       type: object

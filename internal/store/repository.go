@@ -27,6 +27,11 @@ var ErrConflict = errors.New("version conflict")
 // already reached a terminal status (architecture.md §3/§15).
 var ErrRunLeased = errors.New("agent run not eligible for lease")
 
+// ErrIdempotencyKeyReused is returned by AcceptChangeset when the given
+// idempotency key was already used for a different request (architecture.md
+// §15: "Reusing a key with a different request is rejected").
+var ErrIdempotencyKeyReused = errors.New("idempotency key reused with a different request")
+
 // Repository is the persistence interface every skill and the API Lambda
 // read and write through.
 //
@@ -99,4 +104,42 @@ type Repository interface {
 	// without a second lookup path.
 	CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error)
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
+
+	// AcceptChangeset atomically commits c's proposed tasks against p:
+	// creates each domain.Task, increments the project's version, and
+	// appends one domain.Event, all in a single transaction (architecture.md
+	// §1/§9's "Accept changeset -> conditional transaction -> applied
+	// result"). idempotencyKey deduplicates retries (§15): replaying the
+	// same key returns the original result unchanged instead of
+	// re-applying it, checked first and ahead of everything below —
+	// otherwise a legitimate replay of an already-applied changeset would
+	// wrongly fail the "must be proposed" check just below. Reusing the
+	// key against a different request is rejected with
+	// ErrIdempotencyKeyReused.
+	//
+	// Past that idempotency check, c must be in "proposed" status —
+	// checked here, not by the changeset-accept endpoint, precisely
+	// because it has to come after the idempotency check above. A
+	// changeset that isn't proposed (already applied/rejected/expired/
+	// conflict) returns ErrConflict without touching its status, which may
+	// already correctly describe something else.
+	//
+	// The transaction's authoritative gate past that is the project's
+	// stored version matching c.BaseVersion — not whatever p.Version
+	// happens to hold when this is called, which the caller may have read
+	// slightly before. A mismatch moves c's status to conflict and returns
+	// ErrConflict; the caller must not retry automatically (AGENTS.MD).
+	//
+	// The 50-mutation cap (ADR 009) has no such ordering dependency, so it
+	// stays a fast, no-I/O check in the changeset-accept endpoint instead.
+	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error)
+}
+
+// AcceptChangesetResult is the outcome of a successful AcceptChangeset
+// call: the project at its new version, the tasks created from the
+// changeset's proposal, and the audit event written alongside them.
+type AcceptChangesetResult struct {
+	Project domain.Project `json:"project"`
+	Tasks   []domain.Task  `json:"tasks"`
+	Event   domain.Event   `json:"event"`
 }
