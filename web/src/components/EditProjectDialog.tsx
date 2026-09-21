@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, ValidationError, getProject, updateProject, type Project } from '@/src/api/projects'
+import { notify } from '@/src/lib/notify'
 import { PROJECT_STATUS_OPTIONS } from '@/src/lib/project-status'
 import { cn } from '@/lib/utils'
 
@@ -103,7 +104,9 @@ function EditProjectDialog({
       })
       onUpdated(updated)
       setOpen(false)
+      notify.success('Project updated')
     } catch (err) {
+      notify.error('Failed to update project')
       if (err instanceof ValidationError) {
         const known: Record<string, string> = {}
         const unknown: string[] = []
