@@ -1022,8 +1022,12 @@ func TestMemoryRepository_AcceptChangeset(t *testing.T) {
 		if task.Order != i {
 			t.Errorf("Tasks[%d].Order = %d, want %d", i, task.Order, i)
 		}
-		if task.Status == "" {
-			t.Errorf("Tasks[%d].Status = \"\", want a default status", i)
+		if task.Status != "todo" {
+			// "todo", not some other unstarted value — see the comment on
+			// AcceptChangeset's task-building loop: WhatsNextCard's
+			// pickNextTask and task-status.ts both only recognize "todo"
+			// as an eligible, unstarted status.
+			t.Errorf("Tasks[%d].Status = %q, want \"todo\"", i, task.Status)
 		}
 	}
 	if result.Tasks[0].Title != "First" || result.Tasks[1].Title != "Second" {

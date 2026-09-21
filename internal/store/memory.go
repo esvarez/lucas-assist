@@ -346,11 +346,16 @@ func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	tasks := make([]domain.Task, 0, len(c.ProposedTasks))
 	for i, pt := range c.ProposedTasks {
 		t := domain.Task{
-			ID:                 domain.NewID(),
-			ProjectID:          c.ProjectID,
-			Title:              pt.Title,
-			Description:        pt.Description,
-			Status:             "pending",
+			ID:          domain.NewID(),
+			ProjectID:   c.ProjectID,
+			Title:       pt.Title,
+			Description: pt.Description,
+			// "todo", not some other unstarted value: it's the status the
+			// rest of the app (task-status.ts, the "what's next" candidate
+			// selection) already treats as eligible and unstarted — a
+			// mismatched value here would make a freshly accepted task
+			// invisible to both.
+			Status:             "todo",
 			Order:              i,
 			AcceptanceCriteria: pt.AcceptanceCriteria,
 		}

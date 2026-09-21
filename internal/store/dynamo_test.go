@@ -1135,6 +1135,11 @@ func TestDynamoRepository_AcceptChangeset(t *testing.T) {
 	if result.Tasks[0].Title != "First" || result.Tasks[1].Title != "Second" {
 		t.Errorf("Tasks = %+v, want titles preserved in order", result.Tasks)
 	}
+	for i, task := range result.Tasks {
+		if task.Status != "todo" {
+			t.Errorf("Tasks[%d].Status = %q, want \"todo\"", i, task.Status)
+		}
+	}
 	if result.Event.ID == "" || result.Event.Type != domain.EventChangesetAccepted {
 		t.Errorf("Event = %+v, want a generated ID and Type %q", result.Event, domain.EventChangesetAccepted)
 	}

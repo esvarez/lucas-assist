@@ -1087,11 +1087,13 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	tasks := make([]domain.Task, 0, len(c.ProposedTasks))
 	for i, pt := range c.ProposedTasks {
 		tasks = append(tasks, domain.Task{
-			ID:                 domain.NewID(),
-			ProjectID:          c.ProjectID,
-			Title:              pt.Title,
-			Description:        pt.Description,
-			Status:             "pending",
+			ID:          domain.NewID(),
+			ProjectID:   c.ProjectID,
+			Title:       pt.Title,
+			Description: pt.Description,
+			// "todo", not some other unstarted value — see the matching
+			// comment in memory.go's AcceptChangeset.
+			Status:             "todo",
 			Order:              i,
 			AcceptanceCriteria: pt.AcceptanceCriteria,
 		})
