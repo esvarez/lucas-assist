@@ -33,6 +33,7 @@ type RunRepository interface {
 	LeaseAgentRun(ctx context.Context, userID, projectID, runID, workerID string, leaseUntil time.Time) (domain.AgentRun, error)
 	CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error)
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
+	NeedsInputAgentRun(ctx context.Context, userID, projectID, runID string, questions []string) (domain.AgentRun, error)
 	GetProject(ctx context.Context, userID, id string) (domain.Project, error)
 	CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
@@ -86,7 +87,7 @@ func (p *Processor) doRunSkill() runSkillFunc {
 // again.
 func isTerminal(status domain.AgentRunStatus) bool {
 	switch status {
-	case domain.AgentRunCompleted, domain.AgentRunFailed, domain.AgentRunCancelled:
+	case domain.AgentRunCompleted, domain.AgentRunFailed, domain.AgentRunCancelled, domain.AgentRunNeedsInput:
 		return true
 	default:
 		return false
@@ -96,21 +97,28 @@ func isTerminal(status domain.AgentRunStatus) bool {
 // ProcessRun handles one AgentRun end to end, tolerating SQS's
 // at-least-once delivery (architecture.md §15):
 //
-//   - Already terminal (completed/failed/cancelled): a duplicate delivery
-//     of a finished job — no-op, never calls the model twice.
+//   - Already terminal (completed/failed/cancelled/needs_input): a
+//     duplicate delivery of a finished job — no-op, never calls the model
+//     twice.
 //   - Not leasable (another attempt holds a live lease): also a no-op —
 //     let SQS's visibility timeout handle redelivery rather than racing
 //     another worker.
 //   - Otherwise: lease it, run the skill, and save the outcome.
 //
-// Past the point of leasing, failures split into two kinds:
+// Past the point of leasing, outcomes split into three kinds:
 //
-//   - Permanent (unknown skill, or a model result with nothing usable in
-//     it — needs_clarification, or status "ok" with an empty payload):
-//     retrying with the same input won't help, so these mark the run
-//     failed and return nil — the run's Error field is where that belongs
-//     (GET /agent-runs/{id}, #100), not a Lambda error that would just
-//     trigger a pointless redelivery.
+//   - Needs input (decompose_task's needs_clarification, round 0 only):
+//     not an error and not a Changeset — marks the run needs_input with
+//     the model's Questions and returns nil. Answering is a fresh
+//     dispatch (a new AgentRun with clarification_round/clarifications
+//     set), not a retry of this one.
+//   - Permanent failure (unknown skill, create_project's
+//     needs_clarification — which has no needs_input representation, see
+//     #138's note on changesetFromResult — or status "ok" with an empty
+//     payload): retrying with the same input won't help, so these mark
+//     the run failed and return nil — the run's Error field is where that
+//     belongs (GET /agent-runs/{id}, #100), not a Lambda error that would
+//     just trigger a pointless redelivery.
 //   - Transient (the model call itself, or a DynamoDB read/write): these
 //     are returned as real errors instead, leaving the run "running" so
 //     AgentJobsQueue's RedrivePolicy (architecture.md §15, up to
@@ -147,6 +155,20 @@ func (p *Processor) ProcessRun(ctx context.Context, userID, projectID, runID str
 		// Transient: an OpenAI call failure (rate limit, 5xx, timeout) may
 		// well succeed on a later attempt.
 		return fmt.Errorf("run skill %q for agent run %q: %w", leased.Skill, runID, err)
+	}
+
+	// decompose_task's needs_clarification (round 0 only — the prompt
+	// forbids it past round 0) has no Changeset to produce. It's handled
+	// here, before changesetFromResult, rather than as one of that
+	// function's error returns, because it isn't a failure: the run just
+	// needs a fresh dispatch with the questions answered.
+	if dr, ok := result.(skills.DecomposeResult); ok && dr.Status == "needs_clarification" {
+		if _, err := p.Repo.NeedsInputAgentRun(ctx, userID, projectID, runID, dr.Questions); err != nil {
+			// Transient: a DynamoDB write failure, not a reason to discard
+			// a model result we already paid for.
+			return fmt.Errorf("mark agent run %q needs input: %w", runID, err)
+		}
+		return nil
 	}
 
 	changeset, err := changesetFromResult(leased, result)
@@ -217,10 +239,16 @@ func (p *Processor) fail(ctx context.Context, run domain.AgentRun, cause error) 
 // result types is expected, since the registry only holds those two
 // skills today (cmd/skills/main.go, cmd/local/main.go).
 //
-// Both result types can still carry status "needs_clarification" — #42
-// (open) proposes removing that branch entirely. Until it lands, such a
-// result has no representation as a Changeset, so it's treated as a
-// failure here rather than silently dropped or half-saved.
+// A DecomposeResult reaching here is guaranteed status "ok": ProcessRun
+// intercepts "needs_clarification" earlier and marks the run needs_input
+// instead of calling this function at all, since that case produces no
+// Changeset (#138).
+//
+// create_project's result can still carry status "needs_clarification"
+// with no needs_input handling of its own — same underlying gap, not yet
+// given the same treatment (out of scope for #138; flagged there for
+// separate follow-up) — so it's still treated as a failure here rather
+// than silently dropped or half-saved.
 func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, error) {
 	base := domain.Changeset{
 		ProjectID: run.ProjectID,
@@ -231,9 +259,10 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 
 	switch r := result.(type) {
 	case skills.DecomposeResult:
-		if r.Status != "ok" {
-			return domain.Changeset{}, fmt.Errorf("%s: needs clarification, cannot save a changeset yet (see #42): %v", run.Skill, r.Questions)
-		}
+		// No Status check here: ProcessRun already intercepted
+		// "needs_clarification" before this function was ever called (see
+		// this function's doc comment above), so r.Status is always "ok".
+		//
 		// Defensive: strict mode's schema can't express "Subtasks is
 		// non-empty when Status is ok" as a hard constraint, so a
 		// malformed response could otherwise complete the run with an
@@ -242,9 +271,10 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 			return domain.Changeset{}, fmt.Errorf("%s: status \"ok\" but no subtasks in the model's response", run.Skill)
 		}
 		base.ProposedTasks = r.Subtasks
+		base.Assumptions = r.Assumptions
 	case skills.CreateProjectResult:
 		if r.Status != "ok" {
-			return domain.Changeset{}, fmt.Errorf("%s: needs clarification, cannot save a changeset yet (see #42): %v", run.Skill, r.Questions)
+			return domain.Changeset{}, fmt.Errorf("%s: needs clarification, cannot save a changeset yet (no needs_input handling for this skill — see changesetFromResult's doc comment): %v", run.Skill, r.Questions)
 		}
 		// Same defensive reasoning as Subtasks above — Project is a
 		// nullable field of the status union, so strict mode doesn't

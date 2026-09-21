@@ -566,6 +566,7 @@ type changesetItem struct {
 	BaseVersion     int                     `dynamodbav:"base_version"`
 	Status          string                  `dynamodbav:"status"`
 	ProposedTasks   []domain.ProposedTask   `dynamodbav:"proposed_tasks,omitempty"`
+	Assumptions     []string                `dynamodbav:"assumptions,omitempty"`
 	ProposedProject *domain.ProposedProject `dynamodbav:"proposed_project,omitempty"`
 	CreatedAt       time.Time               `dynamodbav:"created_at"`
 }
@@ -581,6 +582,7 @@ func toChangesetItem(c domain.Changeset) changesetItem {
 		BaseVersion:     c.BaseVersion,
 		Status:          string(c.Status),
 		ProposedTasks:   c.ProposedTasks,
+		Assumptions:     c.Assumptions,
 		ProposedProject: c.ProposedProject,
 		CreatedAt:       c.CreatedAt,
 	}
@@ -595,6 +597,7 @@ func (i changesetItem) toDomain() domain.Changeset {
 		BaseVersion:     i.BaseVersion,
 		Status:          domain.ChangesetStatus(i.Status),
 		ProposedTasks:   i.ProposedTasks,
+		Assumptions:     i.Assumptions,
 		ProposedProject: i.ProposedProject,
 		CreatedAt:       i.CreatedAt,
 	}
@@ -708,6 +711,7 @@ type agentRunItem struct {
 	WorkerID    string          `dynamodbav:"worker_id,omitempty"`
 	LeaseUntil  *time.Time      `dynamodbav:"lease_until,omitempty"`
 	Error       string          `dynamodbav:"error,omitempty"`
+	Questions   []string        `dynamodbav:"questions,omitempty"`
 	ChangesetID string          `dynamodbav:"changeset_id,omitempty"`
 	CreatedAt   time.Time       `dynamodbav:"created_at"`
 	UpdatedAt   time.Time       `dynamodbav:"updated_at"`
@@ -727,6 +731,7 @@ func toAgentRunItem(r domain.AgentRun) agentRunItem {
 		WorkerID:    r.WorkerID,
 		LeaseUntil:  r.LeaseUntil,
 		Error:       r.Error,
+		Questions:   r.Questions,
 		ChangesetID: r.ChangesetID,
 		CreatedAt:   r.CreatedAt,
 		UpdatedAt:   r.UpdatedAt,
@@ -745,6 +750,7 @@ func (i agentRunItem) toDomain() domain.AgentRun {
 		WorkerID:    i.WorkerID,
 		LeaseUntil:  i.LeaseUntil,
 		Error:       i.Error,
+		Questions:   i.Questions,
 		ChangesetID: i.ChangesetID,
 		CreatedAt:   i.CreatedAt,
 		UpdatedAt:   i.UpdatedAt,
@@ -754,7 +760,7 @@ func (i agentRunItem) toDomain() domain.AgentRun {
 // CreateAgentRun writes a run item via a conditional PutItem
 // (attribute_not_exists(PK)) so an existing run is never overwritten. It
 // always sets Status to AgentRunQueued and resets Attempt/WorkerID/
-// LeaseUntil/Error, regardless of what the caller passed in run.
+// LeaseUntil/Error/Questions, regardless of what the caller passed in run.
 func (r *DynamoRepository) CreateAgentRun(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	if run.ID == "" {
 		run.ID = domain.NewRunID()
@@ -766,6 +772,7 @@ func (r *DynamoRepository) CreateAgentRun(ctx context.Context, run domain.AgentR
 	run.WorkerID = ""
 	run.LeaseUntil = nil
 	run.Error = ""
+	run.Questions = nil
 	run.CreatedAt = now
 	run.UpdatedAt = now
 
@@ -958,6 +965,62 @@ func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID
 			":error":        errAV,
 			":changeset_id": changesetIDAV,
 			":updated_at":   updatedAtAV,
+		},
+		ReturnValues: types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.AgentRun{}, ErrNotFound
+		}
+		return domain.AgentRun{}, fmt.Errorf("update agent run item: %w", err)
+	}
+
+	var item agentRunItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.AgentRun{}, fmt.Errorf("unmarshal agent run item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// NeedsInputAgentRun sets a run's status to needs_input and records
+// questions, via its own conditional UpdateItem (attribute_exists(PK)) —
+// separate from setAgentRunTerminalStatus since questions is a list
+// attribute, not the error/changeset_id pair that helper sets.
+func (r *DynamoRepository) NeedsInputAgentRun(ctx context.Context, userID, projectID, runID string, questions []string) (domain.AgentRun, error) {
+	now := time.Now().UTC()
+
+	statusAV, err := attributevalue.Marshal(string(domain.AgentRunNeedsInput))
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal status: %w", err)
+	}
+	questionsAV, err := attributevalue.Marshal(questions)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal questions: %w", err)
+	}
+	updatedAtAV, err := attributevalue.Marshal(now)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal updated_at: %w", err)
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
+		},
+		UpdateExpression:    aws.String("SET #status = :status, #questions = :questions, #updated_at = :updated_at"),
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames: map[string]string{
+			"#status":     "status",
+			"#questions":  "questions",
+			"#updated_at": "updated_at",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status":     statusAV,
+			":questions":  questionsAV,
+			":updated_at": updatedAtAV,
 		},
 		ReturnValues: types.ReturnValueAllNew,
 	})

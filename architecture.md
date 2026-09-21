@@ -155,7 +155,10 @@ proposed -> accepted -> applying -> applied
 queued -> running -> completed
                   \-> failed
                   \-> cancelled
+                  \-> needs_input
 ```
+
+`needs_input` is decompose_task's `needs_clarification` result (round 0 only): no `Changeset` exists yet, and answering is a fresh dispatch — a new `AgentRun` with the prior questions and answers attached — not a resume of this one.
 
 The user-facing job status is derived from `AgentRun`. The durable proposal is stored as a `Changeset`; it is not kept only in browser state.
 

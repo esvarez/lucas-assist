@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type FormEvent } from 'react'
-import { SparklesIcon } from 'lucide-react'
+import { InfoIcon, SparklesIcon } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,16 +16,28 @@ import { Label } from '@/components/ui/label'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError } from '@/src/api/projects'
-import { acceptChangeset, dispatchDecomposeTask, pollAgentRun, type Changeset } from '@/src/api/skills'
+import {
+  acceptChangeset,
+  dispatchDecomposeTask,
+  pollAgentRun,
+  type Changeset,
+  type Clarification,
+} from '@/src/api/skills'
 import { notify } from '@/src/lib/notify'
 
 // Step is a small state machine covering the whole propose -> poll ->
 // review -> accept loop (architecture.md §1) in one dialog: request the
 // decomposition, wait for the Agent Worker, show the proposed subtasks for
 // explicit review (ADR 002 — nothing is written without it), then commit.
+//
+// 'clarify' handles decompose_task's needs_clarification result (#138):
+// round 0 only, at most 3 questions. Answering resubmits as a fresh
+// dispatch with clarification_round: 1 — the run that asked is done
+// (AgentRunNeedsInput is terminal), not resumed.
 type Step =
   | { name: 'form' }
   | { name: 'working'; label: string }
+  | { name: 'clarify'; questions: string[] }
   | { name: 'review'; changeset: Changeset; idempotencyKey: string }
   | { name: 'error'; message: string }
 
@@ -45,11 +58,15 @@ function DecomposeTaskDialog({
 }) {
   const titleId = useId()
   const descriptionId = useId()
+  const clarifyBaseId = useId()
 
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [step, setStep] = useState<Step>({ name: 'form' })
+  // One answer per question in the current 'clarify' step, same index —
+  // cleared on reset and whenever a fresh set of questions comes back.
+  const [answers, setAnswers] = useState<string[]>([])
   // Cancels an in-flight poll when the dialog closes mid-wait, so a
   // stale response doesn't land after the user has moved on.
   const pollAbort = useRef<AbortController | null>(null)
@@ -59,18 +76,24 @@ function DecomposeTaskDialog({
   function reset() {
     setTitle('')
     setDescription('')
+    setAnswers([])
     setStep({ name: 'form' })
     pollAbort.current?.abort()
     pollAbort.current = null
   }
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    if (working) return
-
+  // startRun dispatches decompose_task and polls it to a terminal status —
+  // shared by the initial submit (round 0, no clarification) and the
+  // clarify step's resubmit (round 1, with answers attached).
+  async function startRun(clarification?: { round: number; clarifications: Clarification[] }) {
     setStep({ name: 'working', label: 'Starting decomposition…' })
     try {
-      const { run_id } = await dispatchDecomposeTask(projectId, title.trim(), description.trim())
+      const { run_id } = await dispatchDecomposeTask(
+        projectId,
+        title.trim(),
+        description.trim(),
+        clarification
+      )
 
       setStep({ name: 'working', label: 'Decomposing — this can take a few seconds…' })
       const controller = new AbortController()
@@ -80,6 +103,12 @@ function DecomposeTaskDialog({
 
       if (run.status === 'failed') {
         setStep({ name: 'error', message: run.error || 'The decomposition failed.' })
+        return
+      }
+      if (run.status === 'needs_input') {
+        const questions = run.questions ?? []
+        setAnswers(new Array(questions.length).fill(''))
+        setStep({ name: 'clarify', questions })
         return
       }
       if (!run.changeset) {
@@ -95,6 +124,23 @@ function DecomposeTaskDialog({
       if (isAbortError(err)) return
       setStep({ name: 'error', message: err instanceof Error ? err.message : 'Something went wrong' })
     }
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    if (working) return
+    await startRun()
+  }
+
+  async function handleClarifySubmit(e: FormEvent) {
+    e.preventDefault()
+    if (step.name !== 'clarify' || working) return
+
+    const clarifications: Clarification[] = step.questions.map((question, index) => ({
+      question,
+      answer: answers[index]?.trim() ?? '',
+    }))
+    await startRun({ round: 1, clarifications })
   }
 
   async function handleAccept() {
@@ -121,6 +167,7 @@ function DecomposeTaskDialog({
   }
 
   const proposedTasks = step.name === 'review' ? (step.changeset.proposed_tasks ?? []) : []
+  const assumptions = step.name === 'review' ? (step.changeset.assumptions ?? []) : []
 
   return (
     <Dialog
@@ -178,6 +225,40 @@ function DecomposeTaskDialog({
           </div>
         )}
 
+        {step.name === 'clarify' && (
+          <form onSubmit={handleClarifySubmit} className="flex flex-col gap-4">
+            <p className="text-xs text-muted-foreground">
+              A couple of details would change which subtasks make sense.
+            </p>
+            {step.questions.map((question, index) => (
+              <div key={index} className="flex flex-col gap-2">
+                <Label htmlFor={`${clarifyBaseId}-${index}`}>{question}</Label>
+                <Textarea
+                  id={`${clarifyBaseId}-${index}`}
+                  value={answers[index] ?? ''}
+                  onChange={(e) =>
+                    setAnswers((prev) => {
+                      const next = [...prev]
+                      next[index] = e.target.value
+                      return next
+                    })
+                  }
+                  placeholder="Your answer (or “no preference” / “out of scope”)"
+                  required
+                />
+              </div>
+            ))}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={answers.some((a) => !a.trim())}>
+                Continue
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+
         {step.name === 'error' && (
           <div className="flex flex-col gap-4">
             <p className="text-sm text-destructive">{step.message}</p>
@@ -197,6 +278,19 @@ function DecomposeTaskDialog({
             <p className="text-xs text-muted-foreground">
               Review the proposed subtasks below. Nothing is saved until you accept.
             </p>
+            {assumptions.length > 0 && (
+              <Alert>
+                <InfoIcon />
+                <AlertTitle>Assumptions made on your behalf</AlertTitle>
+                <AlertDescription>
+                  <ul className="list-inside list-disc">
+                    {assumptions.map((assumption, index) => (
+                      <li key={index}>{assumption}</li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
             <ItemGroup className="max-h-[50vh] overflow-y-auto">
               {proposedTasks.map((task, index) => (
                 <Item key={index} variant="outline" size="sm">

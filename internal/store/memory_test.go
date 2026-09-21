@@ -962,6 +962,43 @@ func TestMemoryRepository_FailAgentRun_NotFound(t *testing.T) {
 	}
 }
 
+func TestMemoryRepository_NeedsInputAgentRun(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	questions := []string{"What is the task actually about?"}
+	got, err := repo.NeedsInputAgentRun(ctx, "user_1", "proj_1", created.ID, questions)
+	if err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunNeedsInput {
+		t.Errorf("Status = %q, want %q", got.Status, domain.AgentRunNeedsInput)
+	}
+	if len(got.Questions) != 1 || got.Questions[0] != questions[0] {
+		t.Errorf("Questions = %#v, want %#v", got.Questions, questions)
+	}
+	if got.ChangesetID != "" {
+		t.Errorf("ChangesetID = %q, want empty — a needs_input run produced no changeset", got.ChangesetID)
+	}
+}
+
+func TestMemoryRepository_NeedsInputAgentRun_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.NeedsInputAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist", []string{"?"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("NeedsInputAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
 // newAcceptableChangeset creates a project and a proposed changeset against
 // it, ready to accept — shared setup for the AcceptChangeset tests below.
 func newAcceptableChangeset(t *testing.T, repo *MemoryRepository, userID string, proposedTasks []domain.ProposedTask) (domain.Project, domain.Changeset) {
