@@ -25,7 +25,7 @@ func TestListTasks_Empty(t *testing.T) {
 	project := createTestProject(t, repo, "user_1", "Nudge")
 	router := NewRouter(repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -70,7 +70,7 @@ func TestListTasks_FlatAndNested(t *testing.T) {
 	}
 
 	router := NewRouter(repo)
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -98,24 +98,10 @@ func TestListTasks_FlatAndNested(t *testing.T) {
 	}
 }
 
-func TestListTasks_MissingUserID(t *testing.T) {
-	repo := store.NewMemoryRepository()
-	project := createTestProject(t, repo, "user_1", "Nudge")
-	router := NewRouter(repo)
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-}
-
 func TestListTasks_UnknownProject(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/does-not-exist/tasks?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/does-not-exist/tasks", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -132,7 +118,7 @@ func TestListTasks_WrongOwner(t *testing.T) {
 	project := createTestProject(t, repo, "user_1", "Nudge")
 	router := NewRouter(repo)
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks?user_id=user_2", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/tasks", nil), "user_2")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 

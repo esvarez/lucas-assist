@@ -19,16 +19,13 @@ import (
 	"net/http"
 
 	"github.com/esvarez/lucas-assist/internal/agent"
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/domain"
 )
 
 type requestEnvelope struct {
 	Skill string          `json:"skill"`
 	Input json.RawMessage `json:"input"`
-
-	// UserID is required — every AgentRun needs an owner (architecture.md
-	// §8: every item is partitioned by user).
-	UserID string `json:"user_id"`
 
 	// ProjectID is optional: empty for create_project (which doesn't have
 	// a project yet — that's the point of the run) and required in
@@ -63,10 +60,7 @@ func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http
 			return
 		}
 
-		if envelope.UserID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
-			return
-		}
+		userID, _ := auth.UserIDFromContext(r.Context())
 
 		skill, err := reg.Get(envelope.Skill)
 		if err != nil {
@@ -78,17 +72,18 @@ func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http
 		// its chat messages are discarded; the model call itself happens
 		// later in the Agent Worker (#101), once this run is leased off
 		// the queue. No point creating and enqueueing a run for a request
-		// that can't possibly succeed. envelope.UserID is attached to ctx
-		// first since a skill (e.g. decompose_task with a project_id) may
-		// need it to load that user's data (architecture.md §8).
-		ctx := agent.WithUserID(r.Context(), envelope.UserID)
+		// that can't possibly succeed. The authenticated user ID is
+		// attached to ctx first since a skill (e.g. decompose_task with a
+		// project_id) may need it to load that user's data
+		// (architecture.md §8).
+		ctx := agent.WithUserID(r.Context(), userID)
 		if _, err := skill.BuildContext(ctx, envelope.Input); err != nil {
 			writeJSON(w, statusForBuildContextError(err), map[string]string{"error": err.Error()})
 			return
 		}
 
 		run, err := runs.CreateAgentRun(r.Context(), domain.AgentRun{
-			UserID:    envelope.UserID,
+			UserID:    userID,
 			ProjectID: envelope.ProjectID,
 			Skill:     envelope.Skill,
 			Input:     envelope.Input,

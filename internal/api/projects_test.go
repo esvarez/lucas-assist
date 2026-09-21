@@ -10,15 +10,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/store"
 )
 
+// withUserID simulates what auth.Middleware does in production: attaches
+// an already-resolved user ID to the request's context before it reaches
+// the router. Tests in this package exercise handlers directly against
+// NewRouter (no middleware in front), so each one that needs an
+// authenticated caller sets it up this way instead of a real Cognito
+// token — the 401/unauthenticated path itself is internal/auth's own
+// responsibility and is tested there (TestMiddleware_ResolverError), not
+// re-tested per handler here.
+func withUserID(req *http.Request, userID string) *http.Request {
+	return req.WithContext(auth.WithUserID(req.Context(), userID))
+}
+
 func TestCreateProject_Success(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC", "constraints": ["no VPC"], "status": "active"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	body := `{"name": "Nudge", "goal": "Ship the POC", "constraints": ["no VPC"], "status": "active"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -38,36 +51,7 @@ func TestCreateProject_Success(t *testing.T) {
 		t.Errorf("response = %+v, want Name/Goal preserved from request", got)
 	}
 	if got.UserID != "user_1" {
-		t.Errorf("UserID = %q, want %q (the supplied user_id)", got.UserID, "user_1")
-	}
-}
-
-// TestCreateProject_MissingUserID documents deliberate behavior: user_id
-// is required, not silently defaulted to empty. The DynamoDB key schema
-// partitions by user (PK=USER#<uid>) — an empty UserID would collide
-// every such project into one shared "USER#" partition, defeating that
-// isolation (#47).
-func TestCreateProject_MissingUserID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
-
-	body := `{"name": "Nudge", "goal": "Ship the POC"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
-	rec := httptest.NewRecorder()
-
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-
-	var got validationErrorResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
-	if msg, ok := got.Fields["user_id"]; !ok {
-		t.Errorf("Fields = %#v, want a \"user_id\" entry naming which field failed", got.Fields)
-	} else if msg == "" {
-		t.Error(`Fields["user_id"] is empty, want a message explaining why`)
+		t.Errorf("UserID = %q, want %q (the authenticated caller)", got.UserID, "user_1")
 	}
 }
 
@@ -78,8 +62,8 @@ func TestCreateProject_MissingUserID(t *testing.T) {
 func TestCreateProject_MissingName(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "goal": "Ship the POC"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	body := `{"goal": "Ship the POC"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -104,8 +88,8 @@ func TestCreateProject_MissingName(t *testing.T) {
 func TestCreateProject_MissingGoal(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "name": "Nudge"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	body := `{"name": "Nudge"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -128,7 +112,7 @@ func TestCreateProject_MissingGoal(t *testing.T) {
 func TestCreateProject_InvalidBody(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString("not json"))
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString("not json")), "user_1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -195,8 +179,8 @@ func (s stubRepository) ListTasks(ctx context.Context, userID, projectID string)
 func TestCreateProject_DuplicateID(t *testing.T) {
 	router := NewRouter(stubRepository{createErr: store.ErrDuplicateID})
 
-	body := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	body := `{"name": "Nudge", "goal": "Ship the POC"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -214,7 +198,7 @@ func TestDeleteProject_Success(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/projects/"+created.ID+"?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodDelete, "/projects/"+created.ID, nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -230,7 +214,7 @@ func TestDeleteProject_Success(t *testing.T) {
 func TestDeleteProject_NotFound(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodDelete, "/projects/does-not-exist?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodDelete, "/projects/does-not-exist", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -239,24 +223,12 @@ func TestDeleteProject_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteProject_MissingUserID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
-
-	req := httptest.NewRequest(http.MethodDelete, "/projects/some-id", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-}
-
 func TestUpdateProject_Success(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	router := NewRouter(repo)
 
-	createBody := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC", "status": "active"}`
-	createReq := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody))
+	createBody := `{"name": "Nudge", "goal": "Ship the POC", "status": "active"}`
+	createReq := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody)), "user_1")
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
 
@@ -265,8 +237,8 @@ func TestUpdateProject_Success(t *testing.T) {
 		t.Fatalf("unmarshal create response: %v", err)
 	}
 
-	updateBody := `{"user_id": "user_1", "version": 1, "goal": "Ship v2", "constraints": ["no VPC"], "status": "done"}`
-	updateReq := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(updateBody))
+	updateBody := `{"version": 1, "goal": "Ship v2", "constraints": ["no VPC"], "status": "done"}`
+	updateReq := withUserID(httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(updateBody)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, updateReq)
 
@@ -299,8 +271,8 @@ func TestUpdateProject_VersionConflict(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	router := NewRouter(repo)
 
-	createBody := `{"user_id": "user_1", "name": "Nudge", "goal": "v1"}`
-	createReq := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody))
+	createBody := `{"name": "Nudge", "goal": "v1"}`
+	createReq := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody)), "user_1")
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
 
@@ -309,16 +281,16 @@ func TestUpdateProject_VersionConflict(t *testing.T) {
 		t.Fatalf("unmarshal create response: %v", err)
 	}
 
-	firstBody := `{"user_id": "user_1", "version": 1, "goal": "v2"}`
-	firstReq := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(firstBody))
+	firstBody := `{"version": 1, "goal": "v2"}`
+	firstReq := withUserID(httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(firstBody)), "user_1")
 	firstRec := httptest.NewRecorder()
 	router.ServeHTTP(firstRec, firstReq)
 	if firstRec.Code != http.StatusOK {
 		t.Fatalf("first update status = %d, want %d (body: %s)", firstRec.Code, http.StatusOK, firstRec.Body.String())
 	}
 
-	staleBody := `{"user_id": "user_1", "version": 1, "goal": "v3 (stale)"}`
-	staleReq := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(staleBody))
+	staleBody := `{"version": 1, "goal": "v3 (stale)"}`
+	staleReq := withUserID(httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(staleBody)), "user_1")
 	staleRec := httptest.NewRecorder()
 	router.ServeHTTP(staleRec, staleReq)
 
@@ -338,8 +310,8 @@ func TestUpdateProject_VersionConflict(t *testing.T) {
 func TestUpdateProject_NotFound(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "version": 1, "goal": "Ship v2", "status": "done"}`
-	req := httptest.NewRequest(http.MethodPut, "/projects/does-not-exist", bytes.NewBufferString(body))
+	body := `{"version": 1, "goal": "Ship v2", "status": "done"}`
+	req := withUserID(httptest.NewRequest(http.MethodPut, "/projects/does-not-exist", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -356,8 +328,8 @@ func TestUpdateProject_WrongUser(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	router := NewRouter(repo)
 
-	createBody := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC"}`
-	createReq := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody))
+	createBody := `{"name": "Nudge", "goal": "Ship the POC"}`
+	createReq := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody)), "user_1")
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
 
@@ -366,26 +338,13 @@ func TestUpdateProject_WrongUser(t *testing.T) {
 		t.Fatalf("unmarshal create response: %v", err)
 	}
 
-	updateBody := `{"user_id": "user_2", "version": 1, "goal": "Ship v2", "status": "done"}`
-	req := httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(updateBody))
+	updateBody := `{"version": 1, "goal": "Ship v2", "status": "done"}`
+	req := withUserID(httptest.NewRequest(http.MethodPut, "/projects/"+created.ID, bytes.NewBufferString(updateBody)), "user_2")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
-}
-
-func TestUpdateProject_MissingUserID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
-
-	body := `{"version": 1, "goal": "Ship v2", "status": "done"}`
-	req := httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString(body))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
@@ -397,8 +356,8 @@ func TestUpdateProject_MissingUserID(t *testing.T) {
 func TestUpdateProject_MissingVersion(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "goal": "Ship v2", "status": "done"}`
-	req := httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString(body))
+	body := `{"goal": "Ship v2", "status": "done"}`
+	req := withUserID(httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -420,7 +379,7 @@ func TestUpdateProject_MissingVersion(t *testing.T) {
 func TestUpdateProject_InvalidBody(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString("not json"))
+	req := withUserID(httptest.NewRequest(http.MethodPut, "/projects/some-id", bytes.NewBufferString("not json")), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -438,7 +397,7 @@ func TestGetProject_Success(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+created.ID+"?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+created.ID, nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -458,7 +417,7 @@ func TestGetProject_Success(t *testing.T) {
 func TestGetProject_NotFound(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/does-not-exist?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/does-not-exist", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -481,24 +440,12 @@ func TestGetProject_WrongUser(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+created.ID+"?user_id=user_2", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+created.ID, nil), "user_2")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
-}
-
-func TestGetProject_MissingUserID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
-
-	req := httptest.NewRequest(http.MethodGet, "/projects/some-id", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
@@ -518,7 +465,7 @@ func TestListProjects_WithItems(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/projects?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -535,7 +482,7 @@ func TestListProjects_WithItems(t *testing.T) {
 	}
 	for _, p := range got {
 		if p.UserID != "user_1" {
-			t.Errorf("GET /projects?user_id=user_1 leaked project owned by %q", p.UserID)
+			t.Errorf("GET /projects as user_1 leaked project owned by %q", p.UserID)
 		}
 	}
 }
@@ -543,7 +490,7 @@ func TestListProjects_WithItems(t *testing.T) {
 func TestListProjects_Empty(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodGet, "/projects?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects", nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -552,17 +499,5 @@ func TestListProjects_Empty(t *testing.T) {
 	}
 	if body := rec.Body.String(); strings.TrimSpace(body) != "[]" {
 		t.Errorf("body = %q, want an empty JSON array, not null", body)
-	}
-}
-
-func TestListProjects_MissingUserID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
-
-	req := httptest.NewRequest(http.MethodGet, "/projects", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }

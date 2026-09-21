@@ -26,7 +26,7 @@ func TestGetAgentRun_Queued(t *testing.T) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?user_id=user_1&project_id=proj_1", agentRunPath(run.ID)), nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?project_id=proj_1", agentRunPath(run.ID)), nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -77,7 +77,7 @@ func TestGetAgentRun_CompletedWithChangeset(t *testing.T) {
 		t.Fatalf("CompleteAgentRun() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?user_id=user_1&project_id=%s", agentRunPath(run.ID), project.ID), nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?project_id=%s", agentRunPath(run.ID), project.ID), nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -116,7 +116,7 @@ func TestGetAgentRun_Failed(t *testing.T) {
 		t.Fatalf("FailAgentRun() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?user_id=user_1&project_id=proj_1", agentRunPath(run.ID)), nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?project_id=proj_1", agentRunPath(run.ID)), nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -147,7 +147,7 @@ func TestGetAgentRun_NoProject(t *testing.T) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?user_id=user_1", agentRunPath(run.ID)), nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, agentRunPath(run.ID), nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -159,7 +159,7 @@ func TestGetAgentRun_NoProject(t *testing.T) {
 func TestGetAgentRun_NotFound(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	req := httptest.NewRequest(http.MethodGet, agentRunPath("does-not-exist")+"?user_id=user_1", nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, agentRunPath("does-not-exist"), nil), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -180,23 +180,11 @@ func TestGetAgentRun_WrongUser(t *testing.T) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?user_id=user_2&project_id=proj_1", agentRunPath(run.ID)), nil)
+	req := withUserID(httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?project_id=proj_1", agentRunPath(run.ID)), nil), "user_2")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
-}
-
-func TestGetAgentRun_MissingUserID(t *testing.T) {
-	router := NewRouter(store.NewMemoryRepository())
-
-	req := httptest.NewRequest(http.MethodGet, agentRunPath("some-id"), nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }

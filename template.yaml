@@ -78,12 +78,59 @@ Resources:
         - AttributeName: SK
           KeyType: RANGE
 
+  # ── Cognito User Pool ────────────────────────
+  # Sole identity and token provider for both clients (architecture.md
+  # §12, ADR 013) — native accounts only, no external IdP, no Hosted UI
+  # (ADR 017). Email is the username alias: both clients sign up/sign in
+  # with an email address, and Cognito auto-verifies it before allowing
+  # sign-in.
+  NudgeUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${Environment}-nudge
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+
+  # Public app client — no GenerateSecret: a browser SPA or a CLI can't
+  # hold a client secret confidentially, so this must be a "public"
+  # client, exactly as Cognito's own guidance for USER_SRP_AUTH requires.
+  # ALLOW_USER_SRP_AUTH is what lets both clients call InitiateAuth
+  # directly (ADR 017) instead of Hosted UI; ALLOW_REFRESH_TOKEN_AUTH is
+  # what lets a client silently renew an access token instead of forcing
+  # a re-login every time one expires.
+  NudgeUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${Environment}-nudge-client
+      UserPoolId: !Ref NudgeUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
   # ── HTTP API (v2) ──────────────────────────
   # API Gateway HTTP API, not REST API (architecture.md §13).
+  #
+  # Auth: every route requires a valid Cognito access token (architecture.md
+  # §14, #81) — API Gateway's built-in JWT authorizer validates it before a
+  # request ever reaches ApiFunction or SkillsFunction; neither Lambda
+  # verifies a signature itself (internal/auth.LambdaJWTResolver just
+  # reads the claims this authorizer already checked). IdentitySource
+  # matches how both clients send the token: `Authorization: Bearer
+  # <token>`.
   NudgeApi:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref Environment
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${NudgeUserPool}
+              audience:
+                - !Ref NudgeUserPoolClient
+            IdentitySource: "$request.header.Authorization"
+        DefaultAuthorizer: CognitoAuthorizer
 
   # ── API Lambda ──────────────────────────────
   # All CRUD and changeset commits behind one proxy route (architecture.md
@@ -168,11 +215,10 @@ Resources:
   # function does runs anywhere near 30s anymore.
   #
   # Function URL stays alongside the new route rather than being removed.
-  # NudgeApi has no authorizer yet, so POST /skills is now exactly as
-  # public as POST /projects — same posture as the rest of the unauthed
-  # CRUD API, not a regression. The IAM-signed Function URL is kept as a
-  # narrower, SigV4-only calling path until GitHub OAuth lands; drop it
-  # then if nothing still uses it.
+  # POST /skills sits behind NudgeApi's Cognito JWT authorizer exactly
+  # like every other route (#81) — the Function URL's own AWS_IAM auth is
+  # a separate, narrower SigV4-only calling path, kept until GitHub OAuth
+  # lands; drop it then if nothing still uses it.
   SkillsFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -436,6 +482,16 @@ Resources:
                 FunctionARN: !GetAtt ApiPathRewriteFunction.FunctionARN
 
 Outputs:
+  UserPoolId:
+    Description: >
+      Cognito User Pool ID — not secret, needed to configure both
+      clients' InitiateAuth calls (e.g. web's VITE_COGNITO_USER_POOL_ID).
+    Value: !Ref NudgeUserPool
+  UserPoolClientId:
+    Description: >
+      Cognito User Pool public app client ID — not secret, needed
+      alongside UserPoolId (e.g. web's VITE_COGNITO_CLIENT_ID).
+    Value: !Ref NudgeUserPoolClient
   SkillsFunctionUrl:
     Description: Function URL for the Skill Lambda
     Value: !GetAtt SkillsFunctionUrl.FunctionUrl

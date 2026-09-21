@@ -13,8 +13,16 @@ import (
 	"github.com/openai/openai-go"
 
 	"github.com/esvarez/lucas-assist/internal/agent"
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/domain"
 )
+
+// withUserID simulates auth.Middleware, which runs in front of this
+// handler in production — see internal/api/projects_test.go's identical
+// helper for the full rationale.
+func withUserID(req *http.Request, userID string) *http.Request {
+	return req.WithContext(auth.WithUserID(req.Context(), userID))
+}
 
 // fakeSkill is only used to populate a registry for the tests below. Its
 // BuildContext is what this package's tests exercise for input validation
@@ -104,24 +112,11 @@ func TestHandler_InvalidRequestBody(t *testing.T) {
 	}
 }
 
-func TestHandler_MissingUserID(t *testing.T) {
-	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), &fakeAgentRunCreator{}, &fakeEnqueuer{})
-
-	body := `{"skill": "widget", "input": {}}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-}
-
 func TestHandler_UnknownSkill(t *testing.T) {
 	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), &fakeAgentRunCreator{}, &fakeEnqueuer{})
 
-	body := `{"skill": "does-not-exist", "input": {}, "user_id": "user_1"}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	body := `{"skill": "does-not-exist", "input": {}}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -144,8 +139,8 @@ func TestHandler_InvalidInput_DoesNotCreateOrEnqueue(t *testing.T) {
 	enqueuer := &fakeEnqueuer{}
 	handler := NewHandler(agent.NewRegistry(skill), runs, enqueuer)
 
-	body := `{"skill": "widget", "input": {}, "user_id": "user_1"}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	body := `{"skill": "widget", "input": {}}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -165,8 +160,8 @@ func TestHandler_Accepted(t *testing.T) {
 	enqueuer := &fakeEnqueuer{}
 	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), runs, enqueuer)
 
-	body := `{"skill": "widget", "input": {"foo":"bar"}, "user_id": "user_1", "project_id": "proj_1"}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	body := `{"skill": "widget", "input": {"foo":"bar"}, "project_id": "proj_1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -202,8 +197,8 @@ func TestHandler_CreateAgentRunError(t *testing.T) {
 	enqueuer := &fakeEnqueuer{}
 	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), runs, enqueuer)
 
-	body := `{"skill": "widget", "input": {}, "user_id": "user_1"}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	body := `{"skill": "widget", "input": {}}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -225,8 +220,8 @@ func TestHandler_EnqueueError_MarksRunFailed(t *testing.T) {
 	enqueuer := &fakeEnqueuer{enqueueErr: enqueueErr}
 	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), runs, enqueuer)
 
-	body := `{"skill": "widget", "input": {}, "user_id": "user_1", "project_id": "proj_1"}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	body := `{"skill": "widget", "input": {}, "project_id": "proj_1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -261,8 +256,8 @@ func TestHandler_EnqueueError_FailAgentRunAlsoFails(t *testing.T) {
 	enqueuer := &fakeEnqueuer{enqueueErr: errors.New("sqs unavailable")}
 	handler := NewHandler(agent.NewRegistry(fakeSkill{name: "widget"}), runs, enqueuer)
 
-	body := `{"skill": "widget", "input": {}, "user_id": "user_1"}`
-	req := httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body))
+	body := `{"skill": "widget", "input": {}}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/skills", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

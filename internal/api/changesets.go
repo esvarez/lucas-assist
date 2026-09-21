@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/store"
 )
@@ -21,10 +22,6 @@ const maxChangesetMutations = 50
 
 // acceptChangesetRequest is the POST body for accepting a changeset.
 type acceptChangesetRequest struct {
-	// UserID is caller-supplied for now, same convention as every other
-	// request in this package (domain.Project's doc comment).
-	UserID string `json:"user_id" validate:"required"`
-
 	// IdempotencyKey deduplicates retries (architecture.md §15): replaying
 	// an accept with the same key returns the original result instead of
 	// re-applying it. Required — there's no sane default that would still
@@ -58,10 +55,11 @@ func acceptChangesetHandler(repo ProjectRepository) http.HandlerFunc {
 			return
 		}
 
+		userID, _ := auth.UserIDFromContext(r.Context())
 		projectID := r.PathValue("id")
 		changesetID := r.PathValue("changesetId")
 
-		project, err := repo.GetProject(r.Context(), req.UserID, projectID)
+		project, err := repo.GetProject(r.Context(), userID, projectID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -71,7 +69,7 @@ func acceptChangesetHandler(repo ProjectRepository) http.HandlerFunc {
 			return
 		}
 
-		changeset, err := repo.GetChangeset(r.Context(), req.UserID, projectID, changesetID)
+		changeset, err := repo.GetChangeset(r.Context(), userID, projectID, changesetID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})

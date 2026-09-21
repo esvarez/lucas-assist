@@ -10,9 +10,13 @@ import (
 	"net/http"
 	"os"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
+
 	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/agent/skills"
 	"github.com/esvarez/lucas-assist/internal/api"
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/queue"
 	"github.com/esvarez/lucas-assist/internal/skillsapi"
 	"github.com/esvarez/lucas-assist/internal/store"
@@ -62,7 +66,21 @@ func main() {
 	)
 	router.Handle("POST /skills", skillsapi.NewHandler(registry, repo, enqueuer))
 
+	// No API Gateway JWT authorizer sits in front of this plain
+	// http.Server, so there's no already-verified claim to read the way
+	// LambdaJWTResolver does in production. CognitoGetUserResolver
+	// verifies the presented bearer token by asking the real Cognito User
+	// Pool directly (cognito-idp:GetUser) instead — same posture as
+	// everything else cmd/local does against real AWS services (SQS is
+	// already real, not emulated; only DynamoDB is local).
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		log.Fatalf("load AWS config: %v", err)
+	}
+	cognitoClient := cognitoidentityprovider.NewFromConfig(awsCfg)
+	protected := auth.Middleware(auth.NewCognitoGetUserResolver(cognitoClient))(router)
+
 	addr := ":8080"
 	log.Printf("listening on %s (dynamodb endpoint %s, table %s)", addr, endpoint, table)
-	log.Fatal(http.ListenAndServe(addr, router))
+	log.Fatal(http.ListenAndServe(addr, protected))
 }
