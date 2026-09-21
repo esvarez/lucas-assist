@@ -515,6 +515,11 @@ components:
           items:
             type: object
             description: domain.ProposedTask — see internal/domain/task.go.
+        assumptions:
+          type: array
+          items:
+            type: string
+          description: decompose_task's disclosed unspecified-choice decisions (#42). Absent for create_project changesets.
         created_at:
           type: string
           format: date-time

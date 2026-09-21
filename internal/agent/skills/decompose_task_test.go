@@ -35,40 +35,38 @@ func TestSystemPrompt(t *testing.T) {
 
 // TestDecomposeResultSchemaStrictMode asserts the DecomposeResult schema
 // round-trips through llm.StrictSchema into the shape OpenAI's strict mode
-// requires: additionalProperties:false and every property required,
-// recursively, with optional fields expressed as a nullable anyOf.
+// requires: additionalProperties:false and every property required. #42
+// removed the needs_clarification branch, so unlike before, neither field
+// is nullable — the schema has no anyOf/oneOf anywhere.
 func TestDecomposeResultSchemaStrictMode(t *testing.T) {
 	schema := llm.StrictSchema(&DecomposeResult{})
 
-	assertObjectStrict(t, "root", schema, []string{"status", "subtasks", "assumptions", "questions"})
+	assertObjectStrict(t, "root", schema, []string{"subtasks", "assumptions"})
 
 	properties, _ := schema["properties"].(map[string]any)
 
-	for _, nullableField := range []string{"subtasks", "assumptions", "questions"} {
-		anyOf, ok := properties[nullableField].(map[string]any)["anyOf"].([]any)
-		if !ok || len(anyOf) != 2 {
-			t.Fatalf("properties.%s: want a 2-branch anyOf, got %#v", nullableField, properties[nullableField])
-		}
-		if branch, ok := anyOf[1].(map[string]any); !ok || branch["type"] != "null" {
-			t.Errorf("properties.%s: second anyOf branch should be {type: null}, got %#v", nullableField, anyOf[1])
-		}
+	subtasksSchema, ok := properties["subtasks"].(map[string]any)
+	if !ok || subtasksSchema["type"] != "array" {
+		t.Fatalf("properties.subtasks: want a plain array schema, got %#v", properties["subtasks"])
 	}
-
-	subtasksArray := properties["subtasks"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)
-	if subtasksArray["type"] != "array" {
-		t.Fatalf("properties.subtasks anyOf[0]: want type array, got %#v", subtasksArray)
-	}
-	subtaskItem, ok := subtasksArray["items"].(map[string]any)
+	subtaskItem, ok := subtasksSchema["items"].(map[string]any)
 	if !ok {
-		t.Fatalf("properties.subtasks anyOf[0]: missing items schema")
+		t.Fatalf("properties.subtasks: missing items schema")
 	}
 	assertObjectStrict(t, "subtasks item (ProposedTask)", subtaskItem, []string{"title", "description", "acceptance_criteria"})
+
+	if assumptionsSchema, ok := properties["assumptions"].(map[string]any); !ok || assumptionsSchema["type"] != "array" {
+		t.Fatalf("properties.assumptions: want a plain array schema, got %#v", properties["assumptions"])
+	}
 
 	if v := schema["$schema"]; v != nil {
 		t.Errorf(`schema should not carry "$schema" (OpenAI rejects unknown keywords), got %v`, v)
 	}
 	if _, hasOneOf := findKey(schema, "oneOf"); hasOneOf {
-		t.Errorf(`schema should not contain "oneOf" (rewritten to "anyOf" for strict mode)`)
+		t.Errorf(`schema should not contain "oneOf"`)
+	}
+	if _, hasAnyOf := findKey(schema, "anyOf"); hasAnyOf {
+		t.Errorf(`schema should not contain "anyOf" — there's no nullable branch left to need one`)
 	}
 }
 
@@ -197,43 +195,6 @@ func TestDecomposeTaskSkill_BuildContext_RejectsUnknownFields(t *testing.T) {
 	}
 }
 
-// TestDecomposeTaskSkill_BuildContext_WithClarifications is the other
-// #41 fix: a follow-up round's answers are passed as structured
-// Clarifications, not folded into TaskDescription prose, and the message
-// explicitly marks them as settled — including negative answers — so the
-// model doesn't ask again.
-func TestDecomposeTaskSkill_BuildContext_WithClarifications(t *testing.T) {
-	raw := []byte(`{
-		"task_title": "IndieDev Task Tracker",
-		"task_description": "A CLI tool for indie developers to manage and track tasks",
-		"domain": "software",
-		"clarification_round": 1,
-		"clarifications": [
-			{"question": "Preferred technology stack?", "answer": "No preference"},
-			{"question": "Authentication?", "answer": "Out of scope"}
-		]
-	}`)
-
-	messages, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), raw)
-	if err != nil {
-		t.Fatalf("BuildContext() error = %v", err)
-	}
-
-	userMsg := messages[1].OfUser.Content.OfString.Value
-	for _, want := range []string{
-		"Clarification round: 1",
-		"already been answered",
-		"Preferred technology stack?",
-		"No preference",
-		"Authentication?",
-		"Out of scope",
-	} {
-		if !strings.Contains(userMsg, want) {
-			t.Errorf("user message = %q, want it to contain %q", userMsg, want)
-		}
-	}
-}
-
 // TestDecomposeTaskSkill_BuildContext_WithProjectContext is #78's eval
 // scenario (architecture.md §16): when a project_id is given, BuildContext
 // must surface the project card and existing task titles so the model can
@@ -353,14 +314,12 @@ func TestDecomposeTaskSkill_Tools(t *testing.T) {
 	}
 }
 
-func TestDecomposeTaskSkill_Parse_OK(t *testing.T) {
+func TestDecomposeTaskSkill_Parse(t *testing.T) {
 	raw := []byte(`{
-		"status": "ok",
 		"subtasks": [
 			{"title": "Pack boxes", "description": "Box up the kitchen", "acceptance_criteria": ["All kitchen items boxed"]}
 		],
-		"assumptions": ["No professional movers — assuming a DIY move"],
-		"questions": null
+		"assumptions": ["No professional movers — assuming a DIY move"]
 	}`)
 
 	got, err := (DecomposeTaskSkill{}).Parse(raw)
@@ -371,39 +330,11 @@ func TestDecomposeTaskSkill_Parse_OK(t *testing.T) {
 	if !ok {
 		t.Fatalf("Parse() returned %T, want DecomposeResult", got)
 	}
-	if result.Status != "ok" {
-		t.Errorf("Status = %q, want %q", result.Status, "ok")
-	}
 	if len(result.Subtasks) != 1 || result.Subtasks[0].Title != "Pack boxes" {
 		t.Errorf("Subtasks = %#v, want one subtask titled %q", result.Subtasks, "Pack boxes")
 	}
 	if len(result.Assumptions) != 1 {
 		t.Errorf("Assumptions = %#v, want one assumption", result.Assumptions)
-	}
-	if result.Questions != nil {
-		t.Errorf("Questions = %#v, want nil", result.Questions)
-	}
-}
-
-func TestDecomposeTaskSkill_Parse_NeedsClarification(t *testing.T) {
-	raw := []byte(`{"status": "needs_clarification", "subtasks": null, "assumptions": null, "questions": ["What is the task actually about?"]}`)
-
-	got, err := (DecomposeTaskSkill{}).Parse(raw)
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	result := got.(DecomposeResult)
-	if result.Status != "needs_clarification" {
-		t.Errorf("Status = %q, want %q", result.Status, "needs_clarification")
-	}
-	if result.Subtasks != nil {
-		t.Errorf("Subtasks = %#v, want nil", result.Subtasks)
-	}
-	if result.Assumptions != nil {
-		t.Errorf("Assumptions = %#v, want nil", result.Assumptions)
-	}
-	if len(result.Questions) != 1 {
-		t.Errorf("Questions = %#v, want one question", result.Questions)
 	}
 }
 

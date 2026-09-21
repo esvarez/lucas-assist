@@ -72,8 +72,8 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 
 	stubResult := skills.DecomposeResult{
-		Status:   "ok",
-		Subtasks: []domain.ProposedTask{{Title: "Add login command"}, {Title: "Add logout command"}},
+		Subtasks:    []domain.ProposedTask{{Title: "Add login command"}, {Title: "Add logout command"}},
+		Assumptions: []string{"Using cobra for the CLI framework, since none was specified"},
 	}
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
 		return stubResult, nil
@@ -105,6 +105,9 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 	if len(changeset.ProposedTasks) != 2 {
 		t.Errorf("Changeset.ProposedTasks = %+v, want 2 tasks", changeset.ProposedTasks)
+	}
+	if len(changeset.Assumptions) != 1 {
+		t.Errorf("Changeset.Assumptions = %#v, want the one assumption from the model's response", changeset.Assumptions)
 	}
 	if changeset.BaseVersion != project.Version {
 		t.Errorf("Changeset.BaseVersion = %d, want the project's version %d", changeset.BaseVersion, project.Version)
@@ -171,7 +174,7 @@ func TestProcessor_ProcessRun_DuplicateDelivery_NoOp(t *testing.T) {
 	calls := 0
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
 		calls++
-		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Task"}}}, nil
+		return skills.DecomposeResult{Subtasks: []domain.ProposedTask{{Title: "Task"}}}, nil
 	}
 	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
 
@@ -298,7 +301,7 @@ func TestProcessor_ProcessRun_LoadProjectFailure_ReturnsErrorForRetry(t *testing
 	dbErr := errors.New("dynamo unavailable")
 	repo := stubRunRepository{RunRepository: memRepo, getProjectErr: dbErr}
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
-		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Task"}}}, nil
+		return skills.DecomposeResult{Subtasks: []domain.ProposedTask{{Title: "Task"}}}, nil
 	}
 	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
 
@@ -353,7 +356,7 @@ func TestProcessor_ProcessRun_ChangesetAlreadyCreated_Reused(t *testing.T) {
 	calls := 0
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
 		calls++
-		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "A different task from the retry"}}}, nil
+		return skills.DecomposeResult{Subtasks: []domain.ProposedTask{{Title: "A different task from the retry"}}}, nil
 	}
 	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
 
@@ -408,33 +411,6 @@ func TestProcessor_ProcessRun_UnknownSkill_MarksFailed(t *testing.T) {
 	}
 }
 
-func TestProcessor_ProcessRun_NeedsClarification_MarksFailed(t *testing.T) {
-	repo := store.NewMemoryRepository()
-	ctx := context.Background()
-
-	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1", Skill: "decompose_task"})
-	if err != nil {
-		t.Fatalf("CreateAgentRun() error = %v", err)
-	}
-
-	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
-		return skills.DecomposeResult{Status: "needs_clarification", Questions: []string{"what are you building?"}}, nil
-	}
-	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
-
-	if err := p.ProcessRun(ctx, "user_1", "proj_1", run.ID); err != nil {
-		t.Fatalf("ProcessRun() error = %v", err)
-	}
-
-	got, err := repo.GetAgentRun(ctx, "user_1", "proj_1", run.ID)
-	if err != nil {
-		t.Fatalf("GetAgentRun() error = %v", err)
-	}
-	if got.Status != domain.AgentRunFailed {
-		t.Fatalf("Status = %q, want %q (see #42)", got.Status, domain.AgentRunFailed)
-	}
-}
-
 // TestProcessor_ProcessRun_CreateProject_NilProject_MarksFailed documents
 // the fix for a PR #120 review finding: strict mode's schema can't express
 // "Project is non-null when Status is ok", so a malformed model response
@@ -480,7 +456,7 @@ func TestProcessor_ProcessRun_DecomposeTask_EmptySubtasks_MarksFailed(t *testing
 	}
 
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
-		return skills.DecomposeResult{Status: "ok", Subtasks: nil}, nil
+		return skills.DecomposeResult{Subtasks: nil}, nil
 	}
 	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
 

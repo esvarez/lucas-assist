@@ -217,10 +217,11 @@ func (p *Processor) fail(ctx context.Context, run domain.AgentRun, cause error) 
 // result types is expected, since the registry only holds those two
 // skills today (cmd/skills/main.go, cmd/local/main.go).
 //
-// Both result types can still carry status "needs_clarification" — #42
-// (open) proposes removing that branch entirely. Until it lands, such a
-// result has no representation as a Changeset, so it's treated as a
+// create_project's result can still carry status "needs_clarification",
+// which has no representation as a Changeset, so it's treated as a
 // failure here rather than silently dropped or half-saved.
+// decompose_task no longer has this branch at all (#42) — it always
+// decomposes and discloses unspecified choices as Assumptions instead.
 func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, error) {
 	base := domain.Changeset{
 		ProjectID: run.ProjectID,
@@ -231,17 +232,14 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 
 	switch r := result.(type) {
 	case skills.DecomposeResult:
-		if r.Status != "ok" {
-			return domain.Changeset{}, fmt.Errorf("%s: needs clarification, cannot save a changeset yet (see #42): %v", run.Skill, r.Questions)
-		}
 		// Defensive: strict mode's schema can't express "Subtasks is
-		// non-empty when Status is ok" as a hard constraint, so a
-		// malformed response could otherwise complete the run with an
-		// empty, useless changeset.
+		// non-empty" as a hard constraint, so a malformed response could
+		// otherwise complete the run with an empty, useless changeset.
 		if len(r.Subtasks) == 0 {
-			return domain.Changeset{}, fmt.Errorf("%s: status \"ok\" but no subtasks in the model's response", run.Skill)
+			return domain.Changeset{}, fmt.Errorf("%s: no subtasks in the model's response", run.Skill)
 		}
 		base.ProposedTasks = r.Subtasks
+		base.Assumptions = r.Assumptions
 	case skills.CreateProjectResult:
 		if r.Status != "ok" {
 			return domain.Changeset{}, fmt.Errorf("%s: needs clarification, cannot save a changeset yet (see #42): %v", run.Skill, r.Questions)

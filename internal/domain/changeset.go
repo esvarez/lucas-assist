@@ -46,6 +46,12 @@ type Changeset struct {
 	// field, since Skill already says which shape to expect.
 	ProposedTasks []ProposedTask `json:"proposed_tasks,omitempty"`
 
+	// Assumptions are decompose_task's disclosed unspecified-choice
+	// decisions (#42) — every choice the model made on the user's behalf
+	// because the task didn't specify it, meant to be read before the
+	// subtask diff during changeset review.
+	Assumptions []string `json:"assumptions,omitempty"`
+
 	// ProposedProject is create_project's mutation payload (#101) — the
 	// second proposal shape #73 anticipated needing "when actually
 	// needed." A create_project run has no ProjectID yet (that's the

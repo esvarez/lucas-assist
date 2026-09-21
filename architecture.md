@@ -576,7 +576,7 @@ Every agent request receives a `runId` and `correlationId` used across API logs,
 - Identify the current project state from deterministic facts.
 - Select only an eligible next action.
 - Extract a decision from a conversation.
-- Detect missing information and request clarification.
+- Detect missing information and disclose the resulting choice as a specific, named assumption rather than asking a question.
 - Refuse to include a task from another project.
 - Produce a conflict when project version changed after proposal generation.
 

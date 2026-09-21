@@ -25,6 +25,10 @@ export interface Changeset {
   base_version: number
   status: string
   proposed_tasks?: ProposedTask[]
+  // Unspecified choices the model made on the user's behalf while
+  // decomposing (#42) — rendered above the subtask list in review, since
+  // these are what's most likely to need correcting.
+  assumptions?: string[]
   created_at: string
 }
 

@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type FormEvent } from 'react'
-import { SparklesIcon } from 'lucide-react'
+import { InfoIcon, SparklesIcon } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -121,6 +122,7 @@ function DecomposeTaskDialog({
   }
 
   const proposedTasks = step.name === 'review' ? (step.changeset.proposed_tasks ?? []) : []
+  const assumptions = step.name === 'review' ? (step.changeset.assumptions ?? []) : []
 
   return (
     <Dialog
@@ -197,6 +199,19 @@ function DecomposeTaskDialog({
             <p className="text-xs text-muted-foreground">
               Review the proposed subtasks below. Nothing is saved until you accept.
             </p>
+            {assumptions.length > 0 && (
+              <Alert>
+                <InfoIcon />
+                <AlertTitle>Assumptions made on your behalf</AlertTitle>
+                <AlertDescription>
+                  <ul className="list-inside list-disc">
+                    {assumptions.map((assumption, index) => (
+                      <li key={index}>{assumption}</li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            )}
             <ItemGroup className="max-h-[50vh] overflow-y-auto">
               {proposedTasks.map((task, index) => (
                 <Item key={index} variant="outline" size="sm">
