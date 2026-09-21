@@ -256,7 +256,7 @@ func (r *MemoryRepository) LeaseAgentRun(ctx context.Context, userID, projectID,
 	return run, nil
 }
 
-func (r *MemoryRepository) CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+func (r *MemoryRepository) CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -267,6 +267,7 @@ func (r *MemoryRepository) CompleteAgentRun(ctx context.Context, userID, project
 
 	run.Status = domain.AgentRunCompleted
 	run.Error = ""
+	run.ChangesetID = changesetID
 	run.UpdatedAt = time.Now().UTC()
 
 	r.agentRuns[runID] = run

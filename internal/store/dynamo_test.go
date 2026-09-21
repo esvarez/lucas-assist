@@ -980,12 +980,15 @@ func TestDynamoRepository_CompleteAgentRun(t *testing.T) {
 		t.Fatalf("LeaseAgentRun() error = %v", err)
 	}
 
-	completed, err := repo.CompleteAgentRun(ctx, userID, projectID, created.ID)
+	completed, err := repo.CompleteAgentRun(ctx, userID, projectID, created.ID, "cs_1")
 	if err != nil {
 		t.Fatalf("CompleteAgentRun() error = %v", err)
 	}
 	if completed.Status != domain.AgentRunCompleted {
 		t.Errorf("Status = %q, want %q", completed.Status, domain.AgentRunCompleted)
+	}
+	if completed.ChangesetID != "cs_1" {
+		t.Errorf("ChangesetID = %q, want %q", completed.ChangesetID, "cs_1")
 	}
 
 	got, err := repo.GetAgentRun(ctx, userID, projectID, created.ID)
@@ -995,13 +998,16 @@ func TestDynamoRepository_CompleteAgentRun(t *testing.T) {
 	if got.Status != domain.AgentRunCompleted {
 		t.Errorf("GetAgentRun() after complete Status = %q, want %q", got.Status, domain.AgentRunCompleted)
 	}
+	if got.ChangesetID != "cs_1" {
+		t.Errorf("GetAgentRun() after complete ChangesetID = %q, want %q", got.ChangesetID, "cs_1")
+	}
 }
 
 func TestDynamoRepository_CompleteAgentRun_NotFound(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
 
-	_, err := repo.CompleteAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	_, err := repo.CompleteAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), "cs_1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CompleteAgentRun() error = %v, want %v", err, ErrNotFound)
 	}

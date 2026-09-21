@@ -22,6 +22,12 @@ type ProjectRepository interface {
 	ListProjects(ctx context.Context, userID string) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, userID, id string) error
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
+
+	// GetAgentRun and GetChangeset back GET /agent-runs/{id} — see
+	// getAgentRunHandler's doc comment for why the route also needs
+	// GetChangeset, not just GetAgentRun.
+	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
+	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
 }
 
 // NewRouter builds the API's route table against repo.
@@ -32,5 +38,6 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("GET /projects/{id}", getProjectHandler(repo))
 	mux.HandleFunc("PUT /projects/{id}", updateProjectHandler(repo))
 	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
+	mux.HandleFunc("GET /agent-runs/{id}", getAgentRunHandler(repo))
 	return mux
 }
