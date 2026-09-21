@@ -25,6 +25,7 @@ import (
 
 	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/agent/skills"
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/queue"
 	"github.com/esvarez/lucas-assist/internal/skillsapi"
 	"github.com/esvarez/lucas-assist/internal/store"
@@ -53,7 +54,10 @@ func init() {
 		skills.NewDecomposeTaskSkill(repo),
 		skills.CreateProjectSkill{},
 	)
-	adapter = httpadapter.NewV2(skillsapi.NewHandler(registry, repo, enqueuer))
+	// Same authorizer-trust posture as cmd/api — see its comment.
+	handler := skillsapi.NewHandler(registry, repo, enqueuer)
+	protected := auth.Middleware(auth.LambdaJWTResolver{})(handler)
+	adapter = httpadapter.NewV2(protected)
 }
 
 func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {

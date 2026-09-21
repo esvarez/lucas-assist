@@ -3,13 +3,17 @@ info:
   title: Nudge API
   description: >
     Project CRUD routes served by the API Lambda (cmd/api) and the local dev
-    server (cmd/local). Reflects the current implementation in
-    internal/api — user_id is caller-supplied today; deriving it from a
-    verified JWT is separate, undecided auth work (see AGENTS.md).
-  version: "0.1.0"
+    server (cmd/local). Every route requires a Cognito access token
+    (architecture.md §12/§14, #81) — the caller's user ID comes from the
+    token's verified `sub` claim, never from a path, query parameter, or
+    request body.
+  version: "0.2.0"
 servers:
   - url: http://localhost:8080
     description: Local dev server (make local)
+
+security:
+  - bearerAuth: []
 
 paths:
   /projects:
@@ -30,11 +34,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Project"
         "400":
-          description: Invalid body or failed validation (e.g. missing user_id)
+          description: Invalid body or failed validation (e.g. missing name/goal)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "409":
           description: A project with this id already exists
           content:
@@ -44,25 +50,19 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
     get:
-      summary: List projects for a user
+      summary: List projects owned by the authenticated caller
       operationId: listProjects
-      parameters:
-        - $ref: "#/components/parameters/UserIdQuery"
       responses:
         "200":
-          description: Projects owned by user_id (empty array if none)
+          description: Projects owned by the caller (empty array if none)
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/Project"
-        "400":
-          description: user_id is required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -72,8 +72,6 @@ paths:
     get:
       summary: Get a project by id
       operationId: getProject
-      parameters:
-        - $ref: "#/components/parameters/UserIdQuery"
       responses:
         "200":
           description: The project
@@ -81,12 +79,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Project"
-        "400":
-          description: user_id is required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -111,11 +105,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Project"
         "400":
-          description: Invalid body, or failed validation (missing user_id or version)
+          description: Invalid body, or failed validation (missing version)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -132,17 +128,11 @@ paths:
     delete:
       summary: Delete a project
       operationId: deleteProject
-      parameters:
-        - $ref: "#/components/parameters/UserIdQuery"
       responses:
         "204":
           description: Project deleted
-        "400":
-          description: user_id is required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -182,12 +172,14 @@ paths:
                 $ref: "#/components/schemas/AcceptChangesetResponse"
         "400":
           description: >
-            Invalid body, missing user_id/idempotency_key, or the
-            changeset exceeds the 50-mutation cap
+            Invalid body, missing idempotency_key, or the changeset
+            exceeds the 50-mutation cap
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           description: No project or changeset with these ids in this user's partition
           content:
@@ -219,8 +211,6 @@ paths:
         Building a tree out of the flat list, if a caller wants one, is
         client-side presentation logic (#125).
       operationId: listTasks
-      parameters:
-        - $ref: "#/components/parameters/UserIdQuery"
       responses:
         "200":
           description: The project's tasks (empty array if none)
@@ -230,12 +220,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Task"
-        "400":
-          description: user_id is required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -261,7 +247,6 @@ paths:
           required: true
           schema:
             type: string
-        - $ref: "#/components/parameters/UserIdQuery"
         - name: project_id
           in: query
           required: false
@@ -276,12 +261,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentRunResult"
-        "400":
-          description: user_id is required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -313,12 +294,14 @@ paths:
                 $ref: "#/components/schemas/DispatchSkillResponse"
         "400":
           description: >
-            Invalid body, missing user_id, or input that fails the skill's
-            own shape validation
+            Invalid body, or input that fails the skill's own shape
+            validation
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           description: No skill registered under this name
           content:
@@ -329,14 +312,18 @@ paths:
           $ref: "#/components/responses/InternalError"
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        A Cognito access token. API Gateway's Cognito JWT authorizer
+        validates it before the request reaches the API Lambda
+        (architecture.md §14) — the user ID is the token's `sub` claim,
+        never a path, query, or body value.
+
   parameters:
-    UserIdQuery:
-      name: user_id
-      in: query
-      required: true
-      description: Owner of the project(s). Caller-supplied for now.
-      schema:
-        type: string
     ProjectIdPath:
       name: id
       in: path
@@ -347,6 +334,12 @@ components:
   responses:
     NotFound:
       description: No project with this id in this user's partition
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing, invalid, or expired access token
       content:
         application/json:
           schema:
@@ -405,9 +398,6 @@ components:
     CreateProjectRequest:
       type: object
       properties:
-        user_id:
-          type: string
-          description: Required — the DynamoDB key schema partitions by user.
         name:
           type: string
           description: Required — a Project's defining content (architecture.md §3).
@@ -425,7 +415,6 @@ components:
         status:
           type: string
       required:
-        - user_id
         - name
         - goal
 
@@ -433,8 +422,6 @@ components:
       type: object
       description: name is intentionally absent — this route never touches it.
       properties:
-        user_id:
-          type: string
         version:
           type: integer
           description: >
@@ -454,7 +441,6 @@ components:
         status:
           type: string
       required:
-        - user_id
         - version
 
     AgentRunResult:
@@ -553,10 +539,6 @@ components:
             The skill's raw input, validated against that skill's own
             expected shape (see e.g. DecomposeInput, CreateProjectInput) —
             not a shape this spec constrains generically.
-        user_id:
-          type: string
-          description: >
-            Required — every AgentRun needs an owner (architecture.md §8).
         project_id:
           type: string
           description: >
@@ -565,7 +547,6 @@ components:
       required:
         - skill
         - input
-        - user_id
 
     DispatchSkillResponse:
       type: object
@@ -579,9 +560,6 @@ components:
     AcceptChangesetRequest:
       type: object
       properties:
-        user_id:
-          type: string
-          description: Required — caller-supplied for now, same as every other route.
         idempotency_key:
           type: string
           description: >
@@ -589,7 +567,6 @@ components:
             same changeset returns the original result instead of
             re-applying it (architecture.md §15).
       required:
-        - user_id
         - idempotency_key
 
     AcceptChangesetResponse:

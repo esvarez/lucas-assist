@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/store"
 )
 
@@ -23,12 +24,7 @@ import (
 // from "no such project."
 func listTasksHandler(repo ProjectRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID := r.URL.Query().Get("user_id")
-		if userID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
-			return
-		}
-
+		userID, _ := auth.UserIDFromContext(r.Context())
 		projectID := r.PathValue("id")
 
 		if _, err := repo.GetProject(r.Context(), userID, projectID); err != nil {

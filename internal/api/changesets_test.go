@@ -52,8 +52,8 @@ func TestAcceptChangeset_Success(t *testing.T) {
 		{Title: "Second", Description: "Do the second thing"},
 	})
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -84,30 +84,13 @@ func TestAcceptChangeset_Success(t *testing.T) {
 	}
 }
 
-func TestAcceptChangeset_MissingUserID(t *testing.T) {
-	repo := store.NewMemoryRepository()
-	router := NewRouter(repo)
-
-	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
-
-	body := `{"idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-}
-
 func TestAcceptChangeset_MissingIdempotencyKey(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	router := NewRouter(repo)
 
 	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
 
-	body := `{"user_id": "user_1"}`
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString("{}")), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -122,7 +105,7 @@ func TestAcceptChangeset_InvalidBody(t *testing.T) {
 
 	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
 
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString("not json"))
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString("not json")), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -134,8 +117,8 @@ func TestAcceptChangeset_InvalidBody(t *testing.T) {
 func TestAcceptChangeset_ProjectNotFound(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects/does-not-exist/changesets/cs_1/accept", bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/does-not-exist/changesets/cs_1/accept", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -153,8 +136,8 @@ func TestAcceptChangeset_ChangesetNotFound(t *testing.T) {
 		t.Fatalf("CreateProject() error = %v", err)
 	}
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/changesets/does-not-exist/accept", bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/changesets/does-not-exist/accept", bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -172,8 +155,8 @@ func TestAcceptChangeset_WrongUser(t *testing.T) {
 
 	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
 
-	body := `{"user_id": "user_2", "idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_2")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -191,8 +174,8 @@ func TestAcceptChangeset_NotProposed(t *testing.T) {
 
 	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
-	first := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	first := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
 	firstRec := httptest.NewRecorder()
 	router.ServeHTTP(firstRec, first)
 	if firstRec.Code != http.StatusOK {
@@ -201,8 +184,8 @@ func TestAcceptChangeset_NotProposed(t *testing.T) {
 
 	// A second, distinct accept attempt (different idempotency key) against
 	// the now-applied changeset must not re-apply it.
-	secondBody := `{"user_id": "user_1", "idempotency_key": "idem-key-2"}`
-	second := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(secondBody))
+	secondBody := `{"idempotency_key": "idem-key-2"}`
+	second := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(secondBody)), "user_1")
 	secondRec := httptest.NewRecorder()
 	router.ServeHTTP(secondRec, second)
 
@@ -232,8 +215,8 @@ func TestAcceptChangeset_VersionConflict(t *testing.T) {
 		t.Fatalf("UpdateProject() error = %v", err)
 	}
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -259,16 +242,16 @@ func TestAcceptChangeset_IdempotentReplay(t *testing.T) {
 
 	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
+	body := `{"idempotency_key": "idem-key-1"}`
 
-	first := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	first := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
 	firstRec := httptest.NewRecorder()
 	router.ServeHTTP(firstRec, first)
 	if firstRec.Code != http.StatusOK {
 		t.Fatalf("first accept status = %d, want %d (body: %s)", firstRec.Code, http.StatusOK, firstRec.Body.String())
 	}
 
-	second := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	second := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
 	secondRec := httptest.NewRecorder()
 	router.ServeHTTP(secondRec, second)
 	if secondRec.Code != http.StatusOK {
@@ -301,8 +284,8 @@ func TestAcceptChangeset_OversizedChangeset(t *testing.T) {
 	}
 	project, changeset := createProjectAndChangeset(t, repo, "user_1", tasks)
 
-	body := `{"user_id": "user_1", "idempotency_key": "idem-key-1"}`
-	req := httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body))
+	body := `{"idempotency_key": "idem-key-1"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 

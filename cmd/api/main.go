@@ -15,6 +15,7 @@ import (
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
 
 	"github.com/esvarez/lucas-assist/internal/api"
+	"github.com/esvarez/lucas-assist/internal/auth"
 	"github.com/esvarez/lucas-assist/internal/store"
 )
 
@@ -31,7 +32,14 @@ func init() {
 	}
 
 	repo := store.NewDynamoRepository(client, os.Getenv("DYNAMODB_TABLE"))
-	adapter = httpadapter.NewV2(api.NewRouter(repo))
+
+	// API Gateway's Cognito JWT authorizer (template.yaml) verifies every
+	// request before it reaches this Lambda; LambdaJWTResolver only reads
+	// the claims it already validated (architecture.md §14) — no
+	// signature verification happens here.
+	router := api.NewRouter(repo)
+	protected := auth.Middleware(auth.LambdaJWTResolver{})(router)
+	adapter = httpadapter.NewV2(protected)
 }
 
 func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
