@@ -99,7 +99,10 @@ type Repository interface {
 	// UpdateChangesetStatus, these are unconditional status sets once the
 	// run exists — enforcing that a run was actually leased before it's
 	// completed or failed belongs to the worker, not this primitive.
-	CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
+	// CompleteAgentRun records changesetID (the Changeset the worker saved
+	// for this run) so GET /agent-runs/{id} (#100) can fetch and include it
+	// without a second lookup path.
+	CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error)
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
 
 	// AcceptChangeset atomically commits c's proposed tasks against p:

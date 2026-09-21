@@ -50,7 +50,7 @@ type AgentRunStore interface {
 // Enqueuer is the slice of *queue.Enqueuer skillsapi actually calls,
 // narrowed so tests can stub it without a real SQS client.
 type Enqueuer interface {
-	EnqueueRun(ctx context.Context, runID string) error
+	EnqueueRun(ctx context.Context, userID, projectID, runID string) error
 }
 
 // NewHandler builds the skill-dispatch HTTP handler against reg, runs, and
@@ -78,8 +78,11 @@ func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http
 		// its chat messages are discarded; the model call itself happens
 		// later in the Agent Worker (#101), once this run is leased off
 		// the queue. No point creating and enqueueing a run for a request
-		// that can't possibly succeed.
-		if _, err := skill.BuildContext(r.Context(), envelope.Input); err != nil {
+		// that can't possibly succeed. envelope.UserID is attached to ctx
+		// first since a skill (e.g. decompose_task with a project_id) may
+		// need it to load that user's data (architecture.md §8).
+		ctx := agent.WithUserID(r.Context(), envelope.UserID)
+		if _, err := skill.BuildContext(ctx, envelope.Input); err != nil {
 			writeJSON(w, statusForBuildContextError(err), map[string]string{"error": err.Error()})
 			return
 		}
@@ -95,7 +98,7 @@ func NewHandler(reg *agent.Registry, runs AgentRunStore, enqueuer Enqueuer) http
 			return
 		}
 
-		if err := enqueuer.EnqueueRun(r.Context(), run.ID); err != nil {
+		if err := enqueuer.EnqueueRun(r.Context(), run.UserID, run.ProjectID, run.ID); err != nil {
 			// The run was already persisted as queued, but nothing will
 			// ever send it to the queue a second time — left as-is, it
 			// would sit queued forever with no worker able to lease it, and

@@ -629,6 +629,40 @@ func TestDynamoRepository_CreateChangeset(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_CreateChangeset_CreateProject documents #101's
+// ProposedProject addition: a create_project changeset has no ProjectID
+// (the noProjectSegment placeholder covers it, same as agentRunSK) and
+// carries ProposedProject instead of ProposedTasks.
+func TestDynamoRepository_CreateChangeset_CreateProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID: userID,
+		Skill:  "create_project",
+		Status: domain.ChangesetProposed,
+		ProposedProject: &domain.ProposedProject{
+			Name: "Nudge",
+			Goal: "Ship the POC",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	got, err := repo.GetChangeset(ctx, userID, "", created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if got.ProposedProject == nil || got.ProposedProject.Name != "Nudge" || got.ProposedProject.Goal != "Ship the POC" {
+		t.Errorf("GetChangeset().ProposedProject = %+v, want the proposed project preserved", got.ProposedProject)
+	}
+	if len(got.ProposedTasks) != 0 {
+		t.Errorf("GetChangeset().ProposedTasks = %+v, want none for a create_project changeset", got.ProposedTasks)
+	}
+}
+
 func TestDynamoRepository_CreateChangeset_DuplicateID(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
@@ -981,12 +1015,15 @@ func TestDynamoRepository_CompleteAgentRun(t *testing.T) {
 		t.Fatalf("LeaseAgentRun() error = %v", err)
 	}
 
-	completed, err := repo.CompleteAgentRun(ctx, userID, projectID, created.ID)
+	completed, err := repo.CompleteAgentRun(ctx, userID, projectID, created.ID, "cs_1")
 	if err != nil {
 		t.Fatalf("CompleteAgentRun() error = %v", err)
 	}
 	if completed.Status != domain.AgentRunCompleted {
 		t.Errorf("Status = %q, want %q", completed.Status, domain.AgentRunCompleted)
+	}
+	if completed.ChangesetID != "cs_1" {
+		t.Errorf("ChangesetID = %q, want %q", completed.ChangesetID, "cs_1")
 	}
 
 	got, err := repo.GetAgentRun(ctx, userID, projectID, created.ID)
@@ -996,13 +1033,16 @@ func TestDynamoRepository_CompleteAgentRun(t *testing.T) {
 	if got.Status != domain.AgentRunCompleted {
 		t.Errorf("GetAgentRun() after complete Status = %q, want %q", got.Status, domain.AgentRunCompleted)
 	}
+	if got.ChangesetID != "cs_1" {
+		t.Errorf("GetAgentRun() after complete ChangesetID = %q, want %q", got.ChangesetID, "cs_1")
+	}
 }
 
 func TestDynamoRepository_CompleteAgentRun_NotFound(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
 
-	_, err := repo.CompleteAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	_, err := repo.CompleteAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), "cs_1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CompleteAgentRun() error = %v, want %v", err, ErrNotFound)
 	}

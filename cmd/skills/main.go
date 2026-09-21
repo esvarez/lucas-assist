@@ -50,7 +50,7 @@ func init() {
 	enqueuer := queue.NewEnqueuer(sqsClient, os.Getenv("AGENT_JOBS_QUEUE_URL"))
 
 	registry := agent.NewRegistry(
-		skills.DecomposeTaskSkill{},
+		skills.NewDecomposeTaskSkill(repo),
 		skills.CreateProjectSkill{},
 	)
 	adapter = httpadapter.NewV2(skillsapi.NewHandler(registry, repo, enqueuer))

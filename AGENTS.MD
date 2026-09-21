@@ -94,13 +94,13 @@ The SPA is client-rendered and served as static files. Do not introduce Next.js,
 
 ## Auth rules
 
-Amazon Cognito is the **only** token issuer and verifier, for both clients. GitHub is federated into the Cognito User Pool as the identity provider — the application never signs, verifies, or stores a token itself. See `architecture.md` §12, ADR 013, ADR 015.
+Amazon Cognito is the **only** token issuer and verifier, for both clients, via **native User Pool accounts** — there is no external identity provider in the sign-up/sign-in path, and the application never signs, verifies, or stores a token itself. See `architecture.md` §12, ADR 013, ADR 016, ADR 017.
 
-- **Web:** Cognito Hosted UI, authorization code + PKCE. **CLI:** Cognito Hosted UI, authorization code + PKCE via a local loopback redirect — **not** device flow (RFC 8628); Cognito's Hosted UI doesn't support it. The CLI is first-class — don't build web-only auth paths.
+- **Both clients call Cognito's `InitiateAuth` API directly (SRP) with a custom-built login UI — no Hosted UI, no OAuth redirect for sign-in.** The CLI is first-class — don't build web-only auth paths, and don't reach for device flow (RFC 8628) or a loopback redirect; neither is needed without an external IdP to broker.
 - **Tokens are Cognito's, not ours.** No self-issued JWT, no application-side signing key, no refresh-token hash in DynamoDB. Cognito issues short-lived ID/access tokens and manages refresh TTL and revocation.
 - Both clients send `Authorization: Bearer <access_token>`. Web keeps it in an httpOnly/Secure/SameSite=Strict cookie; the CLI in `~/.nudge/credentials` mode 0600.
-- **Never send the GitHub access token to the client.** It stays server-side on the user record, and isn't stored at all until a shipped feature needs GitHub API access beyond identity.
-- **The internal user ID is a generated UUID, not the GitHub user ID.** GitHub is federated via native Cognito User Pool accounts plus a sign-in Lambda trigger (ADR 015) — on first sign-in the trigger resolves GitHub ID → UUID via a `GetItem` on the `IDENTITY#github#<gh_id>` item and writes the UUID onto the Cognito user as a custom attribute; later sign-ins read the attribute directly. Don't add a GSI for this and don't use the provider ID as the partition key — that would make a second provider a full re-key.
+- **The internal user ID is the Cognito `sub` claim, directly.** It's already an opaque, provider-independent UUID Cognito assigns itself — don't generate a second internal UUID or add a mapping table for it.
+- **GitHub is optional and not part of authentication.** It's a per-user "connect your GitHub account" integration a signed-in user opts into, authorized directly against GitHub's own OAuth API (ADR 016) — never send the GitHub access token to the client, and don't store it until a shipped feature needs GitHub API access. The callback lands on the existing API Lambda (a normal route, not a Cognito trigger); it resolves `uid` from the caller's verified Cognito token, never from the callback request. `IDENTITY#github#<gh_id>` → `USER#<uid>` (§8) only exists to stop one GitHub account being linked to two Nudge users — don't add a GSI for it and don't use the GitHub ID as a partition key.
 - Validation is API Gateway's Cognito JWT authorizer, not Go middleware — the API Lambda trusts the authorizer's claims and never re-verifies a signature itself.
 
 ## DynamoDB rules
@@ -115,7 +115,8 @@ Single table, **partitioned by user**. The project ID lives in the sort key pref
 | Event | `USER#<uid>` | `P#<pid>#EVT#<ts>` |
 | Pending changeset | `USER#<uid>` | `P#<pid>#PENDING#<job_id>` |
 | User profile | `USER#<uid>` | `PROFILE` |
-| Identity lookup | `IDENTITY#github#<gh_id>` | `IDENTITY` |
+| GitHub connection (optional) | `USER#<uid>` | `INTEGRATION#github` |
+| GitHub reverse lookup | `IDENTITY#github#<gh_id>` | `IDENTITY` |
 
 GSI2 (sparse): `PK = USER#<uid>`, `SK = <priority>#<updated_at>`. There is no GSI1.
 
@@ -212,4 +213,4 @@ Don't assume answers to these — ask.
 - Project deletion strategy (exceeds the 100-item transaction cap)
 - SAM vs Terraform for `/infra`
 
-Resolved: auth is GitHub OAuth with self-issued JWTs, and the CLI **is** first-class.
+Resolved: auth is Amazon Cognito, native accounts, custom UI (no Hosted UI); GitHub is an optional per-user connected account, not part of sign-in; and the CLI **is** first-class.

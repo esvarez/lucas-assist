@@ -84,28 +84,31 @@ func changesetSK(projectID, changesetID string) string {
 }
 
 // changesetListSKPrefix is the begins_with prefix that scopes a Query to
-// one project's changesets (architecture.md §8).
+// one project's changesets (architecture.md §8). A create_project
+// changeset uses the same noProjectSegment placeholder as its AgentRun
+// (see below) — it has no ProjectID either, for the same reason.
 func changesetListSKPrefix(projectID string) string {
-	return projectScopeSKPrefix + projectID + "#CHANGESET#"
+	return projectScopeSKPrefix + projectSegment(projectID) + "#CHANGESET#"
 }
 
-// agentRunNoProjectSegment is the fixed placeholder used in place of
-// <pid> for a create_project run, which has no ProjectID yet (that's the
-// whole point of the run — see domain.AgentRun). Every other skill's run
-// carries a real ProjectID and uses it directly.
+// noProjectSegment is the fixed placeholder used in place of <pid> for a
+// create_project run or changeset, neither of which has a ProjectID yet
+// (that's the whole point of create_project — see domain.AgentRun and
+// domain.Changeset.ProposedProject). Every other skill carries a real
+// ProjectID and uses it directly.
 //
 // This is the concrete answer to the open question in issue #96: rather
-// than giving project-less runs a second, un-prefixed item shape (which
-// would need its own Query/Get code path for what's only ever one skill),
-// they get the same `P#<segment>#RUN#<run_id>` item as every other run,
-// just with a fixed segment instead of a real project ID. It's still
-// trivially distinguishable from a real project ID since NewID never
-// produces this exact string.
-const agentRunNoProjectSegment = "NOPROJECT"
+// than giving project-less items a second, un-prefixed item shape (which
+// would need its own Query/Get code path), they get the same
+// `P#<segment>#TYPE#<id>` item as every other one of that type, just with
+// a fixed segment instead of a real project ID. It's still trivially
+// distinguishable from a real project ID since NewID never produces this
+// exact string.
+const noProjectSegment = "NOPROJECT"
 
-func agentRunProjectSegment(projectID string) string {
+func projectSegment(projectID string) string {
 	if projectID == "" {
-		return agentRunNoProjectSegment
+		return noProjectSegment
 	}
 	return projectID
 }
@@ -124,7 +127,7 @@ func agentRunSK(projectID, runID string) string {
 // run_id starts with a zero-padded timestamp, such a Query also returns
 // runs in chronological order.
 func agentRunListSKPrefix(projectID string) string {
-	return projectScopeSKPrefix + agentRunProjectSegment(projectID) + "#RUN#"
+	return projectScopeSKPrefix + projectSegment(projectID) + "#RUN#"
 }
 
 // sortableTimestamp returns a fixed-width, zero-padded UnixNano timestamp
@@ -554,43 +557,46 @@ func (r *DynamoRepository) ListTasks(ctx context.Context, userID, projectID stri
 // being carried solely for key-building — Changeset owns its UserID
 // directly.
 type changesetItem struct {
-	PK            string                `dynamodbav:"PK"`
-	SK            string                `dynamodbav:"SK"`
-	UserID        string                `dynamodbav:"user_id"`
-	ID            string                `dynamodbav:"id"`
-	ProjectID     string                `dynamodbav:"project_id"`
-	Skill         string                `dynamodbav:"skill"`
-	BaseVersion   int                   `dynamodbav:"base_version"`
-	Status        string                `dynamodbav:"status"`
-	ProposedTasks []domain.ProposedTask `dynamodbav:"proposed_tasks,omitempty"`
-	CreatedAt     time.Time             `dynamodbav:"created_at"`
+	PK              string                  `dynamodbav:"PK"`
+	SK              string                  `dynamodbav:"SK"`
+	UserID          string                  `dynamodbav:"user_id"`
+	ID              string                  `dynamodbav:"id"`
+	ProjectID       string                  `dynamodbav:"project_id,omitempty"`
+	Skill           string                  `dynamodbav:"skill"`
+	BaseVersion     int                     `dynamodbav:"base_version"`
+	Status          string                  `dynamodbav:"status"`
+	ProposedTasks   []domain.ProposedTask   `dynamodbav:"proposed_tasks,omitempty"`
+	ProposedProject *domain.ProposedProject `dynamodbav:"proposed_project,omitempty"`
+	CreatedAt       time.Time               `dynamodbav:"created_at"`
 }
 
 func toChangesetItem(c domain.Changeset) changesetItem {
 	return changesetItem{
-		PK:            userPK(c.UserID),
-		SK:            changesetSK(c.ProjectID, c.ID),
-		UserID:        c.UserID,
-		ID:            c.ID,
-		ProjectID:     c.ProjectID,
-		Skill:         c.Skill,
-		BaseVersion:   c.BaseVersion,
-		Status:        string(c.Status),
-		ProposedTasks: c.ProposedTasks,
-		CreatedAt:     c.CreatedAt,
+		PK:              userPK(c.UserID),
+		SK:              changesetSK(c.ProjectID, c.ID),
+		UserID:          c.UserID,
+		ID:              c.ID,
+		ProjectID:       c.ProjectID,
+		Skill:           c.Skill,
+		BaseVersion:     c.BaseVersion,
+		Status:          string(c.Status),
+		ProposedTasks:   c.ProposedTasks,
+		ProposedProject: c.ProposedProject,
+		CreatedAt:       c.CreatedAt,
 	}
 }
 
 func (i changesetItem) toDomain() domain.Changeset {
 	return domain.Changeset{
-		ID:            i.ID,
-		ProjectID:     i.ProjectID,
-		UserID:        i.UserID,
-		Skill:         i.Skill,
-		BaseVersion:   i.BaseVersion,
-		Status:        domain.ChangesetStatus(i.Status),
-		ProposedTasks: i.ProposedTasks,
-		CreatedAt:     i.CreatedAt,
+		ID:              i.ID,
+		ProjectID:       i.ProjectID,
+		UserID:          i.UserID,
+		Skill:           i.Skill,
+		BaseVersion:     i.BaseVersion,
+		Status:          domain.ChangesetStatus(i.Status),
+		ProposedTasks:   i.ProposedTasks,
+		ProposedProject: i.ProposedProject,
+		CreatedAt:       i.CreatedAt,
 	}
 }
 
@@ -690,55 +696,58 @@ func (r *DynamoRepository) UpdateChangesetStatus(ctx context.Context, userID, pr
 
 // agentRunItem is the DynamoDB item shape for an agent run.
 type agentRunItem struct {
-	PK         string          `dynamodbav:"PK"`
-	SK         string          `dynamodbav:"SK"`
-	ID         string          `dynamodbav:"id"`
-	UserID     string          `dynamodbav:"user_id"`
-	ProjectID  string          `dynamodbav:"project_id,omitempty"`
-	Skill      string          `dynamodbav:"skill"`
-	Status     string          `dynamodbav:"status"`
-	Input      json.RawMessage `dynamodbav:"input,omitempty"`
-	Attempt    int             `dynamodbav:"attempt"`
-	WorkerID   string          `dynamodbav:"worker_id,omitempty"`
-	LeaseUntil *time.Time      `dynamodbav:"lease_until,omitempty"`
-	Error      string          `dynamodbav:"error,omitempty"`
-	CreatedAt  time.Time       `dynamodbav:"created_at"`
-	UpdatedAt  time.Time       `dynamodbav:"updated_at"`
+	PK          string          `dynamodbav:"PK"`
+	SK          string          `dynamodbav:"SK"`
+	ID          string          `dynamodbav:"id"`
+	UserID      string          `dynamodbav:"user_id"`
+	ProjectID   string          `dynamodbav:"project_id,omitempty"`
+	Skill       string          `dynamodbav:"skill"`
+	Status      string          `dynamodbav:"status"`
+	Input       json.RawMessage `dynamodbav:"input,omitempty"`
+	Attempt     int             `dynamodbav:"attempt"`
+	WorkerID    string          `dynamodbav:"worker_id,omitempty"`
+	LeaseUntil  *time.Time      `dynamodbav:"lease_until,omitempty"`
+	Error       string          `dynamodbav:"error,omitempty"`
+	ChangesetID string          `dynamodbav:"changeset_id,omitempty"`
+	CreatedAt   time.Time       `dynamodbav:"created_at"`
+	UpdatedAt   time.Time       `dynamodbav:"updated_at"`
 }
 
 func toAgentRunItem(r domain.AgentRun) agentRunItem {
 	return agentRunItem{
-		PK:         userPK(r.UserID),
-		SK:         agentRunSK(r.ProjectID, r.ID),
-		ID:         r.ID,
-		UserID:     r.UserID,
-		ProjectID:  r.ProjectID,
-		Skill:      r.Skill,
-		Status:     string(r.Status),
-		Input:      r.Input,
-		Attempt:    r.Attempt,
-		WorkerID:   r.WorkerID,
-		LeaseUntil: r.LeaseUntil,
-		Error:      r.Error,
-		CreatedAt:  r.CreatedAt,
-		UpdatedAt:  r.UpdatedAt,
+		PK:          userPK(r.UserID),
+		SK:          agentRunSK(r.ProjectID, r.ID),
+		ID:          r.ID,
+		UserID:      r.UserID,
+		ProjectID:   r.ProjectID,
+		Skill:       r.Skill,
+		Status:      string(r.Status),
+		Input:       r.Input,
+		Attempt:     r.Attempt,
+		WorkerID:    r.WorkerID,
+		LeaseUntil:  r.LeaseUntil,
+		Error:       r.Error,
+		ChangesetID: r.ChangesetID,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
 	}
 }
 
 func (i agentRunItem) toDomain() domain.AgentRun {
 	return domain.AgentRun{
-		ID:         i.ID,
-		UserID:     i.UserID,
-		ProjectID:  i.ProjectID,
-		Skill:      i.Skill,
-		Status:     domain.AgentRunStatus(i.Status),
-		Input:      i.Input,
-		Attempt:    i.Attempt,
-		WorkerID:   i.WorkerID,
-		LeaseUntil: i.LeaseUntil,
-		Error:      i.Error,
-		CreatedAt:  i.CreatedAt,
-		UpdatedAt:  i.UpdatedAt,
+		ID:          i.ID,
+		UserID:      i.UserID,
+		ProjectID:   i.ProjectID,
+		Skill:       i.Skill,
+		Status:      domain.AgentRunStatus(i.Status),
+		Input:       i.Input,
+		Attempt:     i.Attempt,
+		WorkerID:    i.WorkerID,
+		LeaseUntil:  i.LeaseUntil,
+		Error:       i.Error,
+		ChangesetID: i.ChangesetID,
+		CreatedAt:   i.CreatedAt,
+		UpdatedAt:   i.UpdatedAt,
 	}
 }
 
@@ -894,21 +903,23 @@ func (r *DynamoRepository) LeaseAgentRun(ctx context.Context, userID, projectID,
 	return item.toDomain(), nil
 }
 
-// CompleteAgentRun sets a run's status to completed via a conditional
-// UpdateItem (attribute_exists(PK)). Like UpdateChangesetStatus, this is an
-// unconditional status set — enforcing that a run was actually leased
-// first belongs to the worker, not this primitive.
-func (r *DynamoRepository) CompleteAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
-	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunCompleted, "")
+// CompleteAgentRun sets a run's status to completed and records
+// changesetID via a conditional UpdateItem (attribute_exists(PK)). Like
+// UpdateChangesetStatus, this is an unconditional status set — enforcing
+// that a run was actually leased first belongs to the worker, not this
+// primitive.
+func (r *DynamoRepository) CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error) {
+	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunCompleted, "", changesetID)
 }
 
 // FailAgentRun sets a run's status to failed and records errMsg, via the
-// same conditional UpdateItem as CompleteAgentRun.
+// same conditional UpdateItem as CompleteAgentRun. changesetID is always
+// empty — a failed run never produced one.
 func (r *DynamoRepository) FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error) {
-	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunFailed, errMsg)
+	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunFailed, errMsg, "")
 }
 
-func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID, projectID, runID string, status domain.AgentRunStatus, errMsg string) (domain.AgentRun, error) {
+func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID, projectID, runID string, status domain.AgentRunStatus, errMsg, changesetID string) (domain.AgentRun, error) {
 	now := time.Now().UTC()
 
 	statusAV, err := attributevalue.Marshal(string(status))
@@ -918,6 +929,10 @@ func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID
 	errAV, err := attributevalue.Marshal(errMsg)
 	if err != nil {
 		return domain.AgentRun{}, fmt.Errorf("marshal error: %w", err)
+	}
+	changesetIDAV, err := attributevalue.Marshal(changesetID)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal changeset id: %w", err)
 	}
 	updatedAtAV, err := attributevalue.Marshal(now)
 	if err != nil {
@@ -930,11 +945,21 @@ func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID
 			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
 		},
-		UpdateExpression:          aws.String("SET #status = :status, #error = :error, #updated_at = :updated_at"),
-		ConditionExpression:       aws.String("attribute_exists(PK)"),
-		ExpressionAttributeNames:  map[string]string{"#status": "status", "#error": "error", "#updated_at": "updated_at"},
-		ExpressionAttributeValues: map[string]types.AttributeValue{":status": statusAV, ":error": errAV, ":updated_at": updatedAtAV},
-		ReturnValues:              types.ReturnValueAllNew,
+		UpdateExpression:    aws.String("SET #status = :status, #error = :error, #changeset_id = :changeset_id, #updated_at = :updated_at"),
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames: map[string]string{
+			"#status":       "status",
+			"#error":        "error",
+			"#changeset_id": "changeset_id",
+			"#updated_at":   "updated_at",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status":       statusAV,
+			":error":        errAV,
+			":changeset_id": changesetIDAV,
+			":updated_at":   updatedAtAV,
+		},
+		ReturnValues: types.ReturnValueAllNew,
 	})
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException

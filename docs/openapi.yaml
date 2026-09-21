@@ -209,6 +209,52 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /agent-runs/{id}:
+    get:
+      summary: Poll an agent run
+      description: >
+        architecture.md §10 step 8: the client polls this with bounded
+        backoff. project_id is accepted as an optional query parameter
+        rather than part of the URL — AgentRun's DynamoDB key embeds the
+        project (or a fixed placeholder for a project-less create_project
+        run), so a lookup by run id alone isn't possible without a GSI or a
+        table Scan. Omit it only for a create_project run; supply it for
+        every other skill, since the client already has it from the
+        request that created the run. Once the run is completed, the
+        response also includes the Changeset it produced.
+      operationId: getAgentRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/UserIdQuery"
+        - name: project_id
+          in: query
+          required: false
+          description: >
+            Omit only for a create_project run (which has no project yet).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The run's current status, plus its Changeset once completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRunResult"
+        "400":
+          description: user_id is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /skills:
     post:
       summary: Dispatch a skill asynchronously
@@ -374,6 +420,90 @@ components:
       required:
         - user_id
         - version
+
+    AgentRunResult:
+      type: object
+      description: domain.AgentRun's fields, flattened, plus changeset once completed.
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        project_id:
+          type: string
+          description: Empty for a create_project run.
+        skill:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        attempt:
+          type: integer
+        worker_id:
+          type: string
+        lease_until:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+          description: Set when status is "failed".
+        changeset_id:
+          type: string
+          description: Set once status is "completed".
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        changeset:
+          allOf:
+            - $ref: "#/components/schemas/Changeset"
+          nullable: true
+          description: Present only once status is "completed".
+      required:
+        - id
+        - user_id
+        - skill
+        - status
+        - attempt
+        - created_at
+        - updated_at
+
+    Changeset:
+      type: object
+      description: domain.Changeset — see internal/domain/changeset.go.
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        user_id:
+          type: string
+        skill:
+          type: string
+        base_version:
+          type: integer
+        status:
+          type: string
+          enum: [proposed, accepted, applying, applied, rejected, expired, conflict]
+        proposed_tasks:
+          type: array
+          items:
+            type: object
+            description: domain.ProposedTask — see internal/domain/task.go.
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - project_id
+        - user_id
+        - skill
+        - base_version
+        - status
+        - created_at
 
     DispatchSkillRequest:
       type: object

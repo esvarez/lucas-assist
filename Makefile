@@ -1,7 +1,7 @@
-.PHONY: build build-SkillsFunction build-ApiFunction test test-integration local
+.PHONY: build build-SkillsFunction build-ApiFunction build-WorkerFunction test test-integration local
 
 # Cross-compiles all Lambda binaries.
-build: build-SkillsFunction build-ApiFunction
+build: build-SkillsFunction build-ApiFunction build-WorkerFunction
 
 # SAM invokes this target (Metadata.BuildMethod: makefile in template.yaml)
 # for the SkillsFunction resource, with $(ARTIFACTS_DIR) set to the build
@@ -13,6 +13,11 @@ build-SkillsFunction:
 # SAM invokes this target for the ApiFunction resource.
 build-ApiFunction:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o $(ARTIFACTS_DIR)/bootstrap ./cmd/api
+
+# SAM invokes this target for the WorkerFunction resource (#101): consumes
+# AgentJobsQueue, calls the model, saves the resulting Changeset.
+build-WorkerFunction:
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags lambda.norpc -o $(ARTIFACTS_DIR)/bootstrap ./cmd/worker
 
 test:
 	go test ./...

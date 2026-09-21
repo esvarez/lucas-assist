@@ -14,11 +14,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-// Message is the JSON body of a queued job message. Kept as a struct
-// rather than a bare run ID string so the envelope can grow later (e.g. a
-// correlation ID) without a wire-format break.
+// Message is the JSON body of a queued job message. UserID and ProjectID
+// travel alongside RunID because the Agent Worker (#101) needs them to
+// look the run up at all — domain.AgentRun's DynamoDB key is built from
+// (userID, projectID, runID), not runID alone (the same reason GET
+// /agent-runs/{id}, #100, takes project_id as a query parameter). Kept as
+// a struct rather than separate scalar args so the envelope can grow
+// later without a wire-format break.
 type Message struct {
-	RunID string `json:"run_id"`
+	RunID     string `json:"run_id"`
+	UserID    string `json:"user_id"`
+	ProjectID string `json:"project_id,omitempty"`
 }
 
 // sendMessageAPI is the slice of *sqs.Client this package actually calls.
@@ -46,8 +52,8 @@ func NewEnqueuer(client sendMessageAPI, queueURL string) *Enqueuer {
 }
 
 // EnqueueRun sends a job message referencing runID onto the queue.
-func (e *Enqueuer) EnqueueRun(ctx context.Context, runID string) error {
-	body, err := json.Marshal(Message{RunID: runID})
+func (e *Enqueuer) EnqueueRun(ctx context.Context, userID, projectID, runID string) error {
+	body, err := json.Marshal(Message{RunID: runID, UserID: userID, ProjectID: projectID})
 	if err != nil {
 		return fmt.Errorf("marshal message for run %q: %w", runID, err)
 	}
