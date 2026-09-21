@@ -16,8 +16,8 @@ type createProjectRequest struct {
 	// Required: the DynamoDB key schema partitions by user
 	// (PK=USER#<uid>), so an empty UserID isn't a valid project owner.
 	UserID      string     `json:"user_id" validate:"required"`
-	Name        string     `json:"name"`
-	Goal        string     `json:"goal"`
+	Name        string     `json:"name" validate:"required"`
+	Goal        string     `json:"goal" validate:"required"`
 	Deadline    *time.Time `json:"deadline,omitempty"`
 	Constraints []string   `json:"constraints"`
 	Status      string     `json:"status"`

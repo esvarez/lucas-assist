@@ -71,6 +71,60 @@ func TestCreateProject_MissingUserID(t *testing.T) {
 	}
 }
 
+// TestCreateProject_MissingName documents deliberate behavior: name is
+// required, not silently left empty. architecture.md's domain model
+// treats Name/Goal as a Project's defining content, and create_project
+// never returns status: "ok" without having committed to both (#85).
+func TestCreateProject_MissingName(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"user_id": "user_1", "goal": "Ship the POC"}`
+	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var got validationErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if msg, ok := got.Fields["name"]; !ok {
+		t.Errorf("Fields = %#v, want a \"name\" entry naming which field failed", got.Fields)
+	} else if msg == "" {
+		t.Error(`Fields["name"] is empty, want a message explaining why`)
+	}
+}
+
+// TestCreateProject_MissingGoal mirrors TestCreateProject_MissingName for
+// the Goal field (#85).
+func TestCreateProject_MissingGoal(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"user_id": "user_1", "name": "Nudge"}`
+	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var got validationErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if msg, ok := got.Fields["goal"]; !ok {
+		t.Errorf("Fields = %#v, want a \"goal\" entry naming which field failed", got.Fields)
+	} else if msg == "" {
+		t.Error(`Fields["goal"] is empty, want a message explaining why`)
+	}
+}
+
 func TestCreateProject_InvalidBody(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 
@@ -136,7 +190,7 @@ func (s stubRepository) AcceptChangeset(ctx context.Context, p domain.Project, c
 func TestCreateProject_DuplicateID(t *testing.T) {
 	router := NewRouter(stubRepository{createErr: store.ErrDuplicateID})
 
-	body := `{"user_id": "user_1", "name": "Nudge"}`
+	body := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC"}`
 	req := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -297,7 +351,7 @@ func TestUpdateProject_WrongUser(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	router := NewRouter(repo)
 
-	createBody := `{"user_id": "user_1", "name": "Nudge"}`
+	createBody := `{"user_id": "user_1", "name": "Nudge", "goal": "Ship the POC"}`
 	createReq := httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(createBody))
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
