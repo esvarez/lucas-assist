@@ -41,6 +41,22 @@ func newTestProcessor(repo RunRepository, run runSkillFunc, reg *agent.Registry)
 	}
 }
 
+// stubRunRepository wraps a real RunRepository (a *store.MemoryRepository
+// in every test here) and overrides just GetProject, so a test can inject
+// a transient infrastructure failure without needing MemoryRepository
+// itself to support one.
+type stubRunRepository struct {
+	RunRepository
+	getProjectErr error
+}
+
+func (s stubRunRepository) GetProject(ctx context.Context, userID, id string) (domain.Project, error) {
+	if s.getProjectErr != nil {
+		return domain.Project{}, s.getProjectErr
+	}
+	return s.RunRepository.GetProject(ctx, userID, id)
+}
+
 func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	ctx := context.Background()
@@ -226,10 +242,14 @@ func TestProcessor_ProcessRun_LeaseHeld_NoOp(t *testing.T) {
 	}
 }
 
-// TestProcessor_ProcessRun_ModelFailure_MarksFailed documents the #101
-// acceptance criterion: a model/parse failure marks the run failed with
-// an error message, not left running forever.
-func TestProcessor_ProcessRun_ModelFailure_MarksFailed(t *testing.T) {
+// TestProcessor_ProcessRun_ModelFailure_ReturnsErrorForRetry documents the
+// fix for a PR #120 review finding: a transient failure (the model call
+// itself — rate limit, 5xx, timeout) must not permanently fail the run.
+// It's returned as a real error instead, leaving the run "running" so
+// AgentJobsQueue's RedrivePolicy (architecture.md §15) gets a chance to
+// retry before the message ever reaches the DLQ. Marking it failed
+// immediately would burn the job's one shot on a blip.
+func TestProcessor_ProcessRun_ModelFailure_ReturnsErrorForRetry(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	ctx := context.Background()
 
@@ -244,19 +264,123 @@ func TestProcessor_ProcessRun_ModelFailure_MarksFailed(t *testing.T) {
 	}
 	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
 
-	if err := p.ProcessRun(ctx, "user_1", "proj_1", run.ID); err != nil {
-		t.Fatalf("ProcessRun() error = %v, want nil (failure is recorded on the run, not returned)", err)
+	err = p.ProcessRun(ctx, "user_1", "proj_1", run.ID)
+	if !errors.Is(err, modelErr) {
+		t.Fatalf("ProcessRun() error = %v, want wrapped %v (a transient failure must be returned so SQS retries it)", err, modelErr)
 	}
 
 	got, err := repo.GetAgentRun(ctx, "user_1", "proj_1", run.ID)
 	if err != nil {
 		t.Fatalf("GetAgentRun() error = %v", err)
 	}
-	if got.Status != domain.AgentRunFailed {
-		t.Fatalf("Status = %q, want %q", got.Status, domain.AgentRunFailed)
+	if got.Status != domain.AgentRunRunning {
+		t.Fatalf("Status = %q, want %q (still running, not permanently failed)", got.Status, domain.AgentRunRunning)
 	}
-	if got.Error != modelErr.Error() {
-		t.Errorf("Error = %q, want %q", got.Error, modelErr.Error())
+}
+
+// TestProcessor_ProcessRun_LoadProjectFailure_ReturnsErrorForRetry covers
+// the same PR #120 finding for the DynamoDB read between a successful
+// model call and saving the changeset: also transient, also must not
+// discard a model result the run already paid for.
+func TestProcessor_ProcessRun_LoadProjectFailure_ReturnsErrorForRetry(t *testing.T) {
+	memRepo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := memRepo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	run, err := memRepo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	dbErr := errors.New("dynamo unavailable")
+	repo := stubRunRepository{RunRepository: memRepo, getProjectErr: dbErr}
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Task"}}}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	err = p.ProcessRun(ctx, "user_1", project.ID, run.ID)
+	if !errors.Is(err, dbErr) {
+		t.Fatalf("ProcessRun() error = %v, want wrapped %v", err, dbErr)
+	}
+
+	got, err := memRepo.GetAgentRun(ctx, "user_1", project.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunRunning {
+		t.Errorf("Status = %q, want %q (transient failure, not permanently failed)", got.Status, domain.AgentRunRunning)
+	}
+}
+
+// TestProcessor_ProcessRun_ChangesetAlreadyCreated_Reused documents the
+// fix for a PR #120 review finding: if a prior attempt saved a Changeset
+// but crashed (or itself hit a transient error) before calling
+// CompleteAgentRun, a retry must reuse that changeset — via its
+// deterministic, run-ID-derived ID — rather than saving a second, duplicate
+// proposal.
+func TestProcessor_ProcessRun_ChangesetAlreadyCreated_Reused(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	// Simulate a prior attempt that saved the changeset but never reached
+	// CompleteAgentRun.
+	preExisting, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ID:            run.ID,
+		UserID:        "user_1",
+		ProjectID:     project.ID,
+		Skill:         "decompose_task",
+		BaseVersion:   project.Version,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{{Title: "Original task"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	calls := 0
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		calls++
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "A different task from the retry"}}}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	if err := p.ProcessRun(ctx, "user_1", project.ID, run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("runSkill called %d times, want 1", calls)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", project.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunCompleted {
+		t.Fatalf("Status = %q, want %q", got.Status, domain.AgentRunCompleted)
+	}
+	if got.ChangesetID != preExisting.ID {
+		t.Fatalf("ChangesetID = %q, want the pre-existing changeset %q reused", got.ChangesetID, preExisting.ID)
+	}
+
+	changeset, err := repo.GetChangeset(ctx, "user_1", project.ID, got.ChangesetID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if len(changeset.ProposedTasks) != 1 || changeset.ProposedTasks[0].Title != "Original task" {
+		t.Errorf("Changeset.ProposedTasks = %+v, want the original pre-existing tasks preserved, not overwritten by the retry's model call", changeset.ProposedTasks)
 	}
 }
 
@@ -308,6 +432,68 @@ func TestProcessor_ProcessRun_NeedsClarification_MarksFailed(t *testing.T) {
 	}
 	if got.Status != domain.AgentRunFailed {
 		t.Fatalf("Status = %q, want %q (see #42)", got.Status, domain.AgentRunFailed)
+	}
+}
+
+// TestProcessor_ProcessRun_CreateProject_NilProject_MarksFailed documents
+// the fix for a PR #120 review finding: strict mode's schema can't express
+// "Project is non-null when Status is ok", so a malformed model response
+// could otherwise complete a create_project run with no proposal for the
+// client to ever accept.
+func TestProcessor_ProcessRun_CreateProject_NilProject_MarksFailed(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", Skill: "create_project"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.CreateProjectResult{Status: "ok", Project: nil}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "create_project"}))
+
+	if err := p.ProcessRun(ctx, "user_1", "", run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", "", run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, domain.AgentRunFailed)
+	}
+}
+
+// TestProcessor_ProcessRun_DecomposeTask_EmptySubtasks_MarksFailed is the
+// same defensive check for decompose_task's equivalent malformed-response
+// shape.
+func TestProcessor_ProcessRun_DecomposeTask_EmptySubtasks_MarksFailed(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1", Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.DecomposeResult{Status: "ok", Subtasks: nil}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	if err := p.ProcessRun(ctx, "user_1", "proj_1", run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", "proj_1", run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, domain.AgentRunFailed)
 	}
 }
 
