@@ -24,6 +24,30 @@ Parameters:
     AllowedValues: [dev, staging, prod]
     Description: Deployment environment
 
+  # Both empty by default so a first deploy works against CloudFront's
+  # default *.cloudfront.net domain with no prerequisites (architecture.md
+  # §13: "A CloudFront default domain is enough for the first deploy if a
+  # cert is not ready"). Supplying DomainName without AcmCertificateArn (or
+  # vice versa) is a deploy-time error the stack surfaces on its own — no
+  # extra validation added here.
+  #
+  # CloudFront only accepts ACM certificates from us-east-1, regardless of
+  # which region this stack deploys to — request the certificate there
+  # out of band (same out-of-band posture as the OpenAI SSM parameter
+  # below) and pass its ARN in here.
+  DomainName:
+    Type: String
+    Default: ""
+    Description: Optional custom domain for the CloudFront distribution (e.g. app.example.com). Leave empty to use the CloudFront default domain.
+
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN for DomainName, in us-east-1 (CloudFront requirement regardless of this stack's own region). Required only if DomainName is set.
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
+
 # ─────────────────────────────────────────────
 # Resources
 # ─────────────────────────────────────────────
@@ -246,6 +270,171 @@ Resources:
             Queue: !GetAtt AgentJobsQueue.Arn
             BatchSize: 1
 
+  # ── Web bucket + CloudFront ──────────────────
+  # Hosts the built Vite SPA and fronts NudgeApi behind one origin
+  # (architecture.md §13, #71) so the browser never needs CORS. Nothing
+  # here uploads web/dist's contents — that's a deploy-time `aws s3 sync`
+  # step (see Makefile's deploy-web), out of scope for what `sam deploy`
+  # itself provisions.
+  #
+  # Bucket name includes AccountId: S3 bucket names are unique across all
+  # of AWS, not just this account, so the ${Environment}-nudge-* pattern
+  # every other resource uses isn't safe here on its own.
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${Environment}-nudge-web-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Lets only this stack's CloudFront distribution read WebBucket — no
+  # bucket website endpoint, no public bucket policy (AGENTS.MD).
+  WebBucketOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${Environment}-nudge-web-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${WebBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}
+
+  # Rewrites a route like /projects/123 to /index.html at the edge before
+  # it ever reaches S3, so the SPA's client-side router sees the real
+  # requested URL on a hard refresh instead of CloudFront needing a
+  # distribution-wide CustomErrorResponses 403/404->index.html rewrite,
+  # which would also swallow real errors from the /api/* behavior below
+  # (there's no per-behavior way to scope CustomErrorResponses). Only a
+  # request whose last path segment has no "." (i.e. not a hashed asset
+  # like /assets/index-abc123.js) is rewritten — real asset 404s pass
+  # through untouched.
+  SpaFallbackFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub ${Environment}-nudge-spa-fallback
+      FunctionConfig:
+        Comment: Rewrite non-asset paths to /index.html for client-side routing
+        Runtime: cloudfront-js-2.0
+      AutoPublish: true
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var lastSegment = uri.substring(uri.lastIndexOf('/') + 1);
+          if (lastSegment.indexOf('.') === -1) {
+            request.uri = '/index.html';
+          }
+          return request;
+        }
+
+  # Backend routes (internal/api/router.go, internal/skillsapi) are
+  # registered without an /api prefix — the same contract the Vite dev
+  # proxy already strips locally (web/vite.config.ts). This function keeps
+  # that contract identical in production: CloudFront still matches the
+  # /api/* cache behavior on the original request path, then this rewrites
+  # it before forwarding to NudgeApi, so the app's router never needs to
+  # know it's behind a prefix in one environment and not another.
+  ApiPathRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub ${Environment}-nudge-api-path-rewrite
+      FunctionConfig:
+        Comment: Strip the /api prefix before forwarding to NudgeApi
+        Runtime: cloudfront-js-2.0
+      AutoPublish: true
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          request.uri = request.uri.replace(/^\/api/, '') || '/';
+          return request;
+        }
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref DomainName]
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: WebBucketOrigin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebBucketOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+          - Id: NudgeApiOrigin
+            DomainName: !Sub ${NudgeApi}.execute-api.${AWS::Region}.amazonaws.com
+            # NudgeApi's stage is Environment-named (StageName: !Ref
+            # Environment above); OriginPath re-adds it so a request
+            # forwarded here as e.g. /projects lands on /${Environment}/projects,
+            # matching how API Gateway actually routes it.
+            OriginPath: !Sub /${Environment}
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: WebBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # Managed-CachingOptimized: long TTL, honors each object's own
+          # Cache-Control (set at upload time — see Makefile's deploy-web
+          # — so hashed assets cache long and index.html doesn't need a
+          # separate behavior to stay uncached).
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaFallbackFunction.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: NudgeApiOrigin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            Compress: true
+            # Managed-CachingDisabled: model-backed and per-user responses
+            # must never be cached at the edge.
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            # Managed-AllViewerExceptHostHeader: forwards every viewer
+            # header (bar Host), cookie, and query string the API might
+            # need — including a future Authorization bearer token once
+            # #81 lands — without hand-maintaining an allowlist here.
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ApiPathRewriteFunction.FunctionARN
+
 Outputs:
   SkillsFunctionUrl:
     Description: Function URL for the Skill Lambda
@@ -259,3 +448,12 @@ Outputs:
   AgentJobsQueueArn:
     Description: ARN of the agent job queue — WorkerFunction consumes it.
     Value: !GetAtt AgentJobsQueue.Arn
+  WebBucketName:
+    Description: S3 bucket holding the built SPA — deploy-web syncs web/dist here.
+    Value: !Ref WebBucket
+  CloudFrontDistributionId:
+    Description: Distribution id — deploy-web invalidates /index.html here after each sync.
+    Value: !Ref WebDistribution
+  CloudFrontDomainName:
+    Description: Public URL for the SPA and, via /api/*, NudgeApi. Use DomainName instead once a custom domain is set.
+    Value: !Sub https://${WebDistribution.DomainName}
