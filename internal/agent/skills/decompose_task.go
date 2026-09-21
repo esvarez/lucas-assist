@@ -84,7 +84,7 @@ Only return status "needs_clarification" — and only on clarification_round 0 �
 
 If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where information is still missing, choose a sensible default and record it in assumptions. Never re-ask anything already present in clarifications.
 
-If existing tasks for this project are listed below, none of your subtasks may duplicate one — check titles and intent, not just exact wording, and decompose only the remaining work.`
+If existing tasks for this project are listed below, none of your subtasks may duplicate one — check titles and intent, not just exact wording — and decompose only the work not already covered. This overrides the 3-7 count above: return fewer than 3 if that's all the remaining work supports, rather than padding, inventing busywork, or restating an existing task.`
 
 const decomposeSystemPromptSoftware = `You break a software development task into small, concrete subtasks an indie developer can ship one at a time, each with a title, description, and acceptance criteria.
 
@@ -98,7 +98,7 @@ Only return status "needs_clarification" — and only on clarification_round 0 �
 
 If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where information is still missing, choose a sensible default and record it in assumptions. Never re-ask anything already present in clarifications.
 
-If existing tasks for this project are listed below, none of your subtasks may duplicate one — check titles and intent, not just exact wording, and decompose only the remaining work.`
+If existing tasks for this project are listed below, none of your subtasks may duplicate one — check titles and intent, not just exact wording — and decompose only the work not already covered. This overrides the 3-7 count above: return fewer than 3 if that's all the remaining work supports, rather than padding, inventing busywork, or restating an existing task.`
 
 func systemPrompt(d Domain) string {
 	if d == DomainSoftware {
