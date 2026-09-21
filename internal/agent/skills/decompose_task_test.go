@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/esvarez/lucas-assist/internal/agent"
+	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/llm"
+	"github.com/esvarez/lucas-assist/internal/store"
 )
 
 func TestSystemPrompt(t *testing.T) {
@@ -229,6 +231,109 @@ func TestDecomposeTaskSkill_BuildContext_WithClarifications(t *testing.T) {
 		if !strings.Contains(userMsg, want) {
 			t.Errorf("user message = %q, want it to contain %q", userMsg, want)
 		}
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_WithProjectContext is #78's eval
+// scenario (architecture.md §16): when a project_id is given, BuildContext
+// must surface the project card and existing task titles so the model can
+// see — and avoid proposing — a duplicate of a task that already exists.
+func TestDecomposeTaskSkill_BuildContext_WithProjectContext(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	proj, err := repo.CreateProject(context.Background(), domain.Project{
+		UserID:      "user_1",
+		Name:        "Kitchen remodel",
+		Goal:        "A finished kitchen by spring",
+		Constraints: []string{"Budget under $20k"},
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := repo.CreateTask(context.Background(), "user_1", domain.Task{
+		ProjectID: proj.ID,
+		Title:     "Order new cabinets",
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	ctx := agent.WithUserID(context.Background(), "user_1")
+	raw := []byte(`{"task_title": "Finish the kitchen remodel", "domain": "general", "project_id": "` + proj.ID + `"}`)
+
+	skill := NewDecomposeTaskSkill(repo)
+	messages, err := skill.BuildContext(ctx, raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("BuildContext() returned %d messages, want 3 (domain system prompt, project context, user message)", len(messages))
+	}
+
+	projMsg := messages[1].OfSystem.Content.OfString.Value
+	for _, want := range []string{"Kitchen remodel", "A finished kitchen by spring", "Budget under $20k", "Order new cabinets", "do not propose a subtask duplicating"} {
+		if !strings.Contains(projMsg, want) {
+			t.Errorf("project context message = %q, want it to contain %q", projMsg, want)
+		}
+	}
+
+	for _, prompt := range []string{decomposeSystemPromptGeneral, decomposeSystemPromptSoftware} {
+		if !strings.Contains(prompt, "none of your subtasks may duplicate one") {
+			t.Errorf("system prompt %q missing the anti-duplication instruction", prompt)
+		}
+	}
+}
+
+func TestDecomposeTaskSkill_BuildContext_ProjectContext_NoTasksYet(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	proj, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "New project", Goal: "Get started"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	ctx := agent.WithUserID(context.Background(), "user_1")
+	raw := []byte(`{"task_title": "First task", "project_id": "` + proj.ID + `"}`)
+
+	messages, err := NewDecomposeTaskSkill(repo).BuildContext(ctx, raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+	projMsg := messages[1].OfSystem.Content.OfString.Value
+	if !strings.Contains(projMsg, "no tasks yet") {
+		t.Errorf("project context message = %q, want it to say the project has no tasks yet", projMsg)
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_ProjectContext_NoUserID is a
+// server-side invariant, not a client mistake: skillsapi always attaches
+// the verified user ID to ctx before calling BuildContext, so a missing
+// one here means this service called BuildContext wrong, not that the
+// caller sent bad input — the error must not wrap agent.ErrInvalidInput.
+func TestDecomposeTaskSkill_BuildContext_ProjectContext_NoUserID(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	raw := []byte(`{"task_title": "Some task", "project_id": "proj_1"}`)
+
+	_, err := NewDecomposeTaskSkill(repo).BuildContext(context.Background(), raw)
+	if err == nil {
+		t.Fatal("BuildContext() error = nil, want an error when ctx carries no user id")
+	}
+	if errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it NOT to wrap agent.ErrInvalidInput — this is a server bug, not a client mistake", err)
+	}
+}
+
+func TestDecomposeTaskSkill_BuildContext_ProjectContext_NotFound(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := agent.WithUserID(context.Background(), "user_1")
+	raw := []byte(`{"task_title": "Some task", "project_id": "does-not-exist"}`)
+
+	_, err := NewDecomposeTaskSkill(repo).BuildContext(ctx, raw)
+	if err == nil {
+		t.Fatal("BuildContext() error = nil, want a not-found error")
+	}
+	if !errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it to wrap agent.ErrInvalidInput so callers can map it to 400", err)
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("BuildContext() error = %v, want it to wrap store.ErrNotFound", err)
 	}
 }
 
