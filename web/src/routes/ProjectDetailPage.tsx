@@ -17,6 +17,7 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
 import { listTasks, type Task } from '@/src/api/tasks'
+import DecomposeTaskDialog from '@/src/components/DecomposeTaskDialog'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
 import WhatsNextCard from '@/src/components/WhatsNextCard'
@@ -143,6 +144,10 @@ function ProjectDetailPage() {
   const [project, setProject] = useState<Project | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState<string | null>(null)
+  // Bumped after a decompose_task changeset is accepted, so WhatsNextCard
+  // (which fetches its own task list independently) remounts and picks up
+  // the newly committed tasks instead of showing a stale "what's next".
+  const [taskRefreshKey, setTaskRefreshKey] = useState(0)
 
   useEffect(() => {
     if (!id) return
@@ -165,7 +170,7 @@ function ProjectDetailPage() {
     return () => {
       ignore = true
     }
-  }, [id])
+  }, [id, taskRefreshKey])
 
   if (error) {
     return (
@@ -196,7 +201,7 @@ function ProjectDetailPage() {
     <div className="flex flex-col gap-4 p-4">
       <ProjectDetailHeader project={project} onUpdated={setProject} />
 
-      <WhatsNextCard projectId={project.id} />
+      <WhatsNextCard key={taskRefreshKey} projectId={project.id} />
 
       {project.goal && <p className="text-sm text-muted-foreground">{project.goal}</p>}
 
@@ -217,7 +222,13 @@ function ProjectDetailPage() {
         </div>
       )}
 
-      <h2 className="text-lg font-bold">Tasks</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-bold">Tasks</h2>
+        <DecomposeTaskDialog
+          projectId={project.id}
+          onAccepted={() => setTaskRefreshKey((k) => k + 1)}
+        />
+      </div>
 
       <ItemGroup>
         {tasks.map((task) => (

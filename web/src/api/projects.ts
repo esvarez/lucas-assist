@@ -99,7 +99,9 @@ function isValidationErrorResponse(body: unknown): body is ValidationErrorRespon
   )
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// Exported so other API clients (web/src/api/skills.ts) share the same
+// fetch/error-mapping behavior instead of reimplementing it.
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init?.headers },
