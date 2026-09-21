@@ -79,11 +79,15 @@ func (f *fakeAgentRunCreator) FailAgentRun(_ context.Context, _, _, runID, errMs
 
 // fakeEnqueuer stubs Enqueuer so tests don't need a real SQS client.
 type fakeEnqueuer struct {
-	enqueueErr error
-	lastRunID  string
+	enqueueErr    error
+	lastRunID     string
+	lastUserID    string
+	lastProjectID string
 }
 
-func (f *fakeEnqueuer) EnqueueRun(_ context.Context, runID string) error {
+func (f *fakeEnqueuer) EnqueueRun(_ context.Context, userID, projectID, runID string) error {
+	f.lastUserID = userID
+	f.lastProjectID = projectID
 	f.lastRunID = runID
 	return f.enqueueErr
 }
@@ -179,6 +183,9 @@ func TestHandler_Accepted(t *testing.T) {
 
 	if enqueuer.lastRunID != "run_1" {
 		t.Errorf("EnqueueRun() called with %q, want the created run's ID %q", enqueuer.lastRunID, "run_1")
+	}
+	if enqueuer.lastUserID != "user_1" || enqueuer.lastProjectID != "proj_1" {
+		t.Errorf("EnqueueRun() called with userID=%q projectID=%q, want %q/%q (the worker needs these to look the run up)", enqueuer.lastUserID, enqueuer.lastProjectID, "user_1", "proj_1")
 	}
 
 	var resp map[string]string

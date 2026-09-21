@@ -628,6 +628,40 @@ func TestDynamoRepository_CreateChangeset(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_CreateChangeset_CreateProject documents #101's
+// ProposedProject addition: a create_project changeset has no ProjectID
+// (the noProjectSegment placeholder covers it, same as agentRunSK) and
+// carries ProposedProject instead of ProposedTasks.
+func TestDynamoRepository_CreateChangeset_CreateProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID: userID,
+		Skill:  "create_project",
+		Status: domain.ChangesetProposed,
+		ProposedProject: &domain.ProposedProject{
+			Name: "Nudge",
+			Goal: "Ship the POC",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	got, err := repo.GetChangeset(ctx, userID, "", created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if got.ProposedProject == nil || got.ProposedProject.Name != "Nudge" || got.ProposedProject.Goal != "Ship the POC" {
+		t.Errorf("GetChangeset().ProposedProject = %+v, want the proposed project preserved", got.ProposedProject)
+	}
+	if len(got.ProposedTasks) != 0 {
+		t.Errorf("GetChangeset().ProposedTasks = %+v, want none for a create_project changeset", got.ProposedTasks)
+	}
+}
+
 func TestDynamoRepository_CreateChangeset_DuplicateID(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()

@@ -29,7 +29,7 @@ func TestEnqueuer_EnqueueRun(t *testing.T) {
 	client := &stubSQSClient{}
 	enqueuer := NewEnqueuer(client, "https://sqs.example/queue")
 
-	if err := enqueuer.EnqueueRun(context.Background(), "run_1"); err != nil {
+	if err := enqueuer.EnqueueRun(context.Background(), "user_1", "proj_1", "run_1"); err != nil {
 		t.Fatalf("EnqueueRun() error = %v", err)
 	}
 
@@ -47,6 +47,12 @@ func TestEnqueuer_EnqueueRun(t *testing.T) {
 	if body.RunID != "run_1" {
 		t.Errorf("Message.RunID = %q, want %q", body.RunID, "run_1")
 	}
+	if body.UserID != "user_1" {
+		t.Errorf("Message.UserID = %q, want %q", body.UserID, "user_1")
+	}
+	if body.ProjectID != "proj_1" {
+		t.Errorf("Message.ProjectID = %q, want %q", body.ProjectID, "proj_1")
+	}
 }
 
 func TestEnqueuer_EnqueueRun_SendError(t *testing.T) {
@@ -54,7 +60,7 @@ func TestEnqueuer_EnqueueRun_SendError(t *testing.T) {
 	client := &stubSQSClient{sendErr: sendErr}
 	enqueuer := NewEnqueuer(client, "https://sqs.example/queue")
 
-	err := enqueuer.EnqueueRun(context.Background(), "run_1")
+	err := enqueuer.EnqueueRun(context.Background(), "user_1", "proj_1", "run_1")
 	if !errors.Is(err, sendErr) {
 		t.Fatalf("EnqueueRun() error = %v, want wrapped %v", err, sendErr)
 	}
