@@ -136,6 +136,46 @@ func TestGetAgentRun_Failed(t *testing.T) {
 	}
 }
 
+func TestGetAgentRun_NeedsInput(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+	ctx := context.Background()
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1", Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, "user_1", "proj_1", run.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+	questions := []string{"What are you building?"}
+	if _, err := repo.NeedsInputAgentRun(ctx, "user_1", "proj_1", run.ID, questions); err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s?project_id=proj_1", agentRunPath(run.ID)), nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got agentRunResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Status != domain.AgentRunNeedsInput {
+		t.Errorf("Status = %q, want %q", got.Status, domain.AgentRunNeedsInput)
+	}
+	if len(got.Questions) != 1 || got.Questions[0] != questions[0] {
+		t.Errorf("Questions = %#v, want %#v", got.Questions, questions)
+	}
+	if got.Changeset != nil {
+		t.Errorf("Changeset = %+v, want nil for a needs_input run", got.Changeset)
+	}
+}
+
 func TestGetAgentRun_NoProject(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	router := NewRouter(repo)

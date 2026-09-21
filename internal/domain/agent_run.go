@@ -11,6 +11,7 @@ import (
 //	queued -> running -> completed
 //	                  \-> failed
 //	                  \-> cancelled
+//	                  \-> needs_input
 type AgentRunStatus string
 
 const (
@@ -19,6 +20,14 @@ const (
 	AgentRunCompleted AgentRunStatus = "completed"
 	AgentRunFailed    AgentRunStatus = "failed"
 	AgentRunCancelled AgentRunStatus = "cancelled"
+	// AgentRunNeedsInput is a terminal outcome distinct from AgentRunFailed
+	// (architecture.md §10): decompose_task's needs_clarification result
+	// (round 0 only — see skills.DecomposeResult) has no Changeset to
+	// produce, but it isn't an error either. The worker never retries a
+	// needs_input run — answering Questions is a fresh dispatch (a new
+	// AgentRun with clarification_round/clarifications set), not a resume
+	// of this one.
+	AgentRunNeedsInput AgentRunStatus = "needs_input"
 )
 
 // AgentRun is the execution record for one skill invocation (architecture.md
@@ -57,6 +66,10 @@ type AgentRun struct {
 
 	// Error holds the failure reason when Status is AgentRunFailed.
 	Error string `json:"error,omitempty"`
+
+	// Questions holds decompose_task's clarifying questions when Status is
+	// AgentRunNeedsInput — empty otherwise.
+	Questions []string `json:"questions,omitempty"`
 
 	// ChangesetID is set by CompleteAgentRun once the worker has saved the
 	// Changeset the run produced — empty until then, and always empty for

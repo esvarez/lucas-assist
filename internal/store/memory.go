@@ -220,6 +220,7 @@ func (r *MemoryRepository) CreateAgentRun(ctx context.Context, run domain.AgentR
 	run.WorkerID = ""
 	run.LeaseUntil = nil
 	run.Error = ""
+	run.Questions = nil
 	run.CreatedAt = now
 	run.UpdatedAt = now
 
@@ -296,6 +297,23 @@ func (r *MemoryRepository) FailAgentRun(ctx context.Context, userID, projectID, 
 
 	run.Status = domain.AgentRunFailed
 	run.Error = errMsg
+	run.UpdatedAt = time.Now().UTC()
+
+	r.agentRuns[runID] = run
+	return run, nil
+}
+
+func (r *MemoryRepository) NeedsInputAgentRun(ctx context.Context, userID, projectID, runID string, questions []string) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run, ok := r.agentRuns[runID]
+	if !ok || run.UserID != userID || run.ProjectID != projectID {
+		return domain.AgentRun{}, ErrNotFound
+	}
+
+	run.Status = domain.AgentRunNeedsInput
+	run.Questions = questions
 	run.UpdatedAt = time.Now().UTC()
 
 	r.agentRuns[runID] = run

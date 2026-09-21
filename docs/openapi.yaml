@@ -458,7 +458,7 @@ components:
           type: string
         status:
           type: string
-          enum: [queued, running, completed, failed, cancelled]
+          enum: [queued, running, completed, failed, cancelled, needs_input]
         attempt:
           type: integer
         worker_id:
@@ -470,6 +470,15 @@ components:
         error:
           type: string
           description: Set when status is "failed".
+        questions:
+          type: array
+          items:
+            type: string
+          description: >
+            decompose_task's clarifying questions, set when status is
+            "needs_input" (round 0 only — see internal/agent/skills/decompose_task.go).
+            Answering is a fresh POST /skills dispatch carrying
+            clarification_round and clarifications, not a resume of this run.
         changeset_id:
           type: string
           description: Set once status is "completed".
@@ -515,6 +524,11 @@ components:
           items:
             type: object
             description: domain.ProposedTask — see internal/domain/task.go.
+        assumptions:
+          type: array
+          items:
+            type: string
+          description: decompose_task's disclosed unspecified-choice decisions. Absent for create_project changesets.
         created_at:
           type: string
           format: date-time

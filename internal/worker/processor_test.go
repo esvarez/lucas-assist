@@ -72,8 +72,9 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 
 	stubResult := skills.DecomposeResult{
-		Status:   "ok",
-		Subtasks: []domain.ProposedTask{{Title: "Add login command"}, {Title: "Add logout command"}},
+		Status:      "ok",
+		Subtasks:    []domain.ProposedTask{{Title: "Add login command"}, {Title: "Add logout command"}},
+		Assumptions: []string{"Using cobra for the CLI framework, since none was specified"},
 	}
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
 		return stubResult, nil
@@ -105,6 +106,9 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 	if len(changeset.ProposedTasks) != 2 {
 		t.Errorf("Changeset.ProposedTasks = %+v, want 2 tasks", changeset.ProposedTasks)
+	}
+	if len(changeset.Assumptions) != 1 {
+		t.Errorf("Changeset.Assumptions = %#v, want the one assumption from the model's response", changeset.Assumptions)
 	}
 	if changeset.BaseVersion != project.Version {
 		t.Errorf("Changeset.BaseVersion = %d, want the project's version %d", changeset.BaseVersion, project.Version)
@@ -408,7 +412,12 @@ func TestProcessor_ProcessRun_UnknownSkill_MarksFailed(t *testing.T) {
 	}
 }
 
-func TestProcessor_ProcessRun_NeedsClarification_MarksFailed(t *testing.T) {
+// TestProcessor_ProcessRun_NeedsClarification_MarksNeedsInput documents
+// the chosen fix (#138) for decompose_task's needs_clarification result:
+// the run is marked needs_input with the model's Questions attached,
+// distinct from AgentRunFailed, and no Changeset is created — answering
+// is a fresh dispatch, not a retry of this run.
+func TestProcessor_ProcessRun_NeedsClarification_MarksNeedsInput(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	ctx := context.Background()
 
@@ -417,8 +426,9 @@ func TestProcessor_ProcessRun_NeedsClarification_MarksFailed(t *testing.T) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 
+	questions := []string{"what are you building?"}
 	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
-		return skills.DecomposeResult{Status: "needs_clarification", Questions: []string{"what are you building?"}}, nil
+		return skills.DecomposeResult{Status: "needs_clarification", Questions: questions}, nil
 	}
 	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
 
@@ -430,8 +440,14 @@ func TestProcessor_ProcessRun_NeedsClarification_MarksFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentRun() error = %v", err)
 	}
-	if got.Status != domain.AgentRunFailed {
-		t.Fatalf("Status = %q, want %q (see #42)", got.Status, domain.AgentRunFailed)
+	if got.Status != domain.AgentRunNeedsInput {
+		t.Fatalf("Status = %q, want %q", got.Status, domain.AgentRunNeedsInput)
+	}
+	if len(got.Questions) != 1 || got.Questions[0] != questions[0] {
+		t.Errorf("Questions = %#v, want %#v", got.Questions, questions)
+	}
+	if got.ChangesetID != "" {
+		t.Errorf("ChangesetID = %q, want empty — no changeset for a needs_input run", got.ChangesetID)
 	}
 }
 

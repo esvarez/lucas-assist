@@ -25,10 +25,21 @@ export interface Changeset {
   base_version: number
   status: string
   proposed_tasks?: ProposedTask[]
+  // Unspecified choices the model made on the user's behalf while
+  // decomposing — rendered above the subtask list in review, since these
+  // are what's most likely to need correcting.
+  assumptions?: string[]
   created_at: string
 }
 
-export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'needs_input'
+
+// Clarification mirrors internal/agent/skills.Clarification — one prior
+// round's question with the user's answer attached.
+export interface Clarification {
+  question: string
+  answer: string
+}
 
 // AgentRun mirrors internal/domain.AgentRun's client-relevant fields.
 export interface AgentRun {
@@ -38,6 +49,9 @@ export interface AgentRun {
   skill: string
   status: AgentRunStatus
   error?: string
+  // decompose_task's clarifying questions, set only when status is
+  // "needs_input" (round 0 only) — see internal/domain.AgentRun.Questions.
+  questions?: string[]
   changeset_id?: string
   created_at: string
   updated_at: string
@@ -57,10 +71,17 @@ export interface AcceptChangesetResult {
 // dispatchDecomposeTask starts a decompose_task run for projectId and
 // returns its run id to poll. domain is left unset — the skill defaults
 // to "general" — since #123 doesn't add a domain picker to the UI.
+//
+// clarification carries a prior needs_input round's answered questions
+// (round 0 leaves it undefined). Each answered round is a fresh dispatch,
+// not a resume of the run that asked — the skill is stateless and
+// round-scoped (internal/agent/skills/decompose_task.go's
+// DecomposeInput).
 export async function dispatchDecomposeTask(
   projectId: string,
   taskTitle: string,
-  taskDescription: string
+  taskDescription: string,
+  clarification?: { round: number; clarifications: Clarification[] }
 ): Promise<{ run_id: string }> {
   return request<{ run_id: string }>('/api/skills', {
     method: 'POST',
@@ -72,6 +93,8 @@ export async function dispatchDecomposeTask(
         task_title: taskTitle,
         task_description: taskDescription,
         project_id: projectId,
+        clarification_round: clarification?.round ?? 0,
+        clarifications: clarification?.clarifications ?? [],
       },
     }),
   })
@@ -106,7 +129,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 function isTerminal(status: AgentRunStatus): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled'
+  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'needs_input'
 }
 
 // pollAgentRun polls GET /agent-runs/:id with increasing backoff

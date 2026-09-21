@@ -79,9 +79,9 @@ type Repository interface {
 	// domain.AgentRun.ProjectID is empty for create_project runs.
 	//
 	// CreateAgentRun always sets Status to AgentRunQueued and resets
-	// Attempt/WorkerID/LeaseUntil/Error, regardless of what the caller
-	// passed in r — like Version on CreateProject, these are repo-owned on
-	// creation, not client-set.
+	// Attempt/WorkerID/LeaseUntil/Error/Questions, regardless of what the
+	// caller passed in r — like Version on CreateProject, these are
+	// repo-owned on creation, not client-set.
 	CreateAgentRun(ctx context.Context, r domain.AgentRun) (domain.AgentRun, error)
 	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
 
@@ -95,15 +95,18 @@ type Repository interface {
 	// run has already reached a terminal status.
 	LeaseAgentRun(ctx context.Context, userID, projectID, runID, workerID string, leaseUntil time.Time) (domain.AgentRun, error)
 
-	// CompleteAgentRun and FailAgentRun set the run's terminal state. Like
-	// UpdateChangesetStatus, these are unconditional status sets once the
-	// run exists — enforcing that a run was actually leased before it's
-	// completed or failed belongs to the worker, not this primitive.
-	// CompleteAgentRun records changesetID (the Changeset the worker saved
-	// for this run) so GET /agent-runs/{id} (#100) can fetch and include it
-	// without a second lookup path.
+	// CompleteAgentRun, FailAgentRun, and NeedsInputAgentRun set the run's
+	// terminal state. Like UpdateChangesetStatus, these are unconditional
+	// status sets once the run exists — enforcing that a run was actually
+	// leased before it's completed, failed, or needs input belongs to the
+	// worker, not this primitive. CompleteAgentRun records changesetID (the
+	// Changeset the worker saved for this run) so GET /agent-runs/{id}
+	// (#100) can fetch and include it without a second lookup path.
+	// NeedsInputAgentRun records questions instead — decompose_task's
+	// needs_clarification result (round 0 only) has no Changeset to save.
 	CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error)
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
+	NeedsInputAgentRun(ctx context.Context, userID, projectID, runID string, questions []string) (domain.AgentRun, error)
 
 	// AcceptChangeset atomically commits c's proposed tasks against p:
 	// creates each domain.Task, increments the project's version, and

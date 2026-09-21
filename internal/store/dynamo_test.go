@@ -1084,6 +1084,43 @@ func TestDynamoRepository_FailAgentRun_NotFound(t *testing.T) {
 	}
 }
 
+func TestDynamoRepository_NeedsInputAgentRun(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+
+	questions := []string{"What is the task actually about?"}
+	got, err := repo.NeedsInputAgentRun(ctx, userID, projectID, created.ID, questions)
+	if err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunNeedsInput {
+		t.Errorf("Status = %q, want %q", got.Status, domain.AgentRunNeedsInput)
+	}
+	if len(got.Questions) != 1 || got.Questions[0] != questions[0] {
+		t.Errorf("Questions = %#v, want %#v", got.Questions, questions)
+	}
+}
+
+func TestDynamoRepository_NeedsInputAgentRun_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.NeedsInputAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), []string{"?"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("NeedsInputAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
 // newTestAcceptableChangeset creates a project and a proposed changeset
 // against it, ready to accept — shared setup for the AcceptChangeset tests
 // below.
