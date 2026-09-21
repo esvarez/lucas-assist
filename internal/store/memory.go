@@ -11,11 +11,20 @@ import (
 // MemoryRepository is an in-memory Repository for local dev and unit
 // tests. State lives only as long as the process — nothing is durable.
 type MemoryRepository struct {
-	mu         sync.Mutex
-	projects   map[string]domain.Project
-	tasks      map[string]taskRecord
-	changesets map[string]domain.Changeset
-	agentRuns  map[string]domain.AgentRun
+	mu          sync.Mutex
+	projects    map[string]domain.Project
+	tasks       map[string]taskRecord
+	changesets  map[string]domain.Changeset
+	agentRuns   map[string]domain.AgentRun
+	events      map[string]domain.Event
+	idempotency map[string]idempotencyRecord
+}
+
+// idempotencyRecord is MemoryRepository's cache entry for one accept-
+// changeset idempotency key — see AcceptChangeset.
+type idempotencyRecord struct {
+	RequestHash string
+	Result      AcceptChangesetResult
 }
 
 // taskRecord pairs a Task with the userID it was created under. domain.Task
@@ -28,10 +37,12 @@ type taskRecord struct {
 
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		projects:   make(map[string]domain.Project),
-		tasks:      make(map[string]taskRecord),
-		changesets: make(map[string]domain.Changeset),
-		agentRuns:  make(map[string]domain.AgentRun),
+		projects:    make(map[string]domain.Project),
+		tasks:       make(map[string]taskRecord),
+		changesets:  make(map[string]domain.Changeset),
+		agentRuns:   make(map[string]domain.AgentRun),
+		events:      make(map[string]domain.Event),
+		idempotency: make(map[string]idempotencyRecord),
 	}
 }
 
@@ -288,4 +299,85 @@ func (r *MemoryRepository) FailAgentRun(ctx context.Context, userID, projectID, 
 
 	r.agentRuns[runID] = run
 	return run, nil
+}
+
+// AcceptChangeset holds r.mu for the whole operation, which is what makes
+// it atomic here — there's no separate transaction primitive to reach for
+// in a single in-memory map, unlike DynamoRepository's TransactWriteItems.
+func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	hash := requestHash(c.UserID, c.ProjectID, c.ID)
+	idemKey := c.UserID + "|" + idempotencyKey
+	if rec, ok := r.idempotency[idemKey]; ok {
+		if rec.RequestHash != hash {
+			return AcceptChangesetResult{}, ErrIdempotencyKeyReused
+		}
+		return rec.Result, nil
+	}
+
+	existingProject, ok := r.projects[p.ID]
+	if !ok || existingProject.UserID != c.UserID {
+		return AcceptChangesetResult{}, ErrNotFound
+	}
+
+	// This check has to run after the idempotency lookup above, not
+	// before: a replay of an already-applied changeset (same key) must
+	// still return the cached result, even though the changeset's current
+	// status is no longer "proposed". A *different* key against a
+	// non-proposed changeset (already applied/rejected/expired/conflict)
+	// is a genuine conflict — left as-is, not flipped to "conflict", since
+	// that status may already correctly describe something else (e.g.
+	// "rejected").
+	if c.Status != domain.ChangesetProposed {
+		return AcceptChangesetResult{}, ErrConflict
+	}
+
+	if existingProject.Version != c.BaseVersion {
+		c.Status = domain.ChangesetConflict
+		r.changesets[c.ID] = c
+		return AcceptChangesetResult{}, ErrConflict
+	}
+
+	now := time.Now().UTC()
+
+	tasks := make([]domain.Task, 0, len(c.ProposedTasks))
+	for i, pt := range c.ProposedTasks {
+		t := domain.Task{
+			ID:                 domain.NewID(),
+			ProjectID:          c.ProjectID,
+			Title:              pt.Title,
+			Description:        pt.Description,
+			Status:             "pending",
+			Order:              i,
+			AcceptanceCriteria: pt.AcceptanceCriteria,
+		}
+		r.tasks[t.ID] = taskRecord{Task: t, UserID: c.UserID}
+		tasks = append(tasks, t)
+	}
+
+	existingProject.Version++
+	existingProject.UpdatedAt = now
+	r.projects[existingProject.ID] = existingProject
+
+	event := domain.Event{
+		ID:          domain.NewID(),
+		ProjectID:   c.ProjectID,
+		UserID:      c.UserID,
+		Type:        domain.EventChangesetAccepted,
+		ChangesetID: c.ID,
+		ActorID:     c.UserID,
+		BaseVersion: c.BaseVersion,
+		CreatedAt:   now,
+	}
+	r.events[event.ID] = event
+
+	c.Status = domain.ChangesetApplied
+	r.changesets[c.ID] = c
+
+	result := AcceptChangesetResult{Project: existingProject, Tasks: tasks, Event: event}
+	r.idempotency[idemKey] = idempotencyRecord{RequestHash: hash, Result: result}
+
+	return result, nil
 }

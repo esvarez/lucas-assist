@@ -127,6 +127,35 @@ func agentRunListSKPrefix(projectID string) string {
 	return projectScopeSKPrefix + agentRunProjectSegment(projectID) + "#RUN#"
 }
 
+// sortableTimestamp returns a fixed-width, zero-padded UnixNano timestamp
+// so lexical and chronological order agree in a sort-key segment
+// (architecture.md §8) — the same technique domain.NewRunID uses inside an
+// ID instead of a separate SK segment, used here as a literal segment
+// since nothing needs to derive an Event's key from its ID alone (unlike
+// AgentRun's GetAgentRun).
+func sortableTimestamp(t time.Time) string {
+	return fmt.Sprintf("%020d", t.UTC().UnixNano())
+}
+
+// eventSK builds an Event's sort key per architecture.md §8:
+// `P#<pid>#EVT#<timestamp>#<event_id>`. There's no GetEvent (out of scope
+// for issue #77 — "any event-querying endpoint"), so unlike agentRunSK this
+// doesn't need to be derivable from the ID alone.
+func eventSK(projectID string, createdAt time.Time, eventID string) string {
+	return eventListSKPrefix(projectID) + sortableTimestamp(createdAt) + "#" + eventID
+}
+
+func eventListSKPrefix(projectID string) string {
+	return projectScopeSKPrefix + projectID + "#EVT#"
+}
+
+// idempotencySK builds an idempotency record's sort key per architecture.md
+// §8: `IDEMP#<key>`, not project-scoped (no `P#` prefix) since one
+// idempotency key stands for one whole accept request, not a project item.
+func idempotencySK(key string) string {
+	return "IDEMP#" + key
+}
+
 func toProjectItem(p domain.Project) projectItem {
 	return projectItem{
 		PK:          userPK(p.UserID),
@@ -921,4 +950,263 @@ func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID
 	}
 
 	return item.toDomain(), nil
+}
+
+// eventItem is the DynamoDB item shape for an Event.
+type eventItem struct {
+	PK          string    `dynamodbav:"PK"`
+	SK          string    `dynamodbav:"SK"`
+	ID          string    `dynamodbav:"id"`
+	ProjectID   string    `dynamodbav:"project_id"`
+	UserID      string    `dynamodbav:"user_id"`
+	Type        string    `dynamodbav:"type"`
+	ChangesetID string    `dynamodbav:"changeset_id"`
+	ActorID     string    `dynamodbav:"actor_id"`
+	BaseVersion int       `dynamodbav:"base_version"`
+	CreatedAt   time.Time `dynamodbav:"created_at"`
+}
+
+func toEventItem(e domain.Event) eventItem {
+	return eventItem{
+		PK:          userPK(e.UserID),
+		SK:          eventSK(e.ProjectID, e.CreatedAt, e.ID),
+		ID:          e.ID,
+		ProjectID:   e.ProjectID,
+		UserID:      e.UserID,
+		Type:        string(e.Type),
+		ChangesetID: e.ChangesetID,
+		ActorID:     e.ActorID,
+		BaseVersion: e.BaseVersion,
+		CreatedAt:   e.CreatedAt,
+	}
+}
+
+// idempotencyItem is the DynamoDB item shape for an accept-changeset
+// idempotency record (architecture.md §8/§15): PK=USER#<uid>,
+// SK=IDEMP#<key>. Result is the full AcceptChangesetResult, JSON-encoded,
+// so a replayed request is answered by decoding it directly instead of
+// re-reading every task, the project, and the event individually.
+type idempotencyItem struct {
+	PK          string          `dynamodbav:"PK"`
+	SK          string          `dynamodbav:"SK"`
+	RequestHash string          `dynamodbav:"request_hash"`
+	Result      json.RawMessage `dynamodbav:"result"`
+	CreatedAt   time.Time       `dynamodbav:"created_at"`
+}
+
+// getIdempotencyRecord fetches an accept-changeset idempotency record by
+// userID and key. found is false, not an error, when none exists yet.
+func (r *DynamoRepository) getIdempotencyRecord(ctx context.Context, userID, key string) (item idempotencyItem, found bool, err error) {
+	out, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: idempotencySK(key)},
+		},
+	})
+	if err != nil {
+		return idempotencyItem{}, false, fmt.Errorf("get idempotency item: %w", err)
+	}
+	if out.Item == nil {
+		return idempotencyItem{}, false, nil
+	}
+
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return idempotencyItem{}, false, fmt.Errorf("unmarshal idempotency item: %w", err)
+	}
+	return item, true, nil
+}
+
+// AcceptChangeset commits c's proposed tasks against p in a single
+// TransactWriteItems call: the project's version update, one Put per task,
+// the audit event, the idempotency record, and the changeset's status
+// update to "applied" — matching ADR 009's accounting of exactly 4
+// bookkeeping items alongside up to 50 task writes.
+//
+// The project's version update is always transactItems[projectItemIndex]
+// so a ConditionalCheckFailedException on it (the only condition expected
+// to fail in normal operation — a stale baseVersion) can be identified from
+// TransactionCanceledException.CancellationReasons without guessing.
+func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error) {
+	hash := requestHash(c.UserID, c.ProjectID, c.ID)
+
+	existing, found, err := r.getIdempotencyRecord(ctx, c.UserID, idempotencyKey)
+	if err != nil {
+		return AcceptChangesetResult{}, err
+	}
+	if found {
+		if existing.RequestHash != hash {
+			return AcceptChangesetResult{}, ErrIdempotencyKeyReused
+		}
+		var result AcceptChangesetResult
+		if err := json.Unmarshal(existing.Result, &result); err != nil {
+			return AcceptChangesetResult{}, fmt.Errorf("unmarshal cached accept result: %w", err)
+		}
+		return result, nil
+	}
+
+	// This check has to run after the idempotency lookup above, not
+	// before: a replay of an already-applied changeset (same key) must
+	// still return the cached result, even though the changeset's current
+	// status is no longer "proposed". A *different* key against a
+	// non-proposed changeset (already applied/rejected/expired/conflict)
+	// is a genuine conflict — left as-is, not flipped to "conflict", since
+	// that status may already correctly describe something else (e.g.
+	// "rejected").
+	if c.Status != domain.ChangesetProposed {
+		return AcceptChangesetResult{}, ErrConflict
+	}
+
+	now := time.Now().UTC()
+
+	tasks := make([]domain.Task, 0, len(c.ProposedTasks))
+	for i, pt := range c.ProposedTasks {
+		tasks = append(tasks, domain.Task{
+			ID:                 domain.NewID(),
+			ProjectID:          c.ProjectID,
+			Title:              pt.Title,
+			Description:        pt.Description,
+			Status:             "pending",
+			Order:              i,
+			AcceptanceCriteria: pt.AcceptanceCriteria,
+		})
+	}
+
+	updatedProject := p
+	updatedProject.Version = c.BaseVersion + 1
+	updatedProject.UpdatedAt = now
+
+	event := domain.Event{
+		ID:          domain.NewID(),
+		ProjectID:   c.ProjectID,
+		UserID:      c.UserID,
+		Type:        domain.EventChangesetAccepted,
+		ChangesetID: c.ID,
+		ActorID:     c.UserID,
+		BaseVersion: c.BaseVersion,
+		CreatedAt:   now,
+	}
+
+	result := AcceptChangesetResult{Project: updatedProject, Tasks: tasks, Event: event}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal accept result: %w", err)
+	}
+
+	baseVersionAV, err := attributevalue.Marshal(c.BaseVersion)
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal base version: %w", err)
+	}
+	newVersionAV, err := attributevalue.Marshal(updatedProject.Version)
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal new version: %w", err)
+	}
+	updatedAtAV, err := attributevalue.Marshal(now)
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal updated_at: %w", err)
+	}
+	appliedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetApplied))
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal applied status: %w", err)
+	}
+
+	const projectItemIndex = 0
+
+	transactItems := []types.TransactWriteItem{
+		{
+			Update: &types.Update{
+				TableName: aws.String(r.table),
+				Key: map[string]types.AttributeValue{
+					"PK": &types.AttributeValueMemberS{Value: userPK(c.UserID)},
+					"SK": &types.AttributeValueMemberS{Value: projectSK(c.ProjectID)},
+				},
+				UpdateExpression:    aws.String("SET #version = :new_version, #updated_at = :updated_at"),
+				ConditionExpression: aws.String("attribute_exists(PK) AND #version = :base_version"),
+				ExpressionAttributeNames: map[string]string{
+					"#version":    "version",
+					"#updated_at": "updated_at",
+				},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":new_version":  newVersionAV,
+					":updated_at":   updatedAtAV,
+					":base_version": baseVersionAV,
+				},
+				ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
+			},
+		},
+	}
+
+	for _, t := range tasks {
+		item, err := attributevalue.MarshalMap(toTaskItem(c.UserID, t))
+		if err != nil {
+			return AcceptChangesetResult{}, fmt.Errorf("marshal task item: %w", err)
+		}
+		transactItems = append(transactItems, types.TransactWriteItem{
+			Put: &types.Put{
+				TableName:           aws.String(r.table),
+				Item:                item,
+				ConditionExpression: aws.String("attribute_not_exists(PK)"),
+			},
+		})
+	}
+
+	eventAV, err := attributevalue.MarshalMap(toEventItem(event))
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal event item: %w", err)
+	}
+	transactItems = append(transactItems, types.TransactWriteItem{
+		Put: &types.Put{TableName: aws.String(r.table), Item: eventAV},
+	})
+
+	idemAV, err := attributevalue.MarshalMap(idempotencyItem{
+		PK:          userPK(c.UserID),
+		SK:          idempotencySK(idempotencyKey),
+		RequestHash: hash,
+		Result:      resultJSON,
+		CreatedAt:   now,
+	})
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal idempotency item: %w", err)
+	}
+	transactItems = append(transactItems, types.TransactWriteItem{
+		Put: &types.Put{
+			TableName:           aws.String(r.table),
+			Item:                idemAV,
+			ConditionExpression: aws.String("attribute_not_exists(PK)"),
+		},
+	})
+
+	transactItems = append(transactItems, types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.table),
+			Key: map[string]types.AttributeValue{
+				"PK": &types.AttributeValueMemberS{Value: userPK(c.UserID)},
+				"SK": &types.AttributeValueMemberS{Value: changesetSK(c.ProjectID, c.ID)},
+			},
+			UpdateExpression:          aws.String("SET #status = :applied"),
+			ConditionExpression:       aws.String("attribute_exists(PK)"),
+			ExpressionAttributeNames:  map[string]string{"#status": "status"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":applied": appliedStatusAV},
+		},
+	})
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: transactItems})
+	if err != nil {
+		var canceled *types.TransactionCanceledException
+		if errors.As(err, &canceled) {
+			if len(canceled.CancellationReasons) > projectItemIndex {
+				reason := canceled.CancellationReasons[projectItemIndex]
+				if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+					if _, failErr := r.UpdateChangesetStatus(ctx, c.UserID, c.ProjectID, c.ID, domain.ChangesetConflict); failErr != nil {
+						return AcceptChangesetResult{}, fmt.Errorf("version conflict (and failed to mark changeset conflict: %w)", failErr)
+					}
+					return AcceptChangesetResult{}, ErrConflict
+				}
+			}
+			return AcceptChangesetResult{}, fmt.Errorf("accept changeset transaction canceled: %w", err)
+		}
+		return AcceptChangesetResult{}, fmt.Errorf("accept changeset transaction: %w", err)
+	}
+
+	return result, nil
 }
