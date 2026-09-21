@@ -9,10 +9,9 @@ import type { Project } from '@/src/api/projects'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 
 function ProjectCard({ project }: { project: Project }) {
-  // Task counts come from a mock-only endpoint (web/mock-server.mjs) —
-  // there's no real one yet, see src/api/tasks.ts. Failing to load it
-  // (e.g. running against the real backend, which 404s) just hides the
-  // progress section rather than breaking the card.
+  // Failing to load task counts (e.g. the mock server, which no longer
+  // serves this route — see web/mock-server.mjs) just hides the progress
+  // section rather than breaking the card.
   const [taskCounts, setTaskCounts] = useState<{ done: number; total: number } | null>(null)
 
   useEffect(() => {

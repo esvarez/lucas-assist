@@ -153,6 +153,7 @@ type stubRepository struct {
 	getRunErr    error
 	getChangeErr error
 	acceptErr    error
+	listTasksErr error
 }
 
 func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
@@ -185,6 +186,10 @@ func (s stubRepository) GetChangeset(ctx context.Context, userID, projectID, cha
 
 func (s stubRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (store.AcceptChangesetResult, error) {
 	return store.AcceptChangesetResult{}, s.acceptErr
+}
+
+func (s stubRepository) ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error) {
+	return nil, s.listTasksErr
 }
 
 func TestCreateProject_DuplicateID(t *testing.T) {

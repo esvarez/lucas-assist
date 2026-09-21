@@ -35,6 +35,10 @@ type ProjectRepository interface {
 	// since this package's convention is one growing interface per Lambda,
 	// not one per entity (see doc comment above).
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (store.AcceptChangesetResult, error)
+
+	// ListTasks backs GET /projects/{id}/tasks (#125) — the real
+	// replacement for what web/mock-server.mjs has been standing in for.
+	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
 }
 
 // NewRouter builds the API's route table against repo.
@@ -47,5 +51,6 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
 	mux.HandleFunc("GET /agent-runs/{id}", getAgentRunHandler(repo))
 	mux.HandleFunc("POST /projects/{id}/changesets/{changesetId}/accept", acceptChangesetHandler(repo))
+	mux.HandleFunc("GET /projects/{id}/tasks", listTasksHandler(repo))
 	return mux
 }
