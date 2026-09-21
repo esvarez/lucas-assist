@@ -86,6 +86,12 @@ aws ssm put-parameter \
   --value <key>
 ```
 
+Once the stack exists, build and publish the SPA to the bucket CloudFront serves (`sam deploy` provisions the bucket/distribution; it doesn't upload `web/dist`'s contents):
+
+```bash
+make deploy-web STACK_NAME=<your-sam-stack-name>
+```
+
 ## Repo layout
 
 ```
