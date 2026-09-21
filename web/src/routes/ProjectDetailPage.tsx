@@ -159,7 +159,7 @@ function ProjectDetailPage() {
         if (!ignore) setTasks(list)
       })
       .catch(() => {
-        // Tasks endpoint is mock-only — hide the list rather than fail the page.
+        // A failed task fetch shouldn't fail the whole page — hide the list instead.
         if (!ignore) setTasks([])
       })
     return () => {

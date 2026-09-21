@@ -209,6 +209,38 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /projects/{id}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+    get:
+      summary: List a project's tasks
+      description: >
+        Returns the project's tasks flat, linked by parent_id — not nested.
+        Building a tree out of the flat list, if a caller wants one, is
+        client-side presentation logic (#125).
+      operationId: listTasks
+      parameters:
+        - $ref: "#/components/parameters/UserIdQuery"
+      responses:
+        "200":
+          description: The project's tasks (empty array if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+        "400":
+          description: user_id is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /agent-runs/{id}:
     get:
       summary: Poll an agent run
