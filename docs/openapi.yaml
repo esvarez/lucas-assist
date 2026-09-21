@@ -378,8 +378,10 @@ components:
           description: Required — the DynamoDB key schema partitions by user.
         name:
           type: string
+          description: Required — a Project's defining content (architecture.md §3).
         goal:
           type: string
+          description: Required — a Project's defining content (architecture.md §3).
         deadline:
           type: string
           format: date-time
@@ -392,6 +394,8 @@ components:
           type: string
       required:
         - user_id
+        - name
+        - goal
 
     UpdateProjectRequest:
       type: object
