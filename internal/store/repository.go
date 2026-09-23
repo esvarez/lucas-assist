@@ -136,6 +136,7 @@ type Repository interface {
 	// The 50-mutation cap (ADR 009) has no such ordering dependency, so it
 	// stays a fast, no-I/O check in the changeset-accept endpoint instead.
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error)
+	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (AcceptCreateProjectResult, error)
 }
 
 // AcceptChangesetResult is the outcome of a successful AcceptChangeset
@@ -145,4 +146,10 @@ type AcceptChangesetResult struct {
 	Project domain.Project `json:"project"`
 	Tasks   []domain.Task  `json:"tasks"`
 	Event   domain.Event   `json:"event"`
+}
+
+// AcceptCreateProjectResult is the outcome of a successful
+// AcceptCreateProjectChangeset call: the newly created project.
+type AcceptCreateProjectResult struct {
+	Project domain.Project `json:"project"`
 }

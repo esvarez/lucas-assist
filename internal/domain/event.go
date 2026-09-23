@@ -2,16 +2,20 @@ package domain
 
 import "time"
 
-// EventType identifies what kind of accepted change an Event records. Only
-// one value exists today — the changeset-accept endpoint that writes
-// events doesn't yet have a second kind to distinguish from
-// (architecture.md §9's audit log currently has exactly one writer).
+// EventType identifies what kind of accepted change an Event records
+// (architecture.md §9's audit log).
 type EventType string
 
 const (
 	// EventChangesetAccepted marks a changeset's proposed mutations being
-	// committed to a project (architecture.md §1/§9).
+	// committed to an existing project (architecture.md §1/§9).
 	EventChangesetAccepted EventType = "changeset_accepted"
+
+	// EventProjectCreated marks a create_project changeset being accepted
+	// into a brand-new project. Separate from EventChangesetAccepted since
+	// there's no existing project to record a BaseVersion against — see
+	// domain.Changeset.ProposedProject's doc comment.
+	EventProjectCreated EventType = "project_created"
 )
 
 // Event is an append-only audit record of an accepted project change,

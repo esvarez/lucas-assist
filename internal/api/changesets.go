@@ -101,3 +101,60 @@ func acceptChangesetHandler(repo ProjectRepository) http.HandlerFunc {
 		})
 	}
 }
+
+// acceptCreateProjectChangesetHandler commits a create_project changeset
+// into a brand-new project (architecture.md §1/§9, #152). It's a separate
+// route and handler from acceptChangesetHandler above, not a variant of
+// it: a create_project changeset has no existing project yet, so there's
+// no {id} to address in the URL and no existing project for GetProject to
+// load first.
+func acceptCreateProjectChangesetHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req acceptChangesetRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+			return
+		}
+
+		if !validateStruct(w, req) {
+			return
+		}
+
+		userID, _ := auth.UserIDFromContext(r.Context())
+		changesetID := r.PathValue("changesetId")
+
+		// projectID is "" — the NOPROJECT placeholder segment
+		// (internal/store/dynamo.go) is exactly what lets this lookup
+		// succeed for a project-less changeset.
+		changeset, err := repo.GetChangeset(r.Context(), userID, "", changesetID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		// Fast, no-I/O check, same tier as acceptChangesetHandler's
+		// maxChangesetMutations check above: this route only ever commits
+		// a create_project proposal. A task changeset (or a malformed one
+		// with neither payload set) belongs to the other route instead.
+		if changeset.Skill != "create_project" || changeset.ProposedProject == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "changeset is not a create_project proposal"})
+			return
+		}
+
+		result, err := repo.AcceptCreateProjectChangeset(r.Context(), changeset, req.IdempotencyKey)
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrIdempotencyKeyReused) || errors.Is(err, store.ErrDuplicateID) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, result.Project)
+	}
+}

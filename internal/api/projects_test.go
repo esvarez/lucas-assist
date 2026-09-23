@@ -247,6 +247,10 @@ func (s stubRepository) AcceptChangeset(ctx context.Context, p domain.Project, c
 	return store.AcceptChangesetResult{}, s.acceptErr
 }
 
+func (s stubRepository) AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (store.AcceptCreateProjectResult, error) {
+	return store.AcceptCreateProjectResult{}, s.acceptErr
+}
+
 func (s stubRepository) ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error) {
 	return nil, s.listTasksErr
 }
