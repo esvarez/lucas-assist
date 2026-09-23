@@ -1403,3 +1403,133 @@ func TestDynamoRepository_AcceptChangeset_OversizedChangeset(t *testing.T) {
 		t.Fatalf("len(Tasks) = %d, want 51 — the 50-mutation cap is enforced by the HTTP handler, not this primitive", len(result.Tasks))
 	}
 }
+
+// newTestAcceptableCreateProjectChangeset is AcceptCreateProjectChangeset's
+// counterpart to newTestAcceptableChangeset above: a project-less, proposed
+// create_project changeset ready to accept.
+func newTestAcceptableCreateProjectChangeset(t *testing.T, repo *DynamoRepository, userID string) domain.Changeset {
+	t.Helper()
+	ctx := context.Background()
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID: userID,
+		Skill:  "create_project",
+		Status: domain.ChangesetProposed,
+		ProposedProject: &domain.ProposedProject{
+			Name:        "Tidepool Sync",
+			Goal:        "Ship the sync engine",
+			Constraints: []string{"Must ship on Postgres"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+	return changeset
+}
+
+func TestDynamoRepository_AcceptCreateProjectChangeset(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	changeset := newTestAcceptableCreateProjectChangeset(t, repo, userID)
+
+	result, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	if result.Project.ID == "" {
+		t.Error("Project.ID = \"\", want a generated ID")
+	}
+	if result.Project.Name != "Tidepool Sync" || result.Project.Goal != "Ship the sync engine" {
+		t.Errorf("Project = %+v, want the proposed name/goal", result.Project)
+	}
+	if result.Project.Version != 1 {
+		t.Errorf("Project.Version = %d, want 1", result.Project.Version)
+	}
+
+	gotProject, err := repo.GetProject(ctx, userID, result.Project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if gotProject.Name != "Tidepool Sync" {
+		t.Errorf("stored Project.Name = %q, want %q", gotProject.Name, "Tidepool Sync")
+	}
+
+	gotChangeset, err := repo.GetChangeset(ctx, userID, "", changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetApplied {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetApplied)
+	}
+}
+
+// TestDynamoRepository_AcceptCreateProjectChangeset_IdempotentReplay
+// documents architecture.md §15 for this path: replaying the same key
+// returns the original result instead of creating a second project.
+func TestDynamoRepository_AcceptCreateProjectChangeset_IdempotentReplay(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	changeset := newTestAcceptableCreateProjectChangeset(t, repo, userID)
+
+	first, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("first AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	second, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("second AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	if second.Project.ID != first.Project.ID {
+		t.Errorf("second AcceptCreateProjectChangeset() Project.ID = %q, want the identical cached %q", second.Project.ID, first.Project.ID)
+	}
+}
+
+func TestDynamoRepository_AcceptCreateProjectChangeset_IdempotencyKeyReused(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	changeset := newTestAcceptableCreateProjectChangeset(t, repo, userID)
+	if _, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1"); err != nil {
+		t.Fatalf("first AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	otherChangeset := newTestAcceptableCreateProjectChangeset(t, repo, userID)
+
+	_, err := repo.AcceptCreateProjectChangeset(ctx, otherChangeset, "idem-key-1")
+	if !errors.Is(err, ErrIdempotencyKeyReused) {
+		t.Fatalf("AcceptCreateProjectChangeset() with reused key error = %v, want %v", err, ErrIdempotencyKeyReused)
+	}
+}
+
+func TestDynamoRepository_AcceptCreateProjectChangeset_NotProposed(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	changeset := newTestAcceptableCreateProjectChangeset(t, repo, userID)
+	changeset, err := repo.UpdateChangesetStatus(ctx, userID, "", changeset.ID, domain.ChangesetRejected)
+	if err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+
+	_, err = repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AcceptCreateProjectChangeset() on a rejected changeset error = %v, want %v", err, ErrConflict)
+	}
+
+	gotChangeset, err := repo.GetChangeset(ctx, userID, "", changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetRejected {
+		t.Errorf("Changeset.Status = %q, want unchanged %q", gotChangeset.Status, domain.ChangesetRejected)
+	}
+}

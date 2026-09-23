@@ -201,6 +201,67 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /changesets/{changesetId}/accept:
+    parameters:
+      - name: changesetId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Accept a proposed create_project changeset
+      description: >
+        Commits a create_project changeset into a brand-new Project
+        (architecture.md §1/§9, #152) — the project-less counterpart to
+        POST /projects/{id}/changesets/{changesetId}/accept above. There's
+        no existing project to address in a URL or version-check against
+        (base_version is meaningless for these changesets — see the
+        Changeset schema); this writes a new project instead, the same way
+        POST /projects does. idempotency_key deduplicates retries
+        (architecture.md §15) the same way the other accept route does.
+      operationId: acceptCreateProjectChangeset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptChangesetRequest"
+      responses:
+        "201":
+          description: Changeset accepted and the new project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: >
+            Invalid body, missing idempotency_key, or the changeset isn't a
+            create_project proposal (wrong skill, or no proposed_project)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No changeset with this id in this user's partition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >
+            The changeset isn't in "proposed" status (already applied with
+            a different idempotency key, rejected, expired, or already
+            conflict), or idempotency_key was already used for a different
+            changeset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /projects/{id}/tasks:
     parameters:
       - $ref: "#/components/parameters/ProjectIdPath"
@@ -529,6 +590,12 @@ components:
           items:
             type: string
           description: decompose_task's disclosed unspecified-choice decisions. Absent for create_project changesets.
+        proposed_project:
+          $ref: "#/components/schemas/ProposedProject"
+          description: >
+            create_project's mutation payload. Present only for
+            create_project changesets, which carry this instead of
+            proposed_tasks — see POST /changesets/{changesetId}/accept.
         created_at:
           type: string
           format: date-time
@@ -540,6 +607,26 @@ components:
         - base_version
         - status
         - created_at
+
+    ProposedProject:
+      type: object
+      description: domain.ProposedProject — see internal/domain/project.go.
+      properties:
+        name:
+          type: string
+        goal:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+          nullable: true
+        constraints:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - goal
 
     DispatchSkillRequest:
       type: object

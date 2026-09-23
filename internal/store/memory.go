@@ -21,10 +21,14 @@ type MemoryRepository struct {
 }
 
 // idempotencyRecord is MemoryRepository's cache entry for one accept-
-// changeset idempotency key — see AcceptChangeset.
+// changeset idempotency key — see AcceptChangeset and
+// AcceptCreateProjectChangeset. Result holds whichever of
+// AcceptChangesetResult/AcceptCreateProjectResult that call produced —
+// an "any" rather than a second map, since both share one per-user
+// idempotency-key namespace (architecture.md §15).
 type idempotencyRecord struct {
 	RequestHash string
-	Result      AcceptChangesetResult
+	Result      any
 }
 
 // taskRecord pairs a Task with the userID it was created under. domain.Task
@@ -333,7 +337,7 @@ func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		if rec.RequestHash != hash {
 			return AcceptChangesetResult{}, ErrIdempotencyKeyReused
 		}
-		return rec.Result, nil
+		return rec.Result.(AcceptChangesetResult), nil
 	}
 
 	existingProject, ok := r.projects[p.ID]
@@ -401,6 +405,67 @@ func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	r.changesets[c.ID] = c
 
 	result := AcceptChangesetResult{Project: existingProject, Tasks: tasks, Event: event}
+	r.idempotency[idemKey] = idempotencyRecord{RequestHash: hash, Result: result}
+
+	return result, nil
+}
+
+// AcceptCreateProjectChangeset holds r.mu for the whole operation, same
+// reasoning as AcceptChangeset.
+func (r *MemoryRepository) AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (AcceptCreateProjectResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	hash := requestHash(c.UserID, c.ProjectID, c.ID)
+	idemKey := c.UserID + "|" + idempotencyKey
+	if rec, ok := r.idempotency[idemKey]; ok {
+		if rec.RequestHash != hash {
+			return AcceptCreateProjectResult{}, ErrIdempotencyKeyReused
+		}
+		return rec.Result.(AcceptCreateProjectResult), nil
+	}
+
+	// Same ordering as AcceptChangeset: this check has to run after the
+	// idempotency lookup above, so a replay of an already-applied
+	// changeset still returns the cached result.
+	if c.Status != domain.ChangesetProposed {
+		return AcceptCreateProjectResult{}, ErrConflict
+	}
+
+	now := time.Now().UTC()
+
+	project := domain.Project{
+		UserID:    c.UserID,
+		ID:        domain.NewID(),
+		Name:      c.ProposedProject.Name,
+		Goal:      c.ProposedProject.Goal,
+		Deadline:  c.ProposedProject.Deadline,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Version:   1,
+	}
+	if c.ProposedProject.Constraints != nil {
+		project.Constraints = c.ProposedProject.Constraints
+	} else {
+		project.Constraints = []string{}
+	}
+	r.projects[project.ID] = project
+
+	event := domain.Event{
+		ID:          domain.NewID(),
+		ProjectID:   project.ID,
+		UserID:      c.UserID,
+		Type:        domain.EventProjectCreated,
+		ChangesetID: c.ID,
+		ActorID:     c.UserID,
+		CreatedAt:   now,
+	}
+	r.events[event.ID] = event
+
+	c.Status = domain.ChangesetApplied
+	r.changesets[c.ID] = c
+
+	result := AcceptCreateProjectResult{Project: project}
 	r.idempotency[idemKey] = idempotencyRecord{RequestHash: hash, Result: result}
 
 	return result, nil

@@ -36,6 +36,12 @@ type ProjectRepository interface {
 	// not one per entity (see doc comment above).
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (store.AcceptChangesetResult, error)
 
+	// AcceptCreateProjectChangeset backs the project-less changeset-accept
+	// route (#152) — a create_project changeset has no existing project to
+	// address in a URL path, so it's a separate route from AcceptChangeset
+	// above rather than a variant of it.
+	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (store.AcceptCreateProjectResult, error)
+
 	// ListTasks backs GET /projects/{id}/tasks (#125) — the real
 	// replacement for what web/mock-server.mjs has been standing in for.
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
@@ -51,6 +57,7 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
 	mux.HandleFunc("GET /agent-runs/{id}", getAgentRunHandler(repo))
 	mux.HandleFunc("POST /projects/{id}/changesets/{changesetId}/accept", acceptChangesetHandler(repo))
+	mux.HandleFunc("POST /changesets/{changesetId}/accept", acceptCreateProjectChangesetHandler(repo))
 	mux.HandleFunc("GET /projects/{id}/tasks", listTasksHandler(repo))
 	return mux
 }

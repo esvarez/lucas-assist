@@ -1259,3 +1259,145 @@ func TestMemoryRepository_AcceptChangeset_ProjectNotFound(t *testing.T) {
 		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrNotFound)
 	}
 }
+
+// newAcceptableCreateProjectChangeset is AcceptCreateProjectChangeset's
+// counterpart to newAcceptableChangeset above: a project-less, proposed
+// create_project changeset ready to accept. ProjectID is deliberately left
+// "" — that's the whole point of create_project (domain.Changeset.
+// ProposedProject's doc comment).
+func newAcceptableCreateProjectChangeset(t *testing.T, repo *MemoryRepository, userID string) domain.Changeset {
+	t.Helper()
+	ctx := context.Background()
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID: userID,
+		Skill:  "create_project",
+		Status: domain.ChangesetProposed,
+		ProposedProject: &domain.ProposedProject{
+			Name:        "Tidepool Sync",
+			Goal:        "Ship the sync engine",
+			Constraints: []string{"Must ship on Postgres"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+	return changeset
+}
+
+func TestMemoryRepository_AcceptCreateProjectChangeset(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	changeset := newAcceptableCreateProjectChangeset(t, repo, "user_1")
+
+	result, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	if result.Project.ID == "" {
+		t.Error("Project.ID = \"\", want a generated ID")
+	}
+	if result.Project.UserID != "user_1" {
+		t.Errorf("Project.UserID = %q, want %q", result.Project.UserID, "user_1")
+	}
+	if result.Project.Name != "Tidepool Sync" || result.Project.Goal != "Ship the sync engine" {
+		t.Errorf("Project = %+v, want the proposed name/goal", result.Project)
+	}
+	if !reflect.DeepEqual(result.Project.Constraints, []string{"Must ship on Postgres"}) {
+		t.Errorf("Project.Constraints = %v, want the proposed constraints", result.Project.Constraints)
+	}
+	if result.Project.Version != 1 {
+		t.Errorf("Project.Version = %d, want 1", result.Project.Version)
+	}
+
+	gotProject, err := repo.GetProject(ctx, "user_1", result.Project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !reflect.DeepEqual(gotProject, result.Project) {
+		t.Errorf("stored project = %+v, want %+v", gotProject, result.Project)
+	}
+
+	gotChangeset, err := repo.GetChangeset(ctx, "user_1", "", changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetApplied {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetApplied)
+	}
+}
+
+// TestMemoryRepository_AcceptCreateProjectChangeset_IdempotentReplay
+// documents architecture.md §15 for this path: replaying the same key
+// returns the original result instead of creating a second project.
+func TestMemoryRepository_AcceptCreateProjectChangeset_IdempotentReplay(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	changeset := newAcceptableCreateProjectChangeset(t, repo, "user_1")
+
+	first, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("first AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	second, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("second AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("second AcceptCreateProjectChangeset() = %+v, want the identical cached result %+v", second, first)
+	}
+
+	projects, err := repo.ListProjects(ctx, "user_1")
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Errorf("ListProjects() returned %d projects, want 1 (replay must not create a second)", len(projects))
+	}
+}
+
+func TestMemoryRepository_AcceptCreateProjectChangeset_IdempotencyKeyReused(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	changeset := newAcceptableCreateProjectChangeset(t, repo, "user_1")
+	if _, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1"); err != nil {
+		t.Fatalf("first AcceptCreateProjectChangeset() error = %v", err)
+	}
+
+	otherChangeset := newAcceptableCreateProjectChangeset(t, repo, "user_1")
+
+	_, err := repo.AcceptCreateProjectChangeset(ctx, otherChangeset, "idem-key-1")
+	if !errors.Is(err, ErrIdempotencyKeyReused) {
+		t.Fatalf("AcceptCreateProjectChangeset() with reused key error = %v, want %v", err, ErrIdempotencyKeyReused)
+	}
+}
+
+func TestMemoryRepository_AcceptCreateProjectChangeset_NotProposed(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	changeset := newAcceptableCreateProjectChangeset(t, repo, "user_1")
+	changeset, err := repo.UpdateChangesetStatus(ctx, "user_1", "", changeset.ID, domain.ChangesetRejected)
+	if err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+
+	_, err = repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("AcceptCreateProjectChangeset() on a rejected changeset error = %v, want %v", err, ErrConflict)
+	}
+
+	projects, err := repo.ListProjects(ctx, "user_1")
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+	if len(projects) != 0 {
+		t.Errorf("ListProjects() = %+v, want no project created", projects)
+	}
+}

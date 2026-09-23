@@ -1331,3 +1331,169 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 
 	return result, nil
 }
+
+// AcceptCreateProjectChangeset commits c (a create_project changeset) into
+// a brand-new project via TransactWriteItems: the new project's own META
+// item, the audit event, the idempotency record, and the changeset's
+// status update to "applied" — three bookkeeping items alongside the one
+// project Put, mirroring AcceptChangeset's accounting but with no task
+// writes and no project-version condition, since there's no existing
+// project to check a version against.
+func (r *DynamoRepository) AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (AcceptCreateProjectResult, error) {
+	hash := requestHash(c.UserID, c.ProjectID, c.ID)
+
+	existing, found, err := r.getIdempotencyRecord(ctx, c.UserID, idempotencyKey)
+	if err != nil {
+		return AcceptCreateProjectResult{}, err
+	}
+	if found {
+		if existing.RequestHash != hash {
+			return AcceptCreateProjectResult{}, ErrIdempotencyKeyReused
+		}
+		var result AcceptCreateProjectResult
+		if err := json.Unmarshal(existing.Result, &result); err != nil {
+			return AcceptCreateProjectResult{}, fmt.Errorf("unmarshal cached accept result: %w", err)
+		}
+		return result, nil
+	}
+
+	// Same ordering as AcceptChangeset: this check has to run after the
+	// idempotency lookup above, so a replay of an already-applied
+	// changeset still returns the cached result.
+	if c.Status != domain.ChangesetProposed {
+		return AcceptCreateProjectResult{}, ErrConflict
+	}
+
+	now := time.Now().UTC()
+
+	project := domain.Project{
+		UserID:    c.UserID,
+		ID:        domain.NewID(),
+		Name:      c.ProposedProject.Name,
+		Goal:      c.ProposedProject.Goal,
+		Deadline:  c.ProposedProject.Deadline,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Version:   1,
+	}
+	if c.ProposedProject.Constraints != nil {
+		project.Constraints = c.ProposedProject.Constraints
+	} else {
+		project.Constraints = []string{}
+	}
+
+	event := domain.Event{
+		ID:          domain.NewID(),
+		ProjectID:   project.ID,
+		UserID:      c.UserID,
+		Type:        domain.EventProjectCreated,
+		ChangesetID: c.ID,
+		ActorID:     c.UserID,
+		CreatedAt:   now,
+	}
+
+	result := AcceptCreateProjectResult{Project: project}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return AcceptCreateProjectResult{}, fmt.Errorf("marshal accept result: %w", err)
+	}
+
+	projectItem, err := attributevalue.MarshalMap(toProjectItem(project))
+	if err != nil {
+		return AcceptCreateProjectResult{}, fmt.Errorf("marshal project item: %w", err)
+	}
+	eventAV, err := attributevalue.MarshalMap(toEventItem(event))
+	if err != nil {
+		return AcceptCreateProjectResult{}, fmt.Errorf("marshal event item: %w", err)
+	}
+	idemAV, err := attributevalue.MarshalMap(idempotencyItem{
+		PK:          userPK(c.UserID),
+		SK:          idempotencySK(idempotencyKey),
+		RequestHash: hash,
+		Result:      resultJSON,
+		CreatedAt:   now,
+	})
+	if err != nil {
+		return AcceptCreateProjectResult{}, fmt.Errorf("marshal idempotency item: %w", err)
+	}
+	appliedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetApplied))
+	if err != nil {
+		return AcceptCreateProjectResult{}, fmt.Errorf("marshal applied status: %w", err)
+	}
+	proposedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetProposed))
+	if err != nil {
+		return AcceptCreateProjectResult{}, fmt.Errorf("marshal proposed status: %w", err)
+	}
+
+	const projectItemIndex = 0
+
+	transactItems := []types.TransactWriteItem{
+		{
+			Put: &types.Put{
+				TableName:           aws.String(r.table),
+				Item:                projectItem,
+				ConditionExpression: aws.String("attribute_not_exists(PK)"),
+			},
+		},
+		{
+			Put: &types.Put{TableName: aws.String(r.table), Item: eventAV},
+		},
+		{
+			Put: &types.Put{
+				TableName:           aws.String(r.table),
+				Item:                idemAV,
+				ConditionExpression: aws.String("attribute_not_exists(PK)"),
+			},
+		},
+	}
+
+	// changesetItemIndex is computed rather than a constant since it shifts
+	// if the fixed items above ever change — the last item appended below.
+	changesetItemIndex := len(transactItems)
+	transactItems = append(transactItems, types.TransactWriteItem{
+		Update: &types.Update{
+			TableName: aws.String(r.table),
+			Key: map[string]types.AttributeValue{
+				"PK": &types.AttributeValueMemberS{Value: userPK(c.UserID)},
+				"SK": &types.AttributeValueMemberS{Value: changesetSK(c.ProjectID, c.ID)},
+			},
+			UpdateExpression:    aws.String("SET #status = :applied"),
+			ConditionExpression: aws.String("attribute_exists(PK) AND #status = :proposed"),
+			ExpressionAttributeNames: map[string]string{
+				"#status": "status",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":applied":  appliedStatusAV,
+				":proposed": proposedStatusAV,
+			},
+		},
+	})
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: transactItems})
+	if err != nil {
+		var canceled *types.TransactionCanceledException
+		if errors.As(err, &canceled) {
+			// Mirrors AcceptChangeset's reason inspection, minus the
+			// project-version case (there's no existing project version to
+			// conflict against here).
+			if len(canceled.CancellationReasons) > changesetItemIndex {
+				reason := canceled.CancellationReasons[changesetItemIndex]
+				if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+					return AcceptCreateProjectResult{}, ErrConflict
+				}
+			}
+			if len(canceled.CancellationReasons) > projectItemIndex {
+				reason := canceled.CancellationReasons[projectItemIndex]
+				if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+					// domain.NewID() collided with an existing project —
+					// vanishingly unlikely, same handling as CreateProject.
+					return AcceptCreateProjectResult{}, ErrDuplicateID
+				}
+			}
+			return AcceptCreateProjectResult{}, fmt.Errorf("accept create_project changeset transaction canceled: %w", err)
+		}
+		return AcceptCreateProjectResult{}, fmt.Errorf("accept create_project changeset transaction: %w", err)
+	}
+
+	return result, nil
+}
