@@ -90,10 +90,6 @@ export function signIn(email: string, password: string): Promise<void> {
   })
 }
 
-// Clears the locally stored Cognito session (tokens live in this
-// library's own localStorage-backed storage — see architecture.md §12).
-// There's no server-side call to make: SRP sessions aren't revocable
-// short of a global sign-out, which isn't needed here.
 export function signOut(): void {
   userPool.getCurrentUser()?.signOut()
 }
