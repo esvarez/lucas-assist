@@ -54,7 +54,7 @@ func init() {
 	repo := store.NewDynamoRepository(dynamoClient, os.Getenv("DYNAMODB_TABLE"))
 
 	registry := agent.NewRegistry(
-		skills.DecomposeTaskSkill{},
+		skills.NewDecomposeTaskSkill(repo),
 		skills.CreateProjectSkill{},
 	)
 
