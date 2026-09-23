@@ -31,12 +31,23 @@ function SignInPage() {
       submitLabel="Sign in"
       onSubmit={handleSubmit}
       footer={
-        <p className="text-center text-muted-foreground">
-          Don&apos;t have an account?{' '}
-          <Link to="/sign-up" className="font-medium text-foreground underline-offset-4 hover:underline">
-            Sign up
-          </Link>
-        </p>
+        <div className="flex flex-col gap-1 text-center text-muted-foreground">
+          <p>
+            Don&apos;t have an account?{' '}
+            <Link to="/sign-up" className="font-medium text-foreground underline-offset-4 hover:underline">
+              Sign up
+            </Link>
+          </p>
+          <p>
+            Forgot your password?{' '}
+            <Link
+              to="/forgot-password"
+              className="font-medium text-foreground underline-offset-4 hover:underline"
+            >
+              Reset it
+            </Link>
+          </p>
+        </div>
       }
     >
       <div className="flex flex-col gap-2">
