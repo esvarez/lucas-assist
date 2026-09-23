@@ -201,7 +201,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
 
           <div className="flex flex-col gap-2">
             <Label htmlFor={deadlineId}>Deadline</Label>
-            <div className="flex gap-2">
+            <div className="relative">
               <Popover open={deadlineOpen} onOpenChange={setDeadlineOpen}>
                 <PopoverTrigger
                   render={
@@ -212,7 +212,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
                       disabled={submitting}
                       aria-invalid={Boolean(fieldErrors.deadline)}
                       className={cn(
-                        'min-w-0 flex-1 justify-start font-normal',
+                        'w-full justify-start pr-9 font-normal',
                         !deadline && 'text-muted-foreground'
                       )}
                     />
@@ -238,9 +238,12 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
                 <Button
                   type="button"
                   variant="ghost"
-                  size="icon"
-                  className="shrink-0"
-                  onClick={() => setDeadline(undefined)}
+                  size="icon-sm"
+                  className="absolute top-1/2 right-1 -translate-y-1/2"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setDeadline(undefined)
+                  }}
                   disabled={submitting}
                   aria-label="Clear deadline"
                 >
