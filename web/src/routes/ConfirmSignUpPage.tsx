@@ -1,8 +1,9 @@
-import { useId, useState, type FormEvent } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { useId, useState, type SubmitEvent } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import AuthForm from '@/src/components/AuthForm'
+import { cognitoErrorMessage, confirmSignUp } from '@/src/lib/cognito'
 
 function emailFromState(state: unknown): string | null {
   if (!state || typeof state !== 'object' || !('email' in state)) return null
@@ -14,19 +15,34 @@ function emailFromState(state: unknown): string | null {
 
 function ConfirmSignUpPage() {
   const location = useLocation()
+  const navigate = useNavigate()
   const email = emailFromState(location.state)
   const codeId = useId()
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
 
-  function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault()
-    if (!code.trim()) {
-      setError('Enter the confirmation code from your email.')
+    const trimmedCode = code.trim()
+    if (!trimmedCode || submitting) {
+      if (!trimmedCode) setError('Enter the confirmation code from your email.')
+      return
+    }
+    if (!email) {
+      setError('Missing email — start over from the sign-up form.')
       return
     }
     setError(null)
-    // ConfirmSignUp is not wired on this screen yet.
+    setSubmitting(true)
+    try {
+      await confirmSignUp(email, trimmedCode)
+      navigate('/sign-in')
+    } catch (err) {
+      setError(cognitoErrorMessage(err))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -39,7 +55,8 @@ function ConfirmSignUpPage() {
       }
       errorTitle="Couldn't confirm your email"
       error={error}
-      submitLabel="Confirm"
+      submitLabel={submitting ? 'Confirming…' : 'Confirm'}
+      submitDisabled={submitting}
       onSubmit={handleSubmit}
       footer={
         <div className="flex flex-col gap-1 text-center text-muted-foreground">
@@ -72,6 +89,7 @@ function ConfirmSignUpPage() {
             setError(null)
           }}
           autoFocus
+          disabled={submitting}
           aria-invalid={Boolean(error) && !code.trim()}
         />
       </div>

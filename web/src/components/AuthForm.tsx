@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from 'react'
+import type { ReactNode, SubmitEvent } from 'react'
 import { AlertCircleIcon } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ function AuthForm({
   errorTitle,
   error,
   submitLabel,
+  submitDisabled,
   onSubmit,
   footer,
   children,
@@ -19,7 +20,8 @@ function AuthForm({
   errorTitle: string
   error: string | null
   submitLabel: string
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  submitDisabled?: boolean
+  onSubmit: (event: SubmitEvent<HTMLFormElement>) => void
   footer?: ReactNode
   children: ReactNode
 }) {
@@ -41,7 +43,7 @@ function AuthForm({
           {children}
         </CardContent>
         <CardFooter className="flex-col items-stretch gap-3">
-          <Button type="submit" size="lg" className="w-full">
+          <Button type="submit" size="lg" className="w-full" disabled={submitDisabled}>
             {submitLabel}
           </Button>
           {footer}

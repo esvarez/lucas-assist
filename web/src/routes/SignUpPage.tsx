@@ -1,9 +1,10 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useId, useState, type SubmitEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import AuthForm from '@/src/components/AuthForm'
 import PasswordField from '@/src/components/PasswordField'
+import { cognitoErrorMessage, signUp } from '@/src/lib/cognito'
 
 function SignUpPage() {
   const navigate = useNavigate()
@@ -12,17 +13,25 @@ function SignUpPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
 
-  function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault()
     const trimmedEmail = email.trim()
-    if (!trimmedEmail || !password) {
-      setError('Enter your email and a password.')
+    if (!trimmedEmail || !password || submitting) {
+      if (!trimmedEmail || !password) setError('Enter your email and a password.')
       return
     }
     setError(null)
-    // Account creation is not wired yet. This only advances to the confirmation screen.
-    navigate('/sign-up/confirm', { state: { email: trimmedEmail } })
+    setSubmitting(true)
+    try {
+      await signUp(trimmedEmail, password)
+      navigate('/sign-up/confirm', { state: { email: trimmedEmail } })
+    } catch (err) {
+      setError(cognitoErrorMessage(err))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -31,7 +40,8 @@ function SignUpPage() {
       description="Sign up with your email. You'll confirm it on the next screen."
       errorTitle="Couldn't create account"
       error={error}
-      submitLabel="Create account"
+      submitLabel={submitting ? 'Creating account…' : 'Create account'}
+      submitDisabled={submitting}
       onSubmit={handleSubmit}
       footer={
         <div className="flex flex-col gap-1 text-center text-muted-foreground">
@@ -67,6 +77,7 @@ function SignUpPage() {
             setError(null)
           }}
           autoFocus
+          disabled={submitting}
           aria-invalid={Boolean(error) && !email.trim()}
         />
       </div>
@@ -80,6 +91,7 @@ function SignUpPage() {
           setPassword(event.target.value)
           setError(null)
         }}
+        disabled={submitting}
         aria-invalid={Boolean(error) && !password}
       />
     </AuthForm>
