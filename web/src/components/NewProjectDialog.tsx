@@ -1,9 +1,8 @@
-import { useId, useState, type FormEvent, type ReactElement } from 'react'
+import { useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
-import { CalendarIcon, PlusIcon, XIcon } from 'lucide-react'
+import { CalendarIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Calendar } from '@/components/ui/calendar'
 import {
   Dialog,
   DialogContent,
@@ -12,112 +11,144 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiError, ValidationError, createProject, type ProjectDomain } from '@/src/api/projects'
+import { ApiError } from '@/src/api/projects'
+import {
+  acceptCreateProject,
+  dispatchCreateProject,
+  pollAgentRun,
+  type Clarification,
+  type ProposedProject,
+} from '@/src/api/skills'
 import { notify } from '@/src/lib/notify'
-import { cn } from '@/lib/utils'
 
-// Fields this form renders — anything the server flags outside this set
-// (e.g. user_id or status, which have no input here) surfaces as a
-// general error instead of being silently dropped.
-const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'constraints', 'domain'])
+// Step is the propose -> poll -> review -> accept loop (architecture.md
+// §1), same shape as DecomposeTaskDialog's — see that component's doc
+// comment for the general pattern. 'clarify' handles create_project's
+// needs_clarification result (#153): round 0 only. Answering resubmits as
+// a fresh dispatch with clarification_round: 1.
+type Step =
+  | { name: 'form' }
+  | { name: 'working'; label: string }
+  | { name: 'clarify'; questions: string[] }
+  | { name: 'review'; project: ProposedProject; changesetId: string; idempotencyKey: string }
+  | { name: 'error'; message: string }
 
-// Calendar hands back a Date at local midnight for the picked day.
-// date.toISOString() converts that to UTC, which shifts the day backward
-// in any timezone ahead of UTC — normalize to UTC midnight for the same
-// calendar day instead of the instant the local midnight represents.
-function toUTCMidnightISO(date: Date): string {
-  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())).toISOString()
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
 }
 
 // trigger lets callers swap in a more prominent CTA (e.g. the empty
 // state, #93) without duplicating the dialog/form itself.
 function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigger?: ReactElement } = {}) {
   const navigate = useNavigate()
-  const nameId = useId()
-  const goalId = useId()
-  const deadlineId = useId()
-  const domainLabelId = useId()
+  const descriptionId = useId()
+  const clarifyBaseId = useId()
 
   const [open, setOpen] = useState(false)
-  const [name, setName] = useState('')
-  const [goal, setGoal] = useState('')
-  const [deadline, setDeadline] = useState<Date | undefined>(undefined)
-  const [deadlineOpen, setDeadlineOpen] = useState(false)
-  const [constraints, setConstraints] = useState<string[]>([])
-  const [domain, setDomain] = useState<ProjectDomain>('general')
-  const [submitting, setSubmitting] = useState(false)
-  const [generalError, setGeneralError] = useState<string | null>(null)
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const [description, setDescription] = useState('')
+  const [step, setStep] = useState<Step>({ name: 'form' })
+  // One answer per question in the current 'clarify' step, same index —
+  // cleared on reset and whenever a fresh set of questions comes back.
+  const [answers, setAnswers] = useState<string[]>([])
+  // Cancels an in-flight poll when the dialog closes mid-wait, so a stale
+  // response doesn't land after the user has moved on.
+  const pollAbort = useRef<AbortController | null>(null)
 
-  const trimmedName = name.trim()
+  const trimmedDescription = description.trim()
+  const working = step.name === 'working'
 
   function reset() {
-    setName('')
-    setGoal('')
-    setDeadline(undefined)
-    setDeadlineOpen(false)
-    setConstraints([])
-    setDomain('general')
-    setGeneralError(null)
-    setFieldErrors({})
+    setDescription('')
+    setAnswers([])
+    setStep({ name: 'form' })
+    pollAbort.current?.abort()
+    pollAbort.current = null
   }
 
-  function updateConstraint(index: number, value: string) {
-    setConstraints((prev) => prev.map((c, i) => (i === index ? value : c)))
-  }
+  // startRun dispatches create_project and polls it to a terminal status —
+  // shared by the initial submit (round 0, no clarification) and the
+  // clarify step's resubmit (round 1, with answers attached).
+  async function startRun(clarification?: { round: number; clarifications: Clarification[] }) {
+    setStep({ name: 'working', label: 'Starting…' })
+    try {
+      const { run_id } = await dispatchCreateProject(trimmedDescription, clarification)
 
-  function removeConstraint(index: number) {
-    setConstraints((prev) => prev.filter((_, i) => i !== index))
+      setStep({ name: 'working', label: 'Thinking — this can take a few seconds…' })
+      const controller = new AbortController()
+      pollAbort.current = controller
+      const run = await pollAgentRun(run_id, undefined, { signal: controller.signal })
+      pollAbort.current = null
+
+      if (run.status === 'failed') {
+        setStep({ name: 'error', message: run.error || 'Creating the project failed.' })
+        return
+      }
+      if (run.status === 'needs_input') {
+        const questions = run.questions ?? []
+        setAnswers(new Array(questions.length).fill(''))
+        setStep({ name: 'clarify', questions })
+        return
+      }
+      if (!run.changeset || !run.changeset.proposed_project) {
+        setStep({ name: 'error', message: 'The run completed without a proposal to review.' })
+        return
+      }
+
+      setStep({
+        name: 'review',
+        project: run.changeset.proposed_project,
+        changesetId: run.changeset.id,
+        idempotencyKey: crypto.randomUUID(),
+      })
+    } catch (err) {
+      // The dialog was closed (or reset) mid-poll, which aborts on
+      // purpose — reset() already put the dialog back in its initial
+      // state, so this isn't a real failure to report.
+      if (isAbortError(err)) return
+      setStep({ name: 'error', message: err instanceof Error ? err.message : 'Something went wrong' })
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    // Client-side check on name only — everything else is left to the
-    // server's validator (#52), surfaced below via fieldErrors.
-    if (!trimmedName || submitting) return
+    if (!trimmedDescription || working) return
+    await startRun()
+  }
 
-    setSubmitting(true)
-    setGeneralError(null)
-    setFieldErrors({})
+  async function handleClarifySubmit(e: FormEvent) {
+    e.preventDefault()
+    if (step.name !== 'clarify' || working) return
+
+    const clarifications: Clarification[] = step.questions.map((question, index) => ({
+      question,
+      answer: answers[index]?.trim() ?? '',
+    }))
+    await startRun({ round: 1, clarifications })
+  }
+
+  async function handleAccept() {
+    if (step.name !== 'review') return
+    const { changesetId, idempotencyKey } = step
+
+    setStep({ name: 'working', label: 'Creating your project…' })
     try {
-      const project = await createProject({
-        name: trimmedName,
-        goal: goal.trim(),
-        deadline: deadline ? toUTCMidnightISO(deadline) : undefined,
-        constraints: constraints.map((c) => c.trim()).filter(Boolean),
-        domain
-      })
+      const project = await acceptCreateProject(changesetId, idempotencyKey)
+      notify.success('Project created')
       setOpen(false)
       reset()
-      notify.success('Project created')
       navigate(`/projects/${project.id}`)
     } catch (err) {
       notify.error('Failed to create project')
-      if (err instanceof ValidationError) {
-        const known: Record<string, string> = {}
-        const unknown: string[] = []
-        for (const [field, message] of Object.entries(err.fields)) {
-          if (KNOWN_FIELDS.has(field)) known[field] = message
-          else unknown.push(message)
-        }
-        setFieldErrors(known)
-        if (unknown.length > 0) setGeneralError(unknown.join(', '))
-      } else if (err instanceof ApiError) {
-        if (err.status === 409) {
-          setGeneralError('A project with this ID already exists — please try again.')
-        } else {
-          setGeneralError(err.message)
-        }
-      } else {
-        setGeneralError(err instanceof Error ? err.message : 'Something went wrong')
-      }
-    } finally {
-      setSubmitting(false)
+      const message =
+        err instanceof ApiError && err.status === 409
+          ? 'This proposal can no longer be accepted — it may have already been applied. Close this and try again.'
+          : err instanceof Error
+            ? err.message
+            : 'Failed to create the project'
+      setStep({ name: 'error', message })
     }
   }
 
@@ -131,182 +162,125 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
     >
       <DialogTrigger render={trigger} />
       <DialogContent className="sm:max-w-md">
-        <form onSubmit={handleSubmit} className="flex max-h-[80vh] flex-col gap-4 overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-          </DialogHeader>
+        <DialogHeader>
+          <DialogTitle>New project</DialogTitle>
+        </DialogHeader>
 
-          {generalError && <p className="text-xs text-destructive">{generalError}</p>}
-
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={nameId}>Name</Label>
-            <Input
-              id={nameId}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Tidepool Sync"
-              autoFocus
-              disabled={submitting}
-              aria-invalid={Boolean(fieldErrors.name)}
-            />
-            {fieldErrors.name && <p className="text-xs text-destructive">{fieldErrors.name}</p>}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label id={domainLabelId}>Project type</Label>
-            <div
-              role="radiogroup"
-              aria-labelledby={domainLabelId}
-              className="inline-flex w-fit rounded-md border border-border p-0.5"
-            >
-              {(
-                [
-                  { value: 'general', label: 'General' },
-                  { value: 'software', label: 'Software' },
-                ] as const
-              ).map(({ value, label }) => (
-                <button
-                  key={value}
-                  type="button"
-                  role="radio"
-                  aria-checked={domain === value}
-                  disabled={submitting}
-                  onClick={() => setDomain(value)}
-                  className={cn(
-                    'rounded-sm px-3 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50',
-                    domain === value
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
+        {step.name === 'form' && (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor={descriptionId}>Describe your project</Label>
+              <Textarea
+                id={descriptionId}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. A CLI tool for indie developers to track tasks, shipping by end of Q2"
+                autoFocus
+                required
+              />
             </div>
-            {fieldErrors.domain && <p className="text-xs text-destructive">{fieldErrors.domain}</p>}
-          </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!trimmedDescription}>
+                Propose project
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={goalId}>Description or Goal</Label>
-            <Textarea
-              id={goalId}
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-              placeholder="What does shipping this look like?"
-              disabled={submitting}
-              aria-invalid={Boolean(fieldErrors.goal)}
-            />
-            {fieldErrors.goal && <p className="text-xs text-destructive">{fieldErrors.goal}</p>}
+        {step.name === 'working' && (
+          <div className="flex flex-col items-center gap-3 py-8 text-sm text-muted-foreground">
+            <Spinner className="size-6" />
+            <p>{step.label}</p>
           </div>
+        )}
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor={deadlineId}>Deadline</Label>
-            <div className="relative">
-              <Popover open={deadlineOpen} onOpenChange={setDeadlineOpen}>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      id={deadlineId}
-                      type="button"
-                      variant="outline"
-                      disabled={submitting}
-                      aria-invalid={Boolean(fieldErrors.deadline)}
-                      className={cn(
-                        'w-full justify-start pr-9 font-normal',
-                        !deadline && 'text-muted-foreground'
-                      )}
-                    />
+        {step.name === 'clarify' && (
+          <form onSubmit={handleClarifySubmit} className="flex flex-col gap-4">
+            <p className="text-xs text-muted-foreground">
+              A couple of details would change what this project card looks like.
+            </p>
+            {step.questions.map((question, index) => (
+              <div key={index} className="flex flex-col gap-2">
+                <Label htmlFor={`${clarifyBaseId}-${index}`}>{question}</Label>
+                <Textarea
+                  id={`${clarifyBaseId}-${index}`}
+                  value={answers[index] ?? ''}
+                  onChange={(e) =>
+                    setAnswers((prev) => {
+                      const next = [...prev]
+                      next[index] = e.target.value
+                      return next
+                    })
                   }
-                >
-                  <CalendarIcon />
-                  {deadline ? format(deadline, 'PPP') : 'Pick a date'}
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0">
-                  <Calendar
-                    mode="single"
-                    selected={deadline}
-                    onSelect={(date) => {
-                      setDeadline(date)
-                      setDeadlineOpen(false)
-                    }}
-                    disabled={{ before: new Date() }}
-                    autoFocus
-                  />
-                </PopoverContent>
-              </Popover>
-              {deadline && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  className="absolute top-1/2 right-1 -translate-y-1/2"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setDeadline(undefined)
-                  }}
-                  disabled={submitting}
-                  aria-label="Clear deadline"
-                >
-                  <XIcon />
-                </Button>
-              )}
-            </div>
-            {fieldErrors.deadline && (
-              <p className="text-xs text-destructive">{fieldErrors.deadline}</p>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <Label>Constraints</Label>
-            {constraints.map((constraint, index) => (
-              <div key={index} className="flex gap-2">
-                <Input
-                  value={constraint}
-                  onChange={(e) => updateConstraint(index, e.target.value)}
-                  placeholder="e.g. Must ship on Postgres"
-                  disabled={submitting}
+                  placeholder="Your answer (or “no preference” / “out of scope”)"
+                  required
                 />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeConstraint(index)}
-                  disabled={submitting}
-                  aria-label="Remove constraint"
-                >
-                  <XIcon />
-                </Button>
               </div>
             ))}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setConstraints((prev) => [...prev, ''])}
-              disabled={submitting}
-              className="self-start"
-            >
-              <PlusIcon /> Add constraint
-            </Button>
-            {fieldErrors.constraints && (
-              <p className="text-xs text-destructive">{fieldErrors.constraints}</p>
-            )}
-          </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={answers.some((a) => !a.trim())}>
+                Continue
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-              disabled={submitting}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!trimmedName || submitting}>
-              {submitting ? <Spinner /> : 'Create'}
-            </Button>
-          </DialogFooter>
-        </form>
+        {step.name === 'error' && (
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-destructive">{step.message}</p>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Close
+              </Button>
+              <Button type="button" onClick={() => setStep({ name: 'form' })}>
+                Try again
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+
+        {step.name === 'review' && (
+          <div className="flex flex-col gap-4">
+            <p className="text-xs text-muted-foreground">
+              Review the proposed project below. Nothing is created until you accept.
+            </p>
+            <div className="flex flex-col gap-3 rounded-md border border-border p-4">
+              <div>
+                <p className="text-sm font-medium">{step.project.name}</p>
+                {step.project.goal && (
+                  <p className="mt-1 text-sm text-muted-foreground">{step.project.goal}</p>
+                )}
+              </div>
+              {step.project.deadline && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <CalendarIcon className="size-3.5" />
+                  {format(new Date(step.project.deadline), 'PPP')}
+                </div>
+              )}
+              {step.project.constraints.length > 0 && (
+                <ul className="list-inside list-disc text-xs text-muted-foreground">
+                  {step.project.constraints.map((constraint, index) => (
+                    <li key={index}>{constraint}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleAccept}>
+                Create project
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )

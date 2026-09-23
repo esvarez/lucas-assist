@@ -441,10 +441,13 @@ func (r *MemoryRepository) AcceptCreateProjectChangeset(ctx context.Context, c d
 	now := time.Now().UTC()
 
 	project := domain.Project{
-		UserID:    c.UserID,
-		ID:        domain.NewID(),
-		Name:      c.ProposedProject.Name,
-		Goal:      c.ProposedProject.Goal,
+		UserID: c.UserID,
+		ID:     domain.NewID(),
+		Name:   c.ProposedProject.Name,
+		Goal:   c.ProposedProject.Goal,
+		// create_project doesn't propose a domain (#150 predates it) — same
+		// default CreateProject applies when a caller omits one.
+		Domain:    domain.ProjectDomainGeneral,
 		Deadline:  c.ProposedProject.Deadline,
 		CreatedAt: now,
 		UpdatedAt: now,

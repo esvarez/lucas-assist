@@ -1326,6 +1326,9 @@ func TestMemoryRepository_AcceptCreateProjectChangeset(t *testing.T) {
 	if result.Project.Version != 1 {
 		t.Errorf("Project.Version = %d, want 1", result.Project.Version)
 	}
+	if result.Project.Domain != domain.ProjectDomainGeneral {
+		t.Errorf("Project.Domain = %q, want %q (create_project doesn't propose one — #150 predates it)", result.Project.Domain, domain.ProjectDomainGeneral)
+	}
 
 	gotProject, err := repo.GetProject(ctx, "user_1", result.Project.ID)
 	if err != nil {
