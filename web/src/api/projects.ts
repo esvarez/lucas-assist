@@ -3,21 +3,13 @@
 // proxies that to the local API (vite.config.ts) and production is
 // expected to route it the same way (architecture.md §13).
 //
-// There's no auth yet: user_id is caller-supplied (docs/openapi.yaml's
-// intro note, architecture.md "Still undecided"). It lives in localStorage
-// and every function here attaches it itself — callers never pass it —
-// so swapping this for a real JWT later only touches this file.
+// Auth: every route requires a valid Cognito access token (architecture.md
+// §14, #81) — the backend resolves the caller from the token's verified
+// claims, not from a request-supplied user_id. request() attaches it as
+// `Authorization: Bearer <token>` itself so callers never pass one.
+import { getAccessToken } from '@/src/lib/cognito'
 
 const BASE_PATH = '/api/projects'
-const USER_ID_STORAGE_KEY = 'nudge:user_id'
-
-export function getUserId(): string {
-  return localStorage.getItem(USER_ID_STORAGE_KEY) ?? ''
-}
-
-export function setUserId(userId: string): void {
-  localStorage.setItem(USER_ID_STORAGE_KEY, userId)
-}
 
 // Project mirrors the Project schema in docs/openapi.yaml field-for-field
 // (snake_case, matching the Go backend's JSON tags directly).
@@ -99,12 +91,17 @@ function isValidationErrorResponse(body: unknown): body is ValidationErrorRespon
   )
 }
 
-// Exported so other API clients (web/src/api/skills.ts) share the same
-// fetch/error-mapping behavior instead of reimplementing it.
+// Exported so other API clients (web/src/api/skills.ts, tasks.ts) share the
+// same fetch/auth/error-mapping behavior instead of reimplementing it.
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAccessToken()
   const res = await fetch(path, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
   })
 
   if (res.status === 204) {
@@ -124,34 +121,30 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-function userIdParam(): string {
-  return `user_id=${encodeURIComponent(getUserId())}`
-}
-
 export function createProject(input: CreateProjectRequest): Promise<Project> {
   return request<Project>(BASE_PATH, {
     method: 'POST',
-    body: JSON.stringify({ ...input, user_id: getUserId() }),
+    body: JSON.stringify(input),
   })
 }
 
 export function listProjects(): Promise<Project[]> {
-  return request<Project[]>(`${BASE_PATH}?${userIdParam()}`)
+  return request<Project[]>(BASE_PATH)
 }
 
 export function getProject(id: string): Promise<Project> {
-  return request<Project>(`${BASE_PATH}/${encodeURIComponent(id)}?${userIdParam()}`)
+  return request<Project>(`${BASE_PATH}/${encodeURIComponent(id)}`)
 }
 
 export function updateProject(id: string, input: UpdateProjectRequest): Promise<Project> {
   return request<Project>(`${BASE_PATH}/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ ...input, user_id: getUserId() }),
+    body: JSON.stringify(input),
   })
 }
 
 export function deleteProject(id: string): Promise<void> {
-  return request<void>(`${BASE_PATH}/${encodeURIComponent(id)}?${userIdParam()}`, {
+  return request<void>(`${BASE_PATH}/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }
