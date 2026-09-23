@@ -3,7 +3,7 @@
 // the three routes architecture.md §1/§10 describes as "propose, poll,
 // accept." Every model-backed operation is a job: dispatch returns 202
 // with a run id immediately, nothing is written until an explicit accept.
-import { getUserId, request, type Project } from '@/src/api/projects'
+import { request, type Project } from '@/src/api/projects'
 import type { FlatTask } from '@/src/api/tasks'
 
 // ProposedTask mirrors internal/domain.ProposedTask — a subtask as
@@ -87,7 +87,6 @@ export async function dispatchDecomposeTask(
     method: 'POST',
     body: JSON.stringify({
       skill: 'decompose_task',
-      user_id: getUserId(),
       project_id: projectId,
       input: {
         task_title: taskTitle,
@@ -101,7 +100,7 @@ export async function dispatchDecomposeTask(
 }
 
 export async function getAgentRun(runId: string, projectId: string): Promise<AgentRunResult> {
-  const params = new URLSearchParams({ user_id: getUserId(), project_id: projectId })
+  const params = new URLSearchParams({ project_id: projectId })
   return request<AgentRunResult>(`/api/agent-runs/${encodeURIComponent(runId)}?${params}`)
 }
 
@@ -169,7 +168,7 @@ export async function acceptChangeset(
     `/api/projects/${encodeURIComponent(projectId)}/changesets/${encodeURIComponent(changesetId)}/accept`,
     {
       method: 'POST',
-      body: JSON.stringify({ user_id: getUserId(), idempotency_key: idempotencyKey }),
+      body: JSON.stringify({ idempotency_key: idempotencyKey }),
     }
   )
 }

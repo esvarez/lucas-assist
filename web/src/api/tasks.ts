@@ -4,7 +4,7 @@
 // linked by parent_id, exactly as internal/domain.Task shapes them; this
 // module is what turns that into the nested `subtasks` tree the rest of
 // the app (ProjectDetailPage, WhatsNextCard) renders.
-import { getUserId } from '@/src/api/projects'
+import { request } from '@/src/api/projects'
 
 // Task mirrors internal/domain.Task field-for-field, plus a client-side
 // `subtasks` array built by buildTaskTree — the wire response has no such
@@ -56,11 +56,6 @@ export function flattenTasks(tasks: Task[]): Task[] {
 }
 
 export async function listTasks(projectId: string): Promise<Task[]> {
-  const params = new URLSearchParams({ user_id: getUserId() })
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/tasks?${params}`)
-  if (!res.ok) {
-    throw new Error(`list tasks failed with status ${res.status}`)
-  }
-  const body = (await res.json()) as FlatTask[]
+  const body = await request<FlatTask[]>(`/api/projects/${encodeURIComponent(projectId)}/tasks`)
   return buildTaskTree(body)
 }
