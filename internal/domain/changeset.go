@@ -59,5 +59,13 @@ type Changeset struct {
 	// changesets: there's no existing project version to check against.
 	ProposedProject *ProposedProject `json:"proposed_project,omitempty"`
 
+	// Domain is create_project's caller-supplied project type
+	// (ProjectDomainSoftware/ProjectDomainGeneral, #150/#154) — pass-through
+	// metadata carried from the dispatch input to the accept step, not
+	// something the model proposes or sees in its structured output
+	// (unlike ProposedProject, which is the model's own result). Empty for
+	// decompose_task changesets.
+	Domain string `json:"domain,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 }

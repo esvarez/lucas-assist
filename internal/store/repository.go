@@ -153,3 +153,17 @@ type AcceptChangesetResult struct {
 type AcceptCreateProjectResult struct {
 	Project domain.Project `json:"project"`
 }
+
+// normalizeProjectDomain applies the same default-to-General rule
+// domain.Project's read-time defaulting (projectItem.toDomain, and
+// MemoryRepository.CreateProject) already gives a missing/empty value —
+// used here by both AcceptCreateProjectChangeset implementations so a
+// changeset with no Domain, or a value other than
+// domain.ProjectDomainSoftware, still creates a valid project instead of
+// one stamped with an unrecognized domain string.
+func normalizeProjectDomain(d string) string {
+	if d == domain.ProjectDomainSoftware {
+		return domain.ProjectDomainSoftware
+	}
+	return domain.ProjectDomainGeneral
+}

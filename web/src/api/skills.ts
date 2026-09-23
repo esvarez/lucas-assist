@@ -3,7 +3,7 @@
 // the three routes architecture.md §1/§10 describes as "propose, poll,
 // accept." Every model-backed operation is a job: dispatch returns 202
 // with a run id immediately, nothing is written until an explicit accept.
-import { request, type Project } from '@/src/api/projects'
+import { request, type Project, type ProjectDomain } from '@/src/api/projects'
 import type { FlatTask } from '@/src/api/tasks'
 
 // ProposedTask mirrors internal/domain.ProposedTask — a subtask as
@@ -39,6 +39,10 @@ export interface Changeset {
   // are what's most likely to need correcting.
   assumptions?: string[]
   proposed_project?: ProposedProject
+  // create_project's caller-supplied project type, carried through from
+  // the dispatch input — not part of proposed_project, since the model
+  // isn't asked to propose it. Absent for decompose_task changesets.
+  domain?: ProjectDomain
   created_at: string
 }
 
@@ -190,12 +194,18 @@ export async function acceptChangeset(
 // to poll (#154). No project_id — a create_project run doesn't have one
 // yet, that's the whole point of the skill.
 //
+// projectDomain is caller-supplied metadata (#150/#154): the model never
+// sees it as something to propose, but internal/worker/processor.go reads
+// it back off this same dispatch input and carries it onto the saved
+// Changeset (see internal/agent/skills/create_project.go's
+// CreateProjectInput.Domain doc comment) for the eventual accept to stamp
+// onto the created project.
+//
 // clarification carries a prior needs_input round's answered questions
-// (round 0 leaves it undefined), same contract as
-// dispatchDecomposeTask's — see internal/agent/skills/create_project.go's
-// CreateProjectInput.
+// (round 0 leaves it undefined), same contract as dispatchDecomposeTask's.
 export async function dispatchCreateProject(
   description: string,
+  projectDomain: ProjectDomain,
   clarification?: { round: number; clarifications: Clarification[] }
 ): Promise<{ run_id: string }> {
   return request<{ run_id: string }>('/api/skills', {
@@ -204,6 +214,7 @@ export async function dispatchCreateProject(
       skill: 'create_project',
       input: {
         description,
+        domain: projectDomain,
         clarification_round: clarification?.round ?? 0,
         clarifications: clarification?.clarifications ?? [],
       },

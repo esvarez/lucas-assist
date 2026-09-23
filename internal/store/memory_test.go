@@ -1327,7 +1327,7 @@ func TestMemoryRepository_AcceptCreateProjectChangeset(t *testing.T) {
 		t.Errorf("Project.Version = %d, want 1", result.Project.Version)
 	}
 	if result.Project.Domain != domain.ProjectDomainGeneral {
-		t.Errorf("Project.Domain = %q, want %q (create_project doesn't propose one — #150 predates it)", result.Project.Domain, domain.ProjectDomainGeneral)
+		t.Errorf("Project.Domain = %q, want %q (changeset carried no domain)", result.Project.Domain, domain.ProjectDomainGeneral)
 	}
 
 	gotProject, err := repo.GetProject(ctx, "user_1", result.Project.ID)
@@ -1344,6 +1344,38 @@ func TestMemoryRepository_AcceptCreateProjectChangeset(t *testing.T) {
 	}
 	if gotChangeset.Status != domain.ChangesetApplied {
 		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetApplied)
+	}
+}
+
+// TestMemoryRepository_AcceptCreateProjectChangeset_CarriesDomain documents
+// #154's "same form, wired to the agent": a changeset carrying
+// ProjectDomainSoftware (from the original dispatch input, via
+// internal/worker/processor.go) results in a project stamped software,
+// not the general default.
+func TestMemoryRepository_AcceptCreateProjectChangeset_CarriesDomain(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		UserID: "user_1",
+		Skill:  "create_project",
+		Status: domain.ChangesetProposed,
+		ProposedProject: &domain.ProposedProject{
+			Name: "Tidepool Sync",
+			Goal: "Ship the sync engine",
+		},
+		Domain: domain.ProjectDomainSoftware,
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	result, err := repo.AcceptCreateProjectChangeset(ctx, changeset, "idem-key-1")
+	if err != nil {
+		t.Fatalf("AcceptCreateProjectChangeset() error = %v", err)
+	}
+	if result.Project.Domain != domain.ProjectDomainSoftware {
+		t.Errorf("Project.Domain = %q, want %q", result.Project.Domain, domain.ProjectDomainSoftware)
 	}
 }
 

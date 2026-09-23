@@ -31,6 +31,16 @@ type CreateProjectInput struct {
 	// attached, so the model sees them as resolved instead of as more
 	// prose to question again.
 	Clarifications []Clarification `json:"clarifications"`
+
+	// Domain is the caller-supplied project type (#150/#154's "same form,
+	// wired to the agent"), the same Domain type DecomposeInput uses. It's
+	// deliberately absent from CreateProjectResult/ProposedProject's
+	// schema — the model isn't asked to propose or reason about it, only
+	// to build the project card. internal/worker/processor.go reads it
+	// back off the dispatch input at changeset-save time and carries it on
+	// domain.Changeset.Domain, since it's caller metadata, not a model
+	// output.
+	Domain Domain `json:"domain"`
 }
 
 // CreateProjectResult is the model's proposed project card. Both Project

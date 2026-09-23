@@ -297,9 +297,25 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 			return domain.Changeset{}, fmt.Errorf("%s: status \"ok\" but no project in the model's response", run.Skill)
 		}
 		base.ProposedProject = r.Project
+		base.Domain = createProjectDomain(run)
 	default:
 		return domain.Changeset{}, fmt.Errorf("%s: unrecognized skill result type %T", run.Skill, result)
 	}
 
 	return base, nil
+}
+
+// createProjectDomain reads Domain back off a create_project run's
+// original dispatch input (domain.AgentRun.Input) — it's caller metadata,
+// not part of CreateProjectResult, so it isn't available from result the
+// way ProposedProject is (see CreateProjectInput.Domain's doc comment).
+// An unmarshal failure or unrecognized value defaults to
+// domain.ProjectDomainGeneral, same fallback CreateProject itself applies
+// for an omitted domain.
+func createProjectDomain(run domain.AgentRun) string {
+	var in skills.CreateProjectInput
+	if err := json.Unmarshal(run.Input, &in); err == nil && in.Domain == skills.DomainSoftware {
+		return domain.ProjectDomainSoftware
+	}
+	return domain.ProjectDomainGeneral
 }

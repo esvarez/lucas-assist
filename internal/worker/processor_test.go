@@ -154,6 +154,53 @@ func TestProcessor_ProcessRun_CreateProject_Success(t *testing.T) {
 	if changeset.ProposedProject == nil || changeset.ProposedProject.Name != "Nudge" {
 		t.Errorf("Changeset.ProposedProject = %+v, want the proposed project", changeset.ProposedProject)
 	}
+	if changeset.Domain != domain.ProjectDomainGeneral {
+		t.Errorf("Changeset.Domain = %q, want %q (no domain in the dispatch input)", changeset.Domain, domain.ProjectDomainGeneral)
+	}
+}
+
+// TestProcessor_ProcessRun_CreateProject_CarriesDomain documents #154's
+// "same form, wired to the agent": the caller-supplied domain on the
+// dispatch input isn't part of CreateProjectResult (the model never sees
+// or proposes it), but changesetFromResult must still read it back off
+// the run's own Input and carry it onto the saved Changeset.
+func TestProcessor_ProcessRun_CreateProject_CarriesDomain(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{
+		UserID: "user_1",
+		Skill:  "create_project",
+		Input:  json.RawMessage(`{"description": "A CLI tool", "domain": "software"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	stubResult := skills.CreateProjectResult{
+		Status:  "ok",
+		Project: &domain.ProposedProject{Name: "Nudge", Goal: "Ship the POC"},
+	}
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return stubResult, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "create_project"}))
+
+	if err := p.ProcessRun(ctx, "user_1", "", run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", "", run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	changeset, err := repo.GetChangeset(ctx, "user_1", "", got.ChangesetID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if changeset.Domain != domain.ProjectDomainSoftware {
+		t.Errorf("Changeset.Domain = %q, want %q", changeset.Domain, domain.ProjectDomainSoftware)
+	}
 }
 
 // TestProcessor_ProcessRun_DuplicateDelivery_NoOp documents the #101

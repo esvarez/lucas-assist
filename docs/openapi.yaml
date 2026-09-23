@@ -609,6 +609,14 @@ components:
             create_project's mutation payload. Present only for
             create_project changesets, which carry this instead of
             proposed_tasks — see POST /changesets/{changesetId}/accept.
+        domain:
+          type: string
+          enum: [software, general]
+          description: >
+            create_project's caller-supplied project type, carried from
+            the dispatch input to the accept step — not part of
+            proposed_project, since the model isn't asked to propose or
+            reason about it. Absent for decompose_task changesets.
         created_at:
           type: string
           format: date-time

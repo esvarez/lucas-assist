@@ -582,6 +582,7 @@ type changesetItem struct {
 	ProposedTasks   []domain.ProposedTask   `dynamodbav:"proposed_tasks,omitempty"`
 	Assumptions     []string                `dynamodbav:"assumptions,omitempty"`
 	ProposedProject *domain.ProposedProject `dynamodbav:"proposed_project,omitempty"`
+	Domain          string                  `dynamodbav:"domain,omitempty"`
 	CreatedAt       time.Time               `dynamodbav:"created_at"`
 }
 
@@ -598,6 +599,7 @@ func toChangesetItem(c domain.Changeset) changesetItem {
 		ProposedTasks:   c.ProposedTasks,
 		Assumptions:     c.Assumptions,
 		ProposedProject: c.ProposedProject,
+		Domain:          c.Domain,
 		CreatedAt:       c.CreatedAt,
 	}
 }
@@ -613,6 +615,7 @@ func (i changesetItem) toDomain() domain.Changeset {
 		ProposedTasks:   i.ProposedTasks,
 		Assumptions:     i.Assumptions,
 		ProposedProject: i.ProposedProject,
+		Domain:          i.Domain,
 		CreatedAt:       i.CreatedAt,
 	}
 }
@@ -1381,13 +1384,11 @@ func (r *DynamoRepository) AcceptCreateProjectChangeset(ctx context.Context, c d
 	now := time.Now().UTC()
 
 	project := domain.Project{
-		UserID: c.UserID,
-		ID:     domain.NewID(),
-		Name:   c.ProposedProject.Name,
-		Goal:   c.ProposedProject.Goal,
-		// create_project doesn't propose a domain (#150 predates it) — same
-		// default CreateProject applies when a caller omits one.
-		Domain:    domain.ProjectDomainGeneral,
+		UserID:    c.UserID,
+		ID:        domain.NewID(),
+		Name:      c.ProposedProject.Name,
+		Goal:      c.ProposedProject.Goal,
+		Domain:    normalizeProjectDomain(c.Domain),
 		Deadline:  c.ProposedProject.Deadline,
 		CreatedAt: now,
 		UpdatedAt: now,
