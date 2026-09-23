@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/openai/openai-go"
 
@@ -27,6 +28,12 @@ func Run(ctx context.Context, s Skill, rawInput json.RawMessage) (any, error) {
 	messages, err := s.BuildContext(ctx, rawInput)
 	if err != nil {
 		return nil, fmt.Errorf("%s: build context: %w", s.Name(), err)
+	}
+	
+	if raw, err := json.MarshalIndent(messages, "", "  "); err == nil {
+		log.Printf("%s: prompt: %s", s.Name(), raw)
+	} else {
+		log.Printf("%s: prompt: failed to marshal messages: %v", s.Name(), err)
 	}
 
 	responseFormat := s.ResponseFormat()
