@@ -90,6 +90,10 @@ export function signIn(email: string, password: string): Promise<void> {
   })
 }
 
+export function signOut(): void {
+  userPool.getCurrentUser()?.signOut()
+}
+
 export function getAccessToken(): Promise<string | null> {
   const user = userPool.getCurrentUser()
   if (!user) return Promise.resolve(null)
