@@ -548,10 +548,11 @@ components:
           items:
             type: string
           description: >
-            decompose_task's clarifying questions, set when status is
-            "needs_input" (round 0 only — see internal/agent/skills/decompose_task.go).
-            Answering is a fresh POST /skills dispatch carrying
-            clarification_round and clarifications, not a resume of this run.
+            Clarifying questions, set when status is "needs_input" (round 0
+            only — see internal/agent/skills/decompose_task.go and
+            create_project.go, the two skills that support this). Answering
+            is a fresh POST /skills dispatch carrying clarification_round
+            and clarifications, not a resume of this run.
         changeset_id:
           type: string
           description: Set once status is "completed".

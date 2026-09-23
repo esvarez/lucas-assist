@@ -451,6 +451,46 @@ func TestProcessor_ProcessRun_NeedsClarification_MarksNeedsInput(t *testing.T) {
 	}
 }
 
+// TestProcessor_ProcessRun_CreateProject_NeedsClarification_MarksNeedsInput
+// is create_project's counterpart to
+// TestProcessor_ProcessRun_NeedsClarification_MarksNeedsInput (#153): a
+// create_project run whose model result is needs_clarification is marked
+// needs_input the same way, instead of being treated as a permanent
+// failure.
+func TestProcessor_ProcessRun_CreateProject_NeedsClarification_MarksNeedsInput(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", Skill: "create_project"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	questions := []string{"what should this project ship?"}
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.CreateProjectResult{Status: "needs_clarification", Questions: questions}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "create_project"}))
+
+	if err := p.ProcessRun(ctx, "user_1", "", run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", "", run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunNeedsInput {
+		t.Fatalf("Status = %q, want %q", got.Status, domain.AgentRunNeedsInput)
+	}
+	if len(got.Questions) != 1 || got.Questions[0] != questions[0] {
+		t.Errorf("Questions = %#v, want %#v", got.Questions, questions)
+	}
+	if got.ChangesetID != "" {
+		t.Errorf("ChangesetID = %q, want empty — no changeset for a needs_input run", got.ChangesetID)
+	}
+}
+
 // TestProcessor_ProcessRun_CreateProject_NilProject_MarksFailed documents
 // the fix for a PR #120 review finding: strict mode's schema can't express
 // "Project is non-null when Status is ok", so a malformed model response
