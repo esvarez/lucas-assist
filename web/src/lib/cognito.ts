@@ -1,4 +1,9 @@
-import { CognitoUser, CognitoUserPool } from 'amazon-cognito-identity-js'
+import {
+  AuthenticationDetails,
+  CognitoUser,
+  CognitoUserPool,
+  type CognitoUserSession,
+} from 'amazon-cognito-identity-js'
 
 const userPool = new CognitoUserPool({
   UserPoolId: import.meta.env.VITE_COGNITO_USER_POOL_ID,
@@ -54,12 +59,6 @@ export function forgotPassword(email: string): Promise<void> {
     user.forgotPassword({
       onSuccess: () => resolve(),
       onFailure: (err) => {
-        // NudgeUserPoolClient doesn't set PreventUserExistenceErrors:
-        // ENABLED (changing that is out of scope for #146), so Cognito's
-        // raw response for an unknown email is UserNotFoundException —
-        // which reveals whether an account exists. Mask that one case by
-        // treating it as success here, at the app layer, matching what
-        // PreventUserExistenceErrors would do at the Cognito layer.
         if (err instanceof Error && err.name === 'UserNotFoundException') {
           resolve()
           return
@@ -76,6 +75,31 @@ export function confirmForgotPassword(email: string, code: string, newPassword: 
     user.confirmPassword(code, newPassword, {
       onSuccess: () => resolve(),
       onFailure: (err) => reject(err),
+    })
+  })
+}
+
+export function signIn(email: string, password: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const user = new CognitoUser({ Username: email, Pool: userPool })
+    const authDetails = new AuthenticationDetails({ Username: email, Password: password })
+    user.authenticateUser(authDetails, {
+      onSuccess: () => resolve(),
+      onFailure: (err) => reject(err),
+    })
+  })
+}
+
+export function getAccessToken(): Promise<string | null> {
+  const user = userPool.getCurrentUser()
+  if (!user) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    user.getSession((err: Error | null, session: CognitoUserSession | null) => {
+      if (err || !session || !session.isValid()) {
+        resolve(null)
+        return
+      }
+      resolve(session.getAccessToken().getJwtToken())
     })
   })
 }
