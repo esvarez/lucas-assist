@@ -189,7 +189,7 @@ function EditProjectDialog({
                       disabled={submitting}
                       aria-invalid={Boolean(fieldErrors.deadline)}
                       className={cn(
-                        'w-full justify-start font-normal',
+                        'min-w-0 flex-1 justify-start font-normal',
                         !deadline && 'text-muted-foreground'
                       )}
                     />
@@ -216,6 +216,7 @@ function EditProjectDialog({
                   type="button"
                   variant="ghost"
                   size="icon"
+                  className="shrink-0"
                   onClick={() => setDeadline(undefined)}
                   disabled={submitting}
                   aria-label="Clear deadline"
