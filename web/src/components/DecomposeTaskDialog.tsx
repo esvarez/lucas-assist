@@ -15,7 +15,7 @@ import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from '@/comp
 import { Label } from '@/components/ui/label'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiError } from '@/src/api/projects'
+import { ApiError, type Project } from '@/src/api/projects'
 import {
   acceptChangeset,
   dispatchDecomposeTask,
@@ -52,10 +52,23 @@ const DEFAULT_TRIGGER = (
   </Button>
 )
 
+// projectSeed derives decompose_task's task_title/task_description from
+// the project's own card (#163) — used when seedFromProject is set, so
+// the empty-state "Break into tasks" CTA doesn't make the user retype
+// what's already on the card.
+function projectSeed(project: Project): { title: string; description: string } {
+  const description =
+    project.constraints.length > 0
+      ? `${project.goal}\n\nConstraints: ${project.constraints.join('; ')}`
+      : project.goal
+  return { title: project.name, description }
+}
+
 function DecomposeTaskDialog({
   projectId,
   onAccepted,
   trigger = DEFAULT_TRIGGER,
+  seedFromProject,
 }: {
   projectId: string
   // Called after a successful accept — the caller is responsible for
@@ -67,6 +80,12 @@ function DecomposeTaskDialog({
   // entry point (e.g. the Tasks section header vs. an empty-state CTA)
   // without duplicating the propose/review/accept flow.
   trigger?: ReactElement
+  // When set, the dialog skips the manual title/description form and
+  // dispatches decompose_task immediately using this project's own card
+  // (#163) — the empty-state "Break into tasks" CTA seeds a brand-new
+  // project's initial tasks from the card instead of asking the user to
+  // retype it. Other entry points (an arbitrary task) leave this unset.
+  seedFromProject?: Project
 }) {
   const titleId = useId()
   const descriptionId = useId()
@@ -95,15 +114,20 @@ function DecomposeTaskDialog({
   }
 
   // startRun dispatches decompose_task and polls it to a terminal status —
-  // shared by the initial submit (round 0, no clarification) and the
-  // clarify step's resubmit (round 1, with answers attached).
-  async function startRun(clarification?: { round: number; clarifications: Clarification[] }) {
+  // shared by the initial submit (round 0, no clarification), the clarify
+  // step's resubmit (round 1, with answers attached), and the
+  // seedFromProject auto-start (round 0, title/description from the
+  // project card instead of form state).
+  async function startRun(
+    clarification?: { round: number; clarifications: Clarification[] },
+    seed?: { title: string; description: string }
+  ) {
     setStep({ name: 'working', label: 'Starting decomposition…' })
     try {
       const { run_id } = await dispatchDecomposeTask(
         projectId,
-        title.trim(),
-        description.trim(),
+        (seed?.title ?? title).trim(),
+        (seed?.description ?? description).trim(),
         clarification
       )
 
@@ -186,7 +210,14 @@ function DecomposeTaskDialog({
       open={open}
       onOpenChange={(next: boolean) => {
         setOpen(next)
-        if (!next) reset()
+        if (!next) {
+          reset()
+        } else if (seedFromProject) {
+          // Batched with setOpen above (same event handler), so the form
+          // step never actually renders — the dialog opens straight into
+          // 'working'.
+          void startRun(undefined, projectSeed(seedFromProject))
+        }
       }}
     >
       <DialogTrigger render={trigger} />
