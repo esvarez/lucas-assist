@@ -3,8 +3,10 @@ import AuthLayout from '@/src/layout/AuthLayout'
 import Layout from '@/src/layout/Layout'
 import RequireAuth from '@/src/layout/RequireAuth'
 import ConfirmSignUpPage from '@/src/routes/ConfirmSignUpPage'
+import ForgotPasswordPage from '@/src/routes/ForgotPasswordPage'
 import ProjectDetailPage from '@/src/routes/ProjectDetailPage'
 import ProjectsPage from '@/src/routes/ProjectsPage'
+import ResetPasswordPage from '@/src/routes/ResetPasswordPage'
 import SignInPage from '@/src/routes/SignInPage'
 import SignUpPage from '@/src/routes/SignUpPage'
 
@@ -15,6 +17,8 @@ function App() {
         <Route path="/sign-in" element={<SignInPage />} />
         <Route path="/sign-up" element={<SignUpPage />} />
         <Route path="/sign-up/confirm" element={<ConfirmSignUpPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/forgot-password/reset" element={<ResetPasswordPage />} />
       </Route>
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>

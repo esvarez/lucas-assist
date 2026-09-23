@@ -1,25 +1,37 @@
-import { useId, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { useId, useState, type SubmitEvent } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import AuthForm from '@/src/components/AuthForm'
 import PasswordField from '@/src/components/PasswordField'
+import { cognitoErrorMessage, signIn } from '@/src/lib/cognito'
 
 function SignInPage() {
+  const navigate = useNavigate()
   const emailId = useId()
   const passwordId = useId()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
 
-  function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault()
-    if (!email.trim() || !password) {
-      setError('Enter your email and password.')
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail || !password || submitting) {
+      if (!trimmedEmail || !password) setError('Enter your email and password.')
       return
     }
     setError(null)
-    // Cognito InitiateAuth (SRP) is not wired on this screen yet.
+    setSubmitting(true)
+    try {
+      await signIn(trimmedEmail, password)
+      navigate('/projects')
+    } catch (err) {
+      setError(cognitoErrorMessage(err))
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -28,15 +40,27 @@ function SignInPage() {
       description="Use the email and password for your Nudge account."
       errorTitle="Couldn't sign in"
       error={error}
-      submitLabel="Sign in"
+      submitLabel={submitting ? 'Signing in…' : 'Sign in'}
+      submitDisabled={submitting}
       onSubmit={handleSubmit}
       footer={
-        <p className="text-center text-muted-foreground">
-          Don&apos;t have an account?{' '}
-          <Link to="/sign-up" className="font-medium text-foreground underline-offset-4 hover:underline">
-            Sign up
-          </Link>
-        </p>
+        <div className="flex flex-col gap-1 text-center text-muted-foreground">
+          <p>
+            Don&apos;t have an account?{' '}
+            <Link to="/sign-up" className="font-medium text-foreground underline-offset-4 hover:underline">
+              Sign up
+            </Link>
+          </p>
+          <p>
+            Forgot your password?{' '}
+            <Link
+              to="/forgot-password"
+              className="font-medium text-foreground underline-offset-4 hover:underline"
+            >
+              Reset it
+            </Link>
+          </p>
+        </div>
       }
     >
       <div className="flex flex-col gap-2">
@@ -53,6 +77,7 @@ function SignInPage() {
             setError(null)
           }}
           autoFocus
+          disabled={submitting}
           aria-invalid={Boolean(error) && !email.trim()}
         />
       </div>
@@ -66,6 +91,7 @@ function SignInPage() {
           setPassword(event.target.value)
           setError(null)
         }}
+        disabled={submitting}
         aria-invalid={Boolean(error) && !password}
       />
     </AuthForm>
