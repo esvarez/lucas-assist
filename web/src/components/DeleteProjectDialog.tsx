@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2Icon } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,16 +9,21 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { ApiError, deleteProject, type Project } from '@/src/api/projects'
 import { notify } from '@/src/lib/notify'
 
-function DeleteProjectDialog({ project }: { project: Project }) {
+function DeleteProjectDialog({
+  project,
+  open,
+  onOpenChange,
+}: {
+  project: Project
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
   const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -45,10 +49,7 @@ function DeleteProjectDialog({ project }: { project: Project }) {
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger render={<Button variant="outline" size="icon" aria-label="Delete project" />}>
-        <Trash2Icon />
-      </AlertDialogTrigger>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete "{project.name}"?</AlertDialogTitle>

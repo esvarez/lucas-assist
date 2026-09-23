@@ -1,16 +1,9 @@
 import { useId, useState, type FormEvent } from 'react'
 import { format } from 'date-fns'
-import { CalendarIcon, PencilIcon, PlusIcon, XIcon } from 'lucide-react'
+import { CalendarIcon, PlusIcon, XIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Calendar } from '@/components/ui/calendar'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -49,16 +42,19 @@ function parseDeadline(iso: string): Date {
 
 function EditProjectDialog({
   project,
+  open,
+  onOpenChange,
   onUpdated,
 }: {
   project: Project
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onUpdated: (project: Project) => void
 }) {
   const goalId = useId()
   const deadlineId = useId()
   const statusId = useId()
 
-  const [open, setOpen] = useState(false)
   const [goal, setGoal] = useState(project.goal)
   const [deadline, setDeadline] = useState<Date | undefined>(
     project.deadline ? parseDeadline(project.deadline) : undefined
@@ -104,7 +100,7 @@ function EditProjectDialog({
         status,
       })
       onUpdated(updated)
-      setOpen(false)
+      onOpenChange(false)
       notify.success('Project updated')
     } catch (err) {
       notify.error('Failed to update project')
@@ -148,13 +144,10 @@ function EditProjectDialog({
     <Dialog
       open={open}
       onOpenChange={(next: boolean) => {
-        setOpen(next)
+        onOpenChange(next)
         if (next) resetToProject()
       }}
     >
-      <DialogTrigger render={<Button variant="outline" size="icon" aria-label="Edit project" />}>
-        <PencilIcon />
-      </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <form onSubmit={handleSubmit} className="flex max-h-[80vh] flex-col gap-4 overflow-y-auto">
           <DialogHeader>
@@ -291,7 +284,7 @@ function EditProjectDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => setOpen(false)}
+              onClick={() => onOpenChange(false)}
               disabled={submitting}
             >
               Cancel

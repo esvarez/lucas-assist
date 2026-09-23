@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent } from 'react'
+import { useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
 import { InfoIcon, SparklesIcon } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -45,9 +45,17 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError'
 }
 
+const DEFAULT_TRIGGER = (
+  <Button variant="outline" size="sm">
+    <SparklesIcon data-icon="inline-start" />
+    Break down
+  </Button>
+)
+
 function DecomposeTaskDialog({
   projectId,
   onAccepted,
+  trigger = DEFAULT_TRIGGER,
 }: {
   projectId: string
   // Called after a successful accept — the caller is responsible for
@@ -55,6 +63,10 @@ function DecomposeTaskDialog({
   // /projects/{id}/tasks) rather than this dialog trying to merge the
   // committed tasks into whatever shape the caller renders.
   onAccepted: () => void
+  // Lets callers place this dialog behind a differently styled/labeled
+  // entry point (e.g. the Tasks section header vs. an empty-state CTA)
+  // without duplicating the propose/review/accept flow.
+  trigger?: ReactElement
 }) {
   const titleId = useId()
   const descriptionId = useId()
@@ -177,10 +189,7 @@ function DecomposeTaskDialog({
         if (!next) reset()
       }}
     >
-      <DialogTrigger render={<Button variant="outline" size="sm" />}>
-        <SparklesIcon data-icon="inline-start" />
-        Decompose a task
-      </DialogTrigger>
+      <DialogTrigger render={trigger} />
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Decompose a task</DialogTitle>
