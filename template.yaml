@@ -150,6 +150,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref NudgeTable
+          API_GATEWAY_STAGE: !Ref Environment
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref NudgeTable

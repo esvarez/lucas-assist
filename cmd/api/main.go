@@ -33,13 +33,10 @@ func init() {
 
 	repo := store.NewDynamoRepository(client, os.Getenv("DYNAMODB_TABLE"))
 
-	// API Gateway's Cognito JWT authorizer (template.yaml) verifies every
-	// request before it reaches this Lambda; LambdaJWTResolver only reads
-	// the claims it already validated (architecture.md §14) — no
-	// signature verification happens here.
 	router := api.NewRouter(repo)
 	protected := auth.Middleware(auth.LambdaJWTResolver{})(router)
 	adapter = httpadapter.NewV2(protected)
+	adapter.StripBasePath(os.Getenv("API_GATEWAY_STAGE"))
 }
 
 func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
