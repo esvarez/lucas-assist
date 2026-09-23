@@ -56,6 +56,12 @@ func (r *MemoryRepository) CreateProject(ctx context.Context, p domain.Project) 
 		return domain.Project{}, ErrDuplicateID
 	}
 
+	// Mirrors DynamoRepository's read-time default (projectItem.toDomain):
+	// a project created without a Domain is General, not empty.
+	if p.Domain == "" {
+		p.Domain = domain.ProjectDomainGeneral
+	}
+
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now

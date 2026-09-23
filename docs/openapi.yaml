@@ -373,6 +373,13 @@ components:
             type: string
         status:
           type: string
+        domain:
+          type: string
+          enum: [software, general]
+          description: >
+            Whether this is a Software or General project (issue #150).
+            Defaults to general — both for a create request that omits it,
+            and for a project persisted before this field existed.
         version:
           type: integer
           description: >
@@ -391,6 +398,7 @@ components:
         - goal
         - constraints
         - status
+        - domain
         - version
         - created_at
         - updated_at
@@ -414,6 +422,10 @@ components:
             type: string
         status:
           type: string
+        domain:
+          type: string
+          enum: [software, general]
+          description: Defaults to general when omitted.
       required:
         - name
         - goal

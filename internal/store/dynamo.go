@@ -56,9 +56,13 @@ type projectItem struct {
 	Deadline    *time.Time `dynamodbav:"deadline,omitempty"`
 	Constraints []string   `dynamodbav:"constraints,omitempty"`
 	Status      string     `dynamodbav:"status"`
-	Version     int        `dynamodbav:"version"`
-	CreatedAt   time.Time  `dynamodbav:"created_at"`
-	UpdatedAt   time.Time  `dynamodbav:"updated_at"`
+	// Domain is omitempty so it's simply absent on items written before
+	// issue #150 — toDomain defaults a missing/empty value to
+	// domain.ProjectDomainGeneral for backward compatibility.
+	Domain    string    `dynamodbav:"domain,omitempty"`
+	Version   int       `dynamodbav:"version"`
+	CreatedAt time.Time `dynamodbav:"created_at"`
+	UpdatedAt time.Time `dynamodbav:"updated_at"`
 }
 
 func userPK(userID string) string {
@@ -170,6 +174,7 @@ func toProjectItem(p domain.Project) projectItem {
 		Deadline:    p.Deadline,
 		Constraints: p.Constraints,
 		Status:      p.Status,
+		Domain:      p.Domain,
 		Version:     p.Version,
 		CreatedAt:   p.CreatedAt,
 		UpdatedAt:   p.UpdatedAt,
@@ -177,6 +182,11 @@ func toProjectItem(p domain.Project) projectItem {
 }
 
 func (i projectItem) toDomain() domain.Project {
+	projectDomain := i.Domain
+	if projectDomain == "" {
+		projectDomain = domain.ProjectDomainGeneral
+	}
+
 	return domain.Project{
 		UserID:      i.UserID,
 		ID:          i.ID,
@@ -185,6 +195,7 @@ func (i projectItem) toDomain() domain.Project {
 		Deadline:    i.Deadline,
 		Constraints: i.Constraints,
 		Status:      i.Status,
+		Domain:      projectDomain,
 		Version:     i.Version,
 		CreatedAt:   i.CreatedAt,
 		UpdatedAt:   i.UpdatedAt,
@@ -196,6 +207,9 @@ func (i projectItem) toDomain() domain.Project {
 func (r *DynamoRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
 	if p.ID == "" {
 		p.ID = domain.NewID()
+	}
+	if p.Domain == "" {
+		p.Domain = domain.ProjectDomainGeneral
 	}
 
 	now := time.Now().UTC()

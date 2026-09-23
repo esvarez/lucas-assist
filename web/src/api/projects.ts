@@ -11,6 +11,8 @@ import { getAccessToken } from '@/src/lib/cognito'
 
 const BASE_PATH = '/api/projects'
 
+export type ProjectDomain = 'software' | 'general'
+
 // Project mirrors the Project schema in docs/openapi.yaml field-for-field
 // (snake_case, matching the Go backend's JSON tags directly).
 export interface Project {
@@ -21,9 +23,7 @@ export interface Project {
   deadline: string | null
   constraints: string[]
   status: string
-  // Optimistic-concurrency version (architecture.md §8). Pass the value
-  // from the project you loaded back into updateProject — a stale value
-  // is rejected with a 409 (ApiError), not silently overwritten.
+  domain: ProjectDomain
   version: number
   created_at: string
   updated_at: string
@@ -37,6 +37,7 @@ export interface CreateProjectRequest {
   deadline?: string | null
   constraints?: string[]
   status?: string
+  domain?: ProjectDomain
 }
 
 // name is intentionally absent too — PUT /projects/{id} never touches it

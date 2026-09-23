@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
@@ -157,6 +158,47 @@ func TestDynamoRepository_GetProject_WrongUser(t *testing.T) {
 	_, err = repo.GetProject(ctx, testUserID(), created.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetProject() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+// TestDynamoRepository_GetProject_DefaultsMissingDomain documents issue
+// #150's backward-compatibility rule: a META item written before the
+// domain attribute existed (simulated here via a direct PutItem, since
+// CreateProject always sets one now) reads back as General, not empty.
+func TestDynamoRepository_GetProject_DefaultsMissingDomain(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	id := "legacy-" + domain.NewID()
+	now := time.Now().UTC()
+
+	item, err := attributevalue.MarshalMap(projectItem{
+		PK:        userPK(userID),
+		SK:        projectSK(id),
+		UserID:    userID,
+		ID:        id,
+		Name:      "Legacy",
+		Status:    "active",
+		Version:   1,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("MarshalMap() error = %v", err)
+	}
+	if _, err := repo.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(testTable),
+		Item:      item,
+	}); err != nil {
+		t.Fatalf("PutItem() error = %v", err)
+	}
+
+	got, err := repo.GetProject(ctx, userID, id)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if got.Domain != domain.ProjectDomainGeneral {
+		t.Errorf("Domain = %q, want %q (default for an item with no stored domain)", got.Domain, domain.ProjectDomainGeneral)
 	}
 }
 

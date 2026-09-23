@@ -2,6 +2,11 @@ package domain
 
 import "time"
 
+const (
+	ProjectDomainSoftware = "software"
+	ProjectDomainGeneral  = "general"
+)
+
 // Project is the top-level entity everything else — tasks, decisions,
 // events, notes — hangs off of. It's the "project card" injected into
 // every skill prompt.
@@ -16,6 +21,10 @@ type Project struct {
 	Deadline    *time.Time `json:"deadline,omitempty"`
 	Constraints []string   `json:"constraints"`
 	Status      string     `json:"status"`
+	// Domain is either ProjectDomainSoftware or ProjectDomainGeneral. See
+	// the package-level constants' doc comment for the default-to-General
+	// backward-compatibility rule.
+	Domain string `json:"domain"`
 
 	// Version supports optimistic concurrency on changeset commit
 	// (architecture.md §8): every proposed changeset records the version
