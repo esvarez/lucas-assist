@@ -143,10 +143,7 @@ function ProjectInfoCard({ project }: { project: Project }) {
       )}
       {project.constraints.length > 0 && (
         <CardContent className={cn('flex flex-col gap-2', deadlineMeta && 'border-t border-border pt-4')}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">Constraints</span>
-            <span className="text-xs text-muted-foreground">{project.constraints.length}</span>
-          </div>
+          <span className="text-xs text-muted-foreground">Constraints</span>
           <ConstraintsList constraints={project.constraints} />
         </CardContent>
       )}
