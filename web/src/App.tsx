@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import AuthLayout from '@/src/layout/AuthLayout'
 import Layout from '@/src/layout/Layout'
+import RequireAuth from '@/src/layout/RequireAuth'
 import ConfirmSignUpPage from '@/src/routes/ConfirmSignUpPage'
 import ForgotPasswordPage from '@/src/routes/ForgotPasswordPage'
 import ProjectDetailPage from '@/src/routes/ProjectDetailPage'
@@ -19,10 +20,12 @@ function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/forgot-password/reset" element={<ResetPasswordPage />} />
       </Route>
-      <Route element={<Layout />}>
-        <Route index element={<Navigate to="/projects" replace />} />
-        <Route path="/projects" element={<ProjectsPage />} />
-        <Route path="/projects/:id" element={<ProjectDetailPage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<Layout />}>
+          <Route index element={<Navigate to="/projects" replace />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/:id" element={<ProjectDetailPage />} />
+        </Route>
       </Route>
     </Routes>
   )
