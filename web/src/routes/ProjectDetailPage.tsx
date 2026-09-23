@@ -195,7 +195,16 @@ function ProjectDetailHeader({
             Edit
           </Button>
           <DropdownMenu>
-            <DropdownMenuTrigger render={<Button variant="outline" size="icon" aria-label="Project actions" />}>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Project actions"
+                  className="sm:border-border sm:hover:bg-input/50 sm:dark:bg-input/30"
+                />
+              }
+            >
               <EllipsisIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -347,6 +356,11 @@ function TasksSection({
               </Button>
             }
           />
+          {/* Manual single-task creation has no backend endpoint yet (#161)
+              — shown disabled rather than silently implying it works. */}
+          <Button variant="ghost" size="sm" disabled>
+            Add a task manually
+          </Button>
         </EmptyContent>
       </Empty>
     )
