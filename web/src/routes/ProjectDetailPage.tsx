@@ -1,11 +1,33 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { AlertCircleIcon, ChevronLeftIcon } from 'lucide-react'
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
+import { AlertCircleIcon, ChevronLeftIcon, EllipsisIcon, SparklesIcon } from 'lucide-react'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/ui/breadcrumb'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import {
   Item,
   ItemContent,
@@ -16,13 +38,120 @@ import {
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
-import { listTasks, type Task } from '@/src/api/tasks'
+import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
 import DecomposeTaskDialog from '@/src/components/DecomposeTaskDialog'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
-import WhatsNextCard from '@/src/components/WhatsNextCard'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
+import { cn } from '@/lib/utils'
+
+// Deadlines are stored as UTC midnight for a calendar day (see
+// EditProjectDialog's toUTCMidnightISO/parseDeadline comments) — reading
+// them back with UTC getters keeps the same calendar day regardless of the
+// viewer's timezone, instead of shifting a day in either direction.
+function formatDeadlineMeta(deadlineIso: string) {
+  const deadline = new Date(deadlineIso)
+  const todayUTC = Date.now()
+  const deadlineUTC = Date.UTC(deadline.getUTCFullYear(), deadline.getUTCMonth(), deadline.getUTCDate())
+  const startOfTodayUTC = Date.UTC(
+    new Date(todayUTC).getUTCFullYear(),
+    new Date(todayUTC).getUTCMonth(),
+    new Date(todayUTC).getUTCDate()
+  )
+  const days = Math.round((deadlineUTC - startOfTodayUTC) / (24 * 60 * 60 * 1000))
+
+  const dateLabel = deadline.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
+
+  if (days < 0) {
+    return {
+      dateLabel,
+      pillLabel: `${-days}d overdue`,
+      pillClassName: 'bg-destructive/10 text-destructive',
+    }
+  }
+  if (days === 0) {
+    return { dateLabel, pillLabel: 'today', pillClassName: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' }
+  }
+  if (days <= 7) {
+    return {
+      dateLabel,
+      pillLabel: `in ${days}d`,
+      pillClassName: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+    }
+  }
+  return { dateLabel, pillLabel: `in ${days}d`, pillClassName: 'bg-muted text-muted-foreground' }
+}
+
+// Collapses long constraint lists behind a "+N more" toggle (mockup frame
+// 1b) — applied at every width rather than only on mobile, so the sidebar
+// card on wide viewports doesn't grow unbounded either.
+const CONSTRAINTS_COLLAPSE_AT = 2
+
+function ConstraintsList({ constraints }: { constraints: string[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const visible = expanded ? constraints : constraints.slice(0, CONSTRAINTS_COLLAPSE_AT)
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-1.5 text-sm">
+        {visible.map((constraint) => (
+          <li key={constraint} className="flex items-baseline gap-2">
+            <span className="size-1 shrink-0 -translate-y-0.5 rounded-full bg-foreground" />
+            {constraint}
+          </li>
+        ))}
+      </ul>
+      {constraints.length > CONSTRAINTS_COLLAPSE_AT && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="self-start text-xs text-muted-foreground hover:text-foreground"
+        >
+          {expanded ? 'Show less' : `+${constraints.length - CONSTRAINTS_COLLAPSE_AT} more`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// Combines the mockup's separate desktop "Deadline" and "Constraints"
+// sidebar cards into one card with two sections — mobile already renders
+// them this way (frames 1a/1b), and reusing one component for both widths
+// avoids keeping two near-identical implementations in sync.
+function ProjectInfoCard({ project }: { project: Project }) {
+  if (!project.deadline && project.constraints.length === 0) return null
+
+  const deadlineMeta = project.deadline ? formatDeadlineMeta(project.deadline) : null
+
+  return (
+    <Card>
+      {deadlineMeta && (
+        <CardContent className="flex items-center justify-between gap-3">
+          <span className="text-xs text-muted-foreground">Deadline</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">{deadlineMeta.dateLabel}</span>
+            <Badge className={deadlineMeta.pillClassName}>{deadlineMeta.pillLabel}</Badge>
+          </div>
+        </CardContent>
+      )}
+      {project.constraints.length > 0 && (
+        <CardContent className={cn('flex flex-col gap-2', deadlineMeta && 'border-t border-border pt-4')}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">Constraints</span>
+            <span className="text-xs text-muted-foreground">{project.constraints.length}</span>
+          </div>
+          <ConstraintsList constraints={project.constraints} />
+        </CardContent>
+      )}
+    </Card>
+  )
+}
 
 function ProjectDetailHeader({
   project,
@@ -31,19 +160,68 @@ function ProjectDetailHeader({
   project: Project
   onUpdated: (project: Project) => void
 }) {
+  const [editOpen, setEditOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+
   return (
-    <div className="flex items-center justify-between gap-2">
-      <div className="flex items-center gap-2">
-        <Button variant="ghost" className="self-start" render={<Link to="/projects" />}>
-          <ChevronLeftIcon data-icon="inline-start" />
-        </Button>
-        <h1 className="text-lg font-bold">{project.name}</h1>
-        <Badge className={statusBadgeClassName(project.status)}>{project.status}</Badge>
+    <div className="flex flex-col gap-3">
+      <Breadcrumb className="hidden sm:block">
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink render={<Link to="/projects" />}>Projects</BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage>{project.name}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+      <Link
+        to="/projects"
+        className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground sm:hidden"
+      >
+        <ChevronLeftIcon className="size-4" />
+        Projects
+      </Link>
+
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-2">
+          <Badge className={statusBadgeClassName(project.status)}>{project.status}</Badge>
+          <h1 className="text-2xl font-bold tracking-tight text-balance">{project.name}</h1>
+          {project.goal && <p className="text-sm text-muted-foreground text-balance">{project.goal}</p>}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" className="hidden sm:inline-flex" onClick={() => setEditOpen(true)}>
+            Edit
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="outline" size="icon" aria-label="Project actions" />}>
+              <EllipsisIcon />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem className="sm:hidden" onClick={() => setEditOpen(true)}>
+                Edit project
+              </DropdownMenuItem>
+              {/* Duplicate/Archive have no backend endpoint yet (#161) — shown
+                  disabled rather than silently implying functionality that
+                  doesn't exist. */}
+              <DropdownMenuItem disabled className="hidden sm:flex">
+                Duplicate
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled className="hidden sm:flex">
+                Archive
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={() => setDeleteOpen(true)}>
+                Delete project
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <EditProjectDialog project={project} onUpdated={onUpdated} />
-        <DeleteProjectDialog project={project} />
-      </div>
+
+      <EditProjectDialog project={project} open={editOpen} onOpenChange={setEditOpen} onUpdated={onUpdated} />
+      <DeleteProjectDialog project={project} open={deleteOpen} onOpenChange={setDeleteOpen} />
     </div>
   )
 }
@@ -139,14 +317,69 @@ function TaskItem({ task }: { task: Task }) {
   return <TaskAccordion task={task} />
 }
 
+function TasksSection({
+  projectId,
+  tasks,
+  onAccepted,
+}: {
+  projectId: string
+  tasks: Task[]
+  onAccepted: () => void
+}) {
+  const flat = flattenTasks(tasks)
+  const done = flat.filter((task) => task.status === 'done').length
+
+  if (tasks.length === 0) {
+    return (
+      <Empty className="border">
+        <EmptyHeader>
+          <EmptyTitle>No tasks yet</EmptyTitle>
+          <EmptyDescription>Let Nudge break this project into small steps.</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <DecomposeTaskDialog
+            projectId={projectId}
+            onAccepted={onAccepted}
+            trigger={
+              <Button>
+                <SparklesIcon data-icon="inline-start" />
+                Break into tasks
+              </Button>
+            }
+          />
+        </EmptyContent>
+      </Empty>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-lg font-bold">Tasks</h2>
+          <span className="text-sm text-muted-foreground">
+            {done} of {flat.length} done
+          </span>
+        </div>
+        <DecomposeTaskDialog projectId={projectId} onAccepted={onAccepted} />
+      </div>
+      <Progress value={(done / flat.length) * 100} />
+      <ItemGroup>
+        {tasks.map((task) => (
+          <TaskItem key={task.id} task={task} />
+        ))}
+      </ItemGroup>
+    </div>
+  )
+}
+
 function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [project, setProject] = useState<Project | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState<string | null>(null)
-  // Bumped after a decompose_task changeset is accepted, so WhatsNextCard
-  // (which fetches its own task list independently) remounts and picks up
-  // the newly committed tasks instead of showing a stale "what's next".
+  // Bumped after a decompose_task changeset is accepted, so the task list
+  // is refetched and picks up the newly committed tasks.
   const [taskRefreshKey, setTaskRefreshKey] = useState(0)
 
   useEffect(() => {
@@ -198,44 +431,36 @@ function ProjectDetailPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4 pb-24 lg:pb-4">
       <ProjectDetailHeader project={project} onUpdated={setProject} />
 
-      <WhatsNextCard key={taskRefreshKey} projectId={project.id} />
-
-      {project.goal && <p className="text-sm text-muted-foreground">{project.goal}</p>}
-
-      {project.deadline && (
-        <p className="text-xs text-muted-foreground">
-          Deadline: {new Date(project.deadline).toLocaleDateString()}
-        </p>
-      )}
-
-      {project.constraints.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-muted-foreground">Constraints</span>
-          <ul className="list-inside list-disc text-sm">
-            {project.constraints.map((constraint) => (
-              <li key={constraint}>{constraint}</li>
-            ))}
-          </ul>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start lg:gap-10">
+        <div className="order-2 lg:order-1">
+          <TasksSection
+            projectId={project.id}
+            tasks={tasks}
+            onAccepted={() => setTaskRefreshKey((k) => k + 1)}
+          />
         </div>
-      )}
-
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-lg font-bold">Tasks</h2>
-        <DecomposeTaskDialog
-          projectId={project.id}
-          onAccepted={() => setTaskRefreshKey((k) => k + 1)}
-        />
+        <div className="order-1 lg:order-2">
+          <ProjectInfoCard project={project} />
+        </div>
       </div>
 
-      <ItemGroup>
-        {tasks.map((task) => (
-          <TaskItem key={task.id} task={task} />
-        ))}
-      </ItemGroup>
-
+      {tasks.length > 0 && (
+        <div className="fixed inset-x-0 bottom-0 border-t border-border bg-background p-3 lg:hidden">
+          <DecomposeTaskDialog
+            projectId={project.id}
+            onAccepted={() => setTaskRefreshKey((k) => k + 1)}
+            trigger={
+              <Button className="w-full">
+                <SparklesIcon data-icon="inline-start" />
+                Break down
+              </Button>
+            }
+          />
+        </div>
+      )}
     </div>
   )
 }
