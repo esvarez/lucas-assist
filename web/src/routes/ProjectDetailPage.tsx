@@ -39,6 +39,7 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
 import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
+import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
 import DecomposeTaskDialog from '@/src/components/DecomposeTaskDialog'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
@@ -348,17 +349,7 @@ function TasksSection({
           <EmptyDescription>Let Nudge break this project into small steps.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <DecomposeTaskDialog
-            projectId={projectId}
-            onAccepted={onAccepted}
-            seedFromProject={project}
-            trigger={
-              <Button>
-                <SparklesIcon data-icon="inline-start" />
-                Break into tasks
-              </Button>
-            }
-          />
+          <BreakIntoTasksButton project={project} onAccepted={onAccepted} />
           {/* Manual single-task creation has no backend endpoint yet (#161)
               — shown disabled rather than silently implying it works. */}
           <Button variant="ghost" size="sm" disabled>
