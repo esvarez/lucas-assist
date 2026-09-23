@@ -1,4 +1,9 @@
-import { CognitoUser, CognitoUserPool } from 'amazon-cognito-identity-js'
+import {
+  AuthenticationDetails,
+  CognitoUser,
+  CognitoUserPool,
+  type CognitoUserSession,
+} from 'amazon-cognito-identity-js'
 
 const userPool = new CognitoUserPool({
   UserPoolId: import.meta.env.VITE_COGNITO_USER_POOL_ID,
@@ -76,6 +81,36 @@ export function confirmForgotPassword(email: string, code: string, newPassword: 
     user.confirmPassword(code, newPassword, {
       onSuccess: () => resolve(),
       onFailure: (err) => reject(err),
+    })
+  })
+}
+
+// authenticateUser defaults to USER_SRP_AUTH — the password itself is never
+// sent to Cognito, per ADR 017. Do not switch this to USER_PASSWORD_AUTH.
+export function signIn(email: string, password: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const user = new CognitoUser({ Username: email, Pool: userPool })
+    const authDetails = new AuthenticationDetails({ Username: email, Password: password })
+    user.authenticateUser(authDetails, {
+      onSuccess: () => resolve(),
+      onFailure: (err) => reject(err),
+    })
+  })
+}
+
+// Resolves the signed-in user's access token, or null when nobody is signed in
+// or the session can't be restored. getSession refreshes an expired access
+// token from the stored refresh token before resolving.
+export function getAccessToken(): Promise<string | null> {
+  const user = userPool.getCurrentUser()
+  if (!user) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    user.getSession((err: Error | null, session: CognitoUserSession | null) => {
+      if (err || !session || !session.isValid()) {
+        resolve(null)
+        return
+      }
+      resolve(session.getAccessToken().getJwtToken())
     })
   })
 }
