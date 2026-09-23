@@ -107,14 +107,12 @@ func isTerminal(status domain.AgentRunStatus) bool {
 //
 // Past the point of leasing, outcomes split into three kinds:
 //
-//   - Needs input (decompose_task's needs_clarification, round 0 only):
-//     not an error and not a Changeset — marks the run needs_input with
-//     the model's Questions and returns nil. Answering is a fresh
-//     dispatch (a new AgentRun with clarification_round/clarifications
-//     set), not a retry of this one.
-//   - Permanent failure (unknown skill, create_project's
-//     needs_clarification — which has no needs_input representation, see
-//     #138's note on changesetFromResult — or status "ok" with an empty
+//   - Needs input (decompose_task's or create_project's needs_clarification,
+//     round 0 only): not an error and not a Changeset — marks the run
+//     needs_input with the model's Questions and returns nil. Answering is
+//     a fresh dispatch (a new AgentRun with clarification_round/
+//     clarifications set), not a retry of this one.
+//   - Permanent failure (unknown skill, or status "ok" with an empty
 //     payload): retrying with the same input won't help, so these mark
 //     the run failed and return nil — the run's Error field is where that
 //     belongs (GET /agent-runs/{id}, #100), not a Lambda error that would
@@ -157,13 +155,14 @@ func (p *Processor) ProcessRun(ctx context.Context, userID, projectID, runID str
 		return fmt.Errorf("run skill %q for agent run %q: %w", leased.Skill, runID, err)
 	}
 
-	// decompose_task's needs_clarification (round 0 only — the prompt
-	// forbids it past round 0) has no Changeset to produce. It's handled
-	// here, before changesetFromResult, rather than as one of that
-	// function's error returns, because it isn't a failure: the run just
-	// needs a fresh dispatch with the questions answered.
-	if dr, ok := result.(skills.DecomposeResult); ok && dr.Status == "needs_clarification" {
-		if _, err := p.Repo.NeedsInputAgentRun(ctx, userID, projectID, runID, dr.Questions); err != nil {
+	// A needs_clarification result (round 0 only — the prompt forbids it
+	// past round 0, for every skill that supports this) has no Changeset
+	// to produce. It's handled here, before changesetFromResult, rather
+	// than as one of that function's error returns, because it isn't a
+	// failure: the run just needs a fresh dispatch with the questions
+	// answered.
+	if questions, ok := needsClarificationQuestions(result); ok {
+		if _, err := p.Repo.NeedsInputAgentRun(ctx, userID, projectID, runID, questions); err != nil {
 			// Transient: a DynamoDB write failure, not a reason to discard
 			// a model result we already paid for.
 			return fmt.Errorf("mark agent run %q needs input: %w", runID, err)
@@ -223,6 +222,26 @@ func (p *Processor) ProcessRun(ctx context.Context, userID, projectID, runID str
 	return nil
 }
 
+// needsClarificationQuestions reports whether result is a
+// needs_clarification response, and its questions, for every skill result
+// type that supports the clarification round-trip — currently
+// decompose_task and create_project. A skill result type not listed here
+// simply has no clarification round-trip; changesetFromResult is where
+// that would surface instead.
+func needsClarificationQuestions(result any) ([]string, bool) {
+	switch r := result.(type) {
+	case skills.DecomposeResult:
+		if r.Status == "needs_clarification" {
+			return r.Questions, true
+		}
+	case skills.CreateProjectResult:
+		if r.Status == "needs_clarification" {
+			return r.Questions, true
+		}
+	}
+	return nil, false
+}
+
 // fail marks run failed with cause's message and reports whether that
 // itself succeeded — mirroring skillsapi's enqueue-failure handling
 // (internal/skillsapi/handler.go), so a run never silently stays "running"
@@ -239,16 +258,10 @@ func (p *Processor) fail(ctx context.Context, run domain.AgentRun, cause error) 
 // result types is expected, since the registry only holds those two
 // skills today (cmd/skills/main.go, cmd/local/main.go).
 //
-// A DecomposeResult reaching here is guaranteed status "ok": ProcessRun
-// intercepts "needs_clarification" earlier and marks the run needs_input
-// instead of calling this function at all, since that case produces no
-// Changeset (#138).
-//
-// create_project's result can still carry status "needs_clarification"
-// with no needs_input handling of its own — same underlying gap, not yet
-// given the same treatment (out of scope for #138; flagged there for
-// separate follow-up) — so it's still treated as a failure here rather
-// than silently dropped or half-saved.
+// Both result types reaching here are guaranteed status "ok": ProcessRun
+// intercepts "needs_clarification" earlier, via needsClarificationQuestions,
+// and marks the run needs_input instead of calling this function at all,
+// since that case produces no Changeset.
 func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, error) {
 	base := domain.Changeset{
 		ProjectID: run.ProjectID,
@@ -273,10 +286,11 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 		base.ProposedTasks = r.Subtasks
 		base.Assumptions = r.Assumptions
 	case skills.CreateProjectResult:
-		if r.Status != "ok" {
-			return domain.Changeset{}, fmt.Errorf("%s: needs clarification, cannot save a changeset yet (no needs_input handling for this skill — see changesetFromResult's doc comment): %v", run.Skill, r.Questions)
-		}
-		// Same defensive reasoning as Subtasks above — Project is a
+		// No Status check here: same reasoning as DecomposeResult above —
+		// ProcessRun already intercepted "needs_clarification" before this
+		// function was ever called, so r.Status is always "ok".
+		//
+		// Defensive, same reasoning as Subtasks above — Project is a
 		// nullable field of the status union, so strict mode doesn't
 		// forbid status "ok" with Project null.
 		if r.Project == nil {

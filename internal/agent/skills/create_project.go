@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/openai/openai-go"
 
@@ -16,6 +18,19 @@ import (
 // user gave, plus anything else they supplied up front.
 type CreateProjectInput struct {
 	Description string `json:"description"`
+
+	// ClarificationRound is 0 on the first call. A caller resubmitting
+	// with Clarifications answered increments it. Round 1+ must never
+	// come back needs_clarification (see createProjectSystemPrompt) —
+	// asking twice isn't available to the model. Same contract as
+	// DecomposeInput's field of the same name (decompose_task.go), and
+	// Clarification below is that same shared type.
+	ClarificationRound int `json:"clarification_round"`
+
+	// Clarifications are the prior round's questions with answers
+	// attached, so the model sees them as resolved instead of as more
+	// prose to question again.
+	Clarifications []Clarification `json:"clarifications"`
 }
 
 // CreateProjectResult is the model's proposed project card. Both Project
@@ -35,7 +50,29 @@ const createProjectSystemPrompt = `You turn a natural-language description of a 
 
 If the description gives you enough to commit to a name and a goal, return status "ok" with the project card. Deadline and constraints are null/empty when the user didn't mention them — never invent one.
 
-If the description is too vague to commit to even a name and a goal, return status "needs_clarification" with the questions you'd need answered first. Do not guess.`
+Only return status "needs_clarification" — and only on clarification_round 0 — if the description is too vague to commit to even a name and a goal. At most 3 questions.
+
+If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where a name or goal still isn't obvious, choose a sensible one from what's given rather than leaving it unset. Never re-ask anything already present in clarifications.`
+
+// buildCreateProjectUserMessage renders the description and, if this is a
+// follow-up round, the prior round's answered clarifications — marked
+// explicitly as settled so the model doesn't re-derive or re-question them
+// (same pattern as decompose_task's buildUserMessage).
+func buildCreateProjectUserMessage(in CreateProjectInput) string {
+	var b strings.Builder
+	b.WriteString(in.Description)
+
+	if len(in.Clarifications) > 0 {
+		b.WriteString("\n\nClarification round: ")
+		b.WriteString(strconv.Itoa(in.ClarificationRound))
+		b.WriteString("\n\nThese questions have already been answered. Treat every answer below as a settled decision:\n")
+		for _, c := range in.Clarifications {
+			fmt.Fprintf(&b, "- Q: %s\n  A: %s\n", c.Question, c.Answer)
+		}
+	}
+
+	return b.String()
+}
 
 // CreateProjectSkill implements agent.Skill for create_project. It only
 // proposes a project card — nothing is persisted here (AGENTS.MD rule 1);
@@ -54,7 +91,7 @@ func (CreateProjectSkill) BuildContext(_ context.Context, rawInput json.RawMessa
 
 	return []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(createProjectSystemPrompt),
-		openai.UserMessage(in.Description),
+		openai.UserMessage(buildCreateProjectUserMessage(in)),
 	}, nil
 }
 

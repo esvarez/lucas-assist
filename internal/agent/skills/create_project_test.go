@@ -88,6 +88,37 @@ func TestCreateProjectSkill_BuildContext_InvalidInput(t *testing.T) {
 	}
 }
 
+// TestCreateProjectSkill_BuildContext_WithClarifications is create_project's
+// counterpart to TestDecomposeTaskSkill_BuildContext_WithClarifications
+// (#153): a follow-up round's answers are passed as structured
+// Clarifications and the message explicitly marks them as settled.
+func TestCreateProjectSkill_BuildContext_WithClarifications(t *testing.T) {
+	raw := []byte(`{
+		"description": "A tool for indie developers",
+		"clarification_round": 1,
+		"clarifications": [
+			{"question": "What should this project ship?", "answer": "A CLI task tracker"}
+		]
+	}`)
+
+	messages, err := (CreateProjectSkill{}).BuildContext(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+
+	userMsg := messages[1].OfUser.Content.OfString.Value
+	for _, want := range []string{
+		"Clarification round: 1",
+		"already been answered",
+		"What should this project ship?",
+		"A CLI task tracker",
+	} {
+		if !strings.Contains(userMsg, want) {
+			t.Errorf("user message = %q, want it to contain %q", userMsg, want)
+		}
+	}
+}
+
 func TestCreateProjectSkill_ResponseFormat(t *testing.T) {
 	rf := (CreateProjectSkill{}).ResponseFormat()
 	if !rf.JSONSchema.Strict.Value {
