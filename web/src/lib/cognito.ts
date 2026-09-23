@@ -5,9 +5,6 @@ const userPool = new CognitoUserPool({
   ClientId: import.meta.env.VITE_COGNITO_CLIENT_ID,
 })
 
-// amazon-cognito-identity-js rejects with the raw Cognito exception (e.g.
-// UsernameExistsException, CodeMismatchException) — its .message is already
-// user-presentable, so just surface that.
 export function cognitoErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) return err.message
   return 'Something went wrong. Try again.'
