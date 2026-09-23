@@ -420,6 +420,11 @@ Resources:
 
   WebDistribution:
     Type: AWS::CloudFront::Distribution
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1030
     Properties:
       DistributionConfig:
         Enabled: true

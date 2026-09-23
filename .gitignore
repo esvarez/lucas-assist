@@ -28,6 +28,12 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
+.idea/
 # .vscode/
 .claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# AWS SAM build artifacts
+.aws-sam/
