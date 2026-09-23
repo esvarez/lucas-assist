@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import AuthForm from '@/src/components/AuthForm'
 import PasswordField from '@/src/components/PasswordField'
-import { cognitoErrorMessage, signUp } from '@/src/lib/cognito'
+import { cognitoErrorMessage, passwordPolicyError, signUp } from '@/src/lib/cognito'
 
 function SignUpPage() {
   const navigate = useNavigate()
@@ -20,6 +20,11 @@ function SignUpPage() {
     const trimmedEmail = email.trim()
     if (!trimmedEmail || !password || submitting) {
       if (!trimmedEmail || !password) setError('Enter your email and a password.')
+      return
+    }
+    const policyError = passwordPolicyError(password)
+    if (policyError) {
+      setError(policyError)
       return
     }
     setError(null)
