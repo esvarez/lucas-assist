@@ -10,17 +10,8 @@ export function cognitoErrorMessage(err: unknown): string {
   return 'Something went wrong. Try again.'
 }
 
-// PASSWORD_MIN_LENGTH mirrors NudgeUserPool's password policy
-// (template.yaml sets no explicit PasswordPolicy, so the User Pool runs
-// Cognito's default: minimum length 8, plus at least one uppercase,
-// lowercase, number, and symbol). Update this alongside template.yaml if
-// an explicit PasswordPolicy block is ever added there.
 const PASSWORD_MIN_LENGTH = 8
 
-// passwordPolicyError checks password against that same policy and
-// returns a human-readable reason it fails, or null if it satisfies every
-// rule. Checked before calling signUp so a violation is caught locally
-// instead of round-tripping to Cognito's InvalidPasswordException.
 export function passwordPolicyError(password: string): string | null {
   if (password.length < PASSWORD_MIN_LENGTH) {
     return `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`
@@ -53,6 +44,38 @@ export function confirmSignUp(email: string, code: string): Promise<void> {
         return
       }
       resolve()
+    })
+  })
+}
+
+export function forgotPassword(email: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const user = new CognitoUser({ Username: email, Pool: userPool })
+    user.forgotPassword({
+      onSuccess: () => resolve(),
+      onFailure: (err) => {
+        // NudgeUserPoolClient doesn't set PreventUserExistenceErrors:
+        // ENABLED (changing that is out of scope for #146), so Cognito's
+        // raw response for an unknown email is UserNotFoundException —
+        // which reveals whether an account exists. Mask that one case by
+        // treating it as success here, at the app layer, matching what
+        // PreventUserExistenceErrors would do at the Cognito layer.
+        if (err instanceof Error && err.name === 'UserNotFoundException') {
+          resolve()
+          return
+        }
+        reject(err)
+      },
+    })
+  })
+}
+
+export function confirmForgotPassword(email: string, code: string, newPassword: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const user = new CognitoUser({ Username: email, Pool: userPool })
+    user.confirmPassword(code, newPassword, {
+      onSuccess: () => resolve(),
+      onFailure: (err) => reject(err),
     })
   })
 }
