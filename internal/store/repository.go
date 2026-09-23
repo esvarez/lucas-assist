@@ -136,22 +136,6 @@ type Repository interface {
 	// The 50-mutation cap (ADR 009) has no such ordering dependency, so it
 	// stays a fast, no-I/O check in the changeset-accept endpoint instead.
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error)
-
-	// AcceptCreateProjectChangeset commits a create_project changeset —
-	// c.ProposedProject must be non-nil — into a brand-new Project
-	// (architecture.md §1/§9). Unlike AcceptChangeset, there's no existing
-	// project to update or version-check against: c.BaseVersion is
-	// meaningless for these changesets (domain.Changeset.ProposedProject's
-	// doc comment), so this writes a new project META item the same way
-	// CreateProject does, plus an EventProjectCreated event and the
-	// changeset's status update to "applied", in one transaction.
-	//
-	// Same idempotency contract as AcceptChangeset (architecture.md §15):
-	// replaying idempotencyKey against the same changeset returns the
-	// original result; reusing it against a different request is rejected
-	// with ErrIdempotencyKeyReused. c must be in "proposed" status, checked
-	// after the idempotency lookup for the same reason AcceptChangeset's
-	// doc comment gives.
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (AcceptCreateProjectResult, error)
 }
 

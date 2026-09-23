@@ -23,27 +23,10 @@ type ProjectRepository interface {
 	ListProjects(ctx context.Context, userID string) ([]domain.Project, error)
 	DeleteProject(ctx context.Context, userID, id string) error
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
-
-	// GetAgentRun and GetChangeset back GET /agent-runs/{id} — see
-	// getAgentRunHandler's doc comment for why the route also needs
-	// GetChangeset, not just GetAgentRun.
 	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
-
-	// AcceptChangeset backs the changeset-accept route (architecture.md
-	// §1/§9, issue #77) — added here rather than a separate interface
-	// since this package's convention is one growing interface per Lambda,
-	// not one per entity (see doc comment above).
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (store.AcceptChangesetResult, error)
-
-	// AcceptCreateProjectChangeset backs the project-less changeset-accept
-	// route (#152) — a create_project changeset has no existing project to
-	// address in a URL path, so it's a separate route from AcceptChangeset
-	// above rather than a variant of it.
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (store.AcceptCreateProjectResult, error)
-
-	// ListTasks backs GET /projects/{id}/tasks (#125) — the real
-	// replacement for what web/mock-server.mjs has been standing in for.
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
 }
 
