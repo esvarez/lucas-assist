@@ -17,6 +17,9 @@ type createProjectRequest struct {
 	Deadline    *time.Time `json:"deadline,omitempty"`
 	Constraints []string   `json:"constraints"`
 	Status      string     `json:"status"`
+	// Domain defaults to ProjectDomainGeneral below when omitted, so it's
+	// validated but not required (issue #150).
+	Domain string `json:"domain" validate:"omitempty,oneof=software general"`
 }
 
 func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
@@ -31,6 +34,10 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 			return
 		}
 
+		if req.Domain == "" {
+			req.Domain = domain.ProjectDomainGeneral
+		}
+
 		userID, _ := auth.UserIDFromContext(r.Context())
 		created, err := repo.CreateProject(r.Context(), domain.Project{
 			UserID:      userID,
@@ -39,6 +46,7 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 			Deadline:    req.Deadline,
 			Constraints: req.Constraints,
 			Status:      req.Status,
+			Domain:      req.Domain,
 		})
 		if err != nil {
 			if errors.Is(err, store.ErrDuplicateID) {

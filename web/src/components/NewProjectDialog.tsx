@@ -17,14 +17,14 @@ import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiError, ValidationError, createProject } from '@/src/api/projects'
+import { ApiError, ValidationError, createProject, type ProjectDomain } from '@/src/api/projects'
 import { notify } from '@/src/lib/notify'
 import { cn } from '@/lib/utils'
 
 // Fields this form renders — anything the server flags outside this set
 // (e.g. user_id or status, which have no input here) surfaces as a
 // general error instead of being silently dropped.
-const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'constraints'])
+const KNOWN_FIELDS = new Set(['name', 'goal', 'deadline', 'constraints', 'domain'])
 
 // Calendar hands back a Date at local midnight for the picked day.
 // date.toISOString() converts that to UTC, which shifts the day backward
@@ -41,6 +41,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
   const nameId = useId()
   const goalId = useId()
   const deadlineId = useId()
+  const domainLabelId = useId()
 
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -48,6 +49,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
   const [deadline, setDeadline] = useState<Date | undefined>(undefined)
   const [deadlineOpen, setDeadlineOpen] = useState(false)
   const [constraints, setConstraints] = useState<string[]>([])
+  const [domain, setDomain] = useState<ProjectDomain>('general')
   const [submitting, setSubmitting] = useState(false)
   const [generalError, setGeneralError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
@@ -60,6 +62,7 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
     setDeadline(undefined)
     setDeadlineOpen(false)
     setConstraints([])
+    setDomain('general')
     setGeneralError(null)
     setFieldErrors({})
   }
@@ -86,7 +89,8 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
         name: trimmedName,
         goal: goal.trim(),
         deadline: deadline ? toUTCMidnightISO(deadline) : undefined,
-        constraints: constraints.map((c) => c.trim()).filter(Boolean)
+        constraints: constraints.map((c) => c.trim()).filter(Boolean),
+        domain
       })
       setOpen(false)
       reset()
@@ -146,6 +150,40 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
               aria-invalid={Boolean(fieldErrors.name)}
             />
             {fieldErrors.name && <p className="text-xs text-destructive">{fieldErrors.name}</p>}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label id={domainLabelId}>Project type</Label>
+            <div
+              role="radiogroup"
+              aria-labelledby={domainLabelId}
+              className="inline-flex w-fit rounded-md border border-border p-0.5"
+            >
+              {(
+                [
+                  { value: 'general', label: 'General' },
+                  { value: 'software', label: 'Software' },
+                ] as const
+              ).map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={domain === value}
+                  disabled={submitting}
+                  onClick={() => setDomain(value)}
+                  className={cn(
+                    'rounded-sm px-3 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50',
+                    domain === value
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {fieldErrors.domain && <p className="text-xs text-destructive">{fieldErrors.domain}</p>}
           </div>
 
           <div className="flex flex-col gap-2">

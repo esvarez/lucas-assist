@@ -59,6 +59,81 @@ func TestCreateProject_Success(t *testing.T) {
 // required, not silently left empty. architecture.md's domain model
 // treats Name/Goal as a Project's defining content, and create_project
 // never returns status: "ok" without having committed to both (#85).
+// TestCreateProject_DefaultsDomainToGeneral documents issue #150's
+// backward-compatibility rule: a create request that doesn't specify a
+// domain gets General, not an empty string.
+func TestCreateProject_DefaultsDomainToGeneral(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"name": "Nudge", "goal": "Ship the POC"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var got domain.Project
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Domain != domain.ProjectDomainGeneral {
+		t.Errorf("Domain = %q, want %q (the default)", got.Domain, domain.ProjectDomainGeneral)
+	}
+}
+
+// TestCreateProject_SoftwareDomain documents that an explicit "software"
+// domain is preserved rather than overridden by the default (issue #150).
+func TestCreateProject_SoftwareDomain(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"name": "Nudge", "goal": "Ship the POC", "domain": "software"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var got domain.Project
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Domain != domain.ProjectDomainSoftware {
+		t.Errorf("Domain = %q, want %q", got.Domain, domain.ProjectDomainSoftware)
+	}
+}
+
+// TestCreateProject_InvalidDomain documents that an unrecognized domain
+// value is rejected up front rather than silently stored (issue #150).
+func TestCreateProject_InvalidDomain(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"name": "Nudge", "goal": "Ship the POC", "domain": "hardware"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var got validationErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if msg, ok := got.Fields["domain"]; !ok {
+		t.Errorf("Fields = %#v, want a \"domain\" entry naming which field failed", got.Fields)
+	} else if msg == "" {
+		t.Error(`Fields["domain"] is empty, want a message explaining why`)
+	}
+}
+
 func TestCreateProject_MissingName(t *testing.T) {
 	router := NewRouter(store.NewMemoryRepository())
 

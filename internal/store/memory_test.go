@@ -40,6 +40,21 @@ func TestMemoryRepository_CreateProject(t *testing.T) {
 	}
 }
 
+// TestMemoryRepository_CreateProject_DefaultsDomainToGeneral documents
+// issue #150's backward-compatibility rule at the repository layer,
+// mirroring DynamoRepository's read-time default.
+func TestMemoryRepository_CreateProject_DefaultsDomainToGeneral(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateProject(context.Background(), domain.Project{Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if created.Domain != domain.ProjectDomainGeneral {
+		t.Errorf("Domain = %q, want %q (the default)", created.Domain, domain.ProjectDomainGeneral)
+	}
+}
+
 func TestMemoryRepository_CreateProject_ExplicitID(t *testing.T) {
 	repo := NewMemoryRepository()
 
