@@ -201,38 +201,53 @@ function NewProjectDialog({ trigger = <Button>+ New project</Button> }: { trigge
 
           <div className="flex flex-col gap-2">
             <Label htmlFor={deadlineId}>Deadline</Label>
-            <Popover open={deadlineOpen} onOpenChange={setDeadlineOpen}>
-              <PopoverTrigger
-                render={
-                  <Button
-                    id={deadlineId}
-                    type="button"
-                    variant="outline"
-                    disabled={submitting}
-                    aria-invalid={Boolean(fieldErrors.deadline)}
-                    className={cn(
-                      'w-full justify-start font-normal',
-                      !deadline && 'text-muted-foreground'
-                    )}
+            <div className="flex gap-2">
+              <Popover open={deadlineOpen} onOpenChange={setDeadlineOpen}>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      id={deadlineId}
+                      type="button"
+                      variant="outline"
+                      disabled={submitting}
+                      aria-invalid={Boolean(fieldErrors.deadline)}
+                      className={cn(
+                        'min-w-0 flex-1 justify-start font-normal',
+                        !deadline && 'text-muted-foreground'
+                      )}
+                    />
+                  }
+                >
+                  <CalendarIcon />
+                  {deadline ? format(deadline, 'PPP') : 'Pick a date'}
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0">
+                  <Calendar
+                    mode="single"
+                    selected={deadline}
+                    onSelect={(date) => {
+                      setDeadline(date)
+                      setDeadlineOpen(false)
+                    }}
+                    disabled={{ before: new Date() }}
+                    autoFocus
                   />
-                }
-              >
-                <CalendarIcon />
-                {deadline ? format(deadline, 'PPP') : 'Pick a date'}
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0">
-                <Calendar
-                  mode="single"
-                  selected={deadline}
-                  onSelect={(date) => {
-                    setDeadline(date)
-                    setDeadlineOpen(false)
-                  }}
-                  disabled={{ before: new Date() }}
-                  autoFocus
-                />
-              </PopoverContent>
-            </Popover>
+                </PopoverContent>
+              </Popover>
+              {deadline && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="shrink-0"
+                  onClick={() => setDeadline(undefined)}
+                  disabled={submitting}
+                  aria-label="Clear deadline"
+                >
+                  <XIcon />
+                </Button>
+              )}
+            </div>
             {fieldErrors.deadline && (
               <p className="text-xs text-destructive">{fieldErrors.deadline}</p>
             )}
