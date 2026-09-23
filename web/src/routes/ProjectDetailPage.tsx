@@ -39,6 +39,7 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
 import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
+import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
 import DecomposeTaskDialog from '@/src/components/DecomposeTaskDialog'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
@@ -327,10 +328,12 @@ function TaskItem({ task }: { task: Task }) {
 }
 
 function TasksSection({
+  project,
   projectId,
   tasks,
   onAccepted,
 }: {
+  project: Project
   projectId: string
   tasks: Task[]
   onAccepted: () => void
@@ -346,16 +349,7 @@ function TasksSection({
           <EmptyDescription>Let Nudge break this project into small steps.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <DecomposeTaskDialog
-            projectId={projectId}
-            onAccepted={onAccepted}
-            trigger={
-              <Button>
-                <SparklesIcon data-icon="inline-start" />
-                Break into tasks
-              </Button>
-            }
-          />
+          <BreakIntoTasksButton project={project} onAccepted={onAccepted} />
           {/* Manual single-task creation has no backend endpoint yet (#161)
               — shown disabled rather than silently implying it works. */}
           <Button variant="ghost" size="sm" disabled>
@@ -451,6 +445,7 @@ function ProjectDetailPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start lg:gap-10">
         <div className="order-2 lg:order-1">
           <TasksSection
+            project={project}
             projectId={project.id}
             tasks={tasks}
             onAccepted={() => setTaskRefreshKey((k) => k + 1)}
