@@ -148,7 +148,7 @@ func (p *Processor) ProcessRun(ctx context.Context, userID, projectID, runID str
 		return p.fail(ctx, leased, err)
 	}
 
-	result, err := p.doRunSkill()(ctx, skill, leased.Input)
+	result, err := p.doRunSkill()(agent.WithUserID(ctx, userID), skill, leased.Input)
 	if err != nil {
 		// Transient: an OpenAI call failure (rate limit, 5xx, timeout) may
 		// well succeed on a later attempt.

@@ -115,6 +115,47 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 }
 
+// TestProcessor_ProcessRun_AttachesUserIDToContext guards against a
+// regression of the bug where ProcessRun called the skill with the bare
+// ctx it received, never agent.WithUserID(ctx, userID) — leaving a
+// project-scoped skill like decompose_task's BuildContext unable to find
+// a user ID via agent.UserIDFromContext when the worker (rather than
+// internal/skillsapi) is what invokes it (see internal/agent/context.go).
+func TestProcessor_ProcessRun_AttachesUserIDToContext(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task", Input: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	var gotUserID string
+	var gotOK bool
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		gotUserID, gotOK = agent.UserIDFromContext(ctx)
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Add login command"}}}, nil
+	}
+
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	if err := p.ProcessRun(ctx, "user_1", project.ID, run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	if !gotOK {
+		t.Fatal("agent.UserIDFromContext() ok = false, want the ctx passed to the skill to carry a user ID")
+	}
+	if gotUserID != "user_1" {
+		t.Errorf("agent.UserIDFromContext() = %q, want %q", gotUserID, "user_1")
+	}
+}
+
 func TestProcessor_ProcessRun_CreateProject_Success(t *testing.T) {
 	repo := store.NewMemoryRepository()
 	ctx := context.Background()
