@@ -59,12 +59,6 @@ export function forgotPassword(email: string): Promise<void> {
     user.forgotPassword({
       onSuccess: () => resolve(),
       onFailure: (err) => {
-        // NudgeUserPoolClient doesn't set PreventUserExistenceErrors:
-        // ENABLED (changing that is out of scope for #146), so Cognito's
-        // raw response for an unknown email is UserNotFoundException —
-        // which reveals whether an account exists. Mask that one case by
-        // treating it as success here, at the app layer, matching what
-        // PreventUserExistenceErrors would do at the Cognito layer.
         if (err instanceof Error && err.name === 'UserNotFoundException') {
           resolve()
           return
@@ -85,8 +79,6 @@ export function confirmForgotPassword(email: string, code: string, newPassword: 
   })
 }
 
-// authenticateUser defaults to USER_SRP_AUTH — the password itself is never
-// sent to Cognito, per ADR 017. Do not switch this to USER_PASSWORD_AUTH.
 export function signIn(email: string, password: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const user = new CognitoUser({ Username: email, Pool: userPool })
@@ -98,9 +90,6 @@ export function signIn(email: string, password: string): Promise<void> {
   })
 }
 
-// Resolves the signed-in user's access token, or null when nobody is signed in
-// or the session can't be restored. getSession refreshes an expired access
-// token from the stored refresh token before resolving.
 export function getAccessToken(): Promise<string | null> {
   const user = userPool.getCurrentUser()
   if (!user) return Promise.resolve(null)
