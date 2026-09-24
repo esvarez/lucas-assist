@@ -26,6 +26,15 @@ const metaSKPrefix = "META#"
 // retrieve a whole project's items together.
 const projectScopeSKPrefix = "P#"
 
+// projectScopeListSKPrefix is the begins_with prefix that scopes a Query to
+// every item belonging to one project — Task, Changeset, AgentRun, and
+// Event alike, whatever comes after `P#<pid>#`. DeleteProject uses this to
+// enumerate everything that must cascade-delete alongside the project's own
+// META item (issue #167).
+func projectScopeListSKPrefix(projectID string) string {
+	return projectScopeSKPrefix + projectID + "#"
+}
+
 // DynamoRepository is a DynamoDB-backed Repository. Each project is stored
 // as a single META item under PK=USER#<uid>, SK=META#<pid> in a single
 // table, partitioned by user (architecture.md §8). This structurally scopes
@@ -371,13 +380,17 @@ func (r *DynamoRepository) UpdateProject(ctx context.Context, userID string, p d
 	return item.toDomain(), nil
 }
 
-// DeleteProject deletes a project's META item via a conditional DeleteItem
-// (attribute_exists(PK)). The condition fails — returning ErrNotFound —
-// both when the project doesn't exist at all and when userID doesn't match
-// its actual owner, since that project's item lives under a different PK
-// entirely.
 func (r *DynamoRepository) DeleteProject(ctx context.Context, userID, id string) error {
-	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+	keys, err := r.queryProjectScopedKeys(ctx, userID, id)
+	if err != nil {
+		return err
+	}
+
+	if err := r.batchDeleteItems(ctx, keys); err != nil {
+		return err
+	}
+
+	_, err = r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(r.table),
 		Key: map[string]types.AttributeValue{
 			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
@@ -391,6 +404,67 @@ func (r *DynamoRepository) DeleteProject(ctx context.Context, userID, id string)
 			return ErrNotFound
 		}
 		return fmt.Errorf("delete project item: %w", err)
+	}
+
+	return nil
+}
+
+func (r *DynamoRepository) queryProjectScopedKeys(ctx context.Context, userID, projectID string) ([]map[string]types.AttributeValue, error) {
+	var keys []map[string]types.AttributeValue
+
+	paginator := dynamodb.NewQueryPaginator(r.client, &dynamodb.QueryInput{
+		TableName:              aws.String(r.table),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":       &types.AttributeValueMemberS{Value: userPK(userID)},
+			":skPrefix": &types.AttributeValueMemberS{Value: projectScopeListSKPrefix(projectID)},
+		},
+		ProjectionExpression: aws.String("PK, SK"),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("query project-scoped items: %w", err)
+		}
+		keys = append(keys, page.Items...)
+	}
+
+	return keys, nil
+}
+
+func (r *DynamoRepository) batchDeleteItems(ctx context.Context, keys []map[string]types.AttributeValue) error {
+	const batchSize = 25
+	const maxAttempts = 8
+
+	for start := 0; start < len(keys); start += batchSize {
+		end := start + batchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+
+		reqs := make([]types.WriteRequest, 0, end-start)
+		for _, key := range keys[start:end] {
+			reqs = append(reqs, types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key}})
+		}
+
+		pending := map[string][]types.WriteRequest{r.table: reqs}
+		backoff := 50 * time.Millisecond
+		for attempt := 0; len(pending) > 0; attempt++ {
+			if attempt >= maxAttempts {
+				return fmt.Errorf("batch delete project-scoped items: %d unprocessed after %d attempts", len(pending[r.table]), maxAttempts)
+			}
+			if attempt > 0 {
+				time.Sleep(backoff)
+				backoff *= 2
+			}
+
+			out, err := r.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: pending})
+			if err != nil {
+				return fmt.Errorf("batch delete project-scoped items: %w", err)
+			}
+			pending = out.UnprocessedItems
+		}
 	}
 
 	return nil

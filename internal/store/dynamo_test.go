@@ -410,6 +410,86 @@ func TestDynamoRepository_DeleteProject(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_DeleteProject_CascadesChildren documents issue
+// #167: deleting a project must also delete its tasks, changesets, and
+// agent runs, plus events scoped to it (written directly here, since
+// there's no public CreateEvent — see eventSK's doc comment), while
+// leaving another project's children untouched.
+func TestDynamoRepository_DeleteProject_CascadesChildren(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	other, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Widget"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	task, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: created.ID, Title: "Do the thing"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	otherTask, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: other.ID, Title: "Untouched"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{UserID: userID, ProjectID: created.ID, Skill: "decompose_task", Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: created.ID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	event := domain.Event{ID: domain.NewID(), ProjectID: created.ID, UserID: userID, Type: domain.EventChangesetAccepted, CreatedAt: time.Now().UTC()}
+	eventItemAV, err := attributevalue.MarshalMap(toEventItem(event))
+	if err != nil {
+		t.Fatalf("MarshalMap() error = %v", err)
+	}
+	if _, err := repo.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(testTable), Item: eventItemAV}); err != nil {
+		t.Fatalf("PutItem() error = %v", err)
+	}
+
+	if err := repo.DeleteProject(ctx, userID, created.ID); err != nil {
+		t.Fatalf("DeleteProject() error = %v", err)
+	}
+
+	if _, err := repo.GetTask(ctx, userID, created.ID, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetTask() after project delete error = %v, want %v", err, ErrNotFound)
+	}
+	if _, err := repo.GetChangeset(ctx, userID, created.ID, changeset.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetChangeset() after project delete error = %v, want %v", err, ErrNotFound)
+	}
+	if _, err := repo.GetAgentRun(ctx, userID, created.ID, run.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetAgentRun() after project delete error = %v, want %v", err, ErrNotFound)
+	}
+
+	got, err := repo.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(testTable),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: eventSK(created.ID, event.CreatedAt, event.ID)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetItem() error = %v", err)
+	}
+	if got.Item != nil {
+		t.Errorf("event item still present after project delete")
+	}
+
+	if _, err := repo.GetTask(ctx, userID, other.ID, otherTask.ID); err != nil {
+		t.Errorf("GetTask() for other project after unrelated delete error = %v, want task still present", err)
+	}
+}
+
 func TestDynamoRepository_DeleteProject_NotFound(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
