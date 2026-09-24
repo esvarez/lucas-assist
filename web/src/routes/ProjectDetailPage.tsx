@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { AlertCircleIcon, ChevronLeftIcon, EllipsisIcon, SparklesIcon } from 'lucide-react'
+import { AlertCircleIcon, ChevronLeftIcon, EllipsisIcon, PlusIcon, SparklesIcon } from 'lucide-react'
 import {
   Accordion,
   AccordionContent,
@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { Input } from '@/components/ui/input'
 import {
   Item,
   ItemContent,
@@ -371,6 +372,18 @@ function TaskAccordion({ task }: { task: Task }) {
                 </li>
               ))}
             </ul>
+            {/* Adding a subtask manually, and decomposing an already-existing
+                task further, both need a backend way to attach new tasks
+                under this task's id — decompose_task has no such input yet
+                and there's no manual task-creation endpoint (#161), so
+                these stay disabled rather than silently doing nothing. */}
+            <div className="flex items-center gap-2">
+              <Input placeholder="Add a subtask" disabled className="h-8" />
+              <Button variant="outline" size="sm" disabled>
+                <SparklesIcon data-icon="inline-start" />
+                Break down more
+              </Button>
+            </div>
           </div>
         </AccordionContent>
       </AccordionItem>
@@ -507,15 +520,25 @@ function TasksSection({
             </span>
           )}
         </div>
-        <DecomposeTaskDialog
-          onSubmit={startDecomposeTask}
-          trigger={
-            <Button variant="outline" size="sm" disabled={pending}>
-              <SparklesIcon data-icon="inline-start" />
-              Break down
-            </Button>
-          }
-        />
+        {/* Desktop only (frame 2a) — mobile gets the same two actions in the
+            fixed footer below instead, so they don't render twice at once. */}
+        <div className="hidden items-center gap-2 lg:flex">
+          {/* Manual single-task creation has no backend endpoint yet (#161)
+              — shown disabled rather than silently implying it works. */}
+          <Button size="sm" disabled>
+            <PlusIcon data-icon="inline-start" />
+            Add task
+          </Button>
+          <DecomposeTaskDialog
+            onSubmit={startDecomposeTask}
+            trigger={
+              <Button variant="outline" size="sm" disabled={pending}>
+                <SparklesIcon data-icon="inline-start" />
+                Break down
+              </Button>
+            }
+          />
+        </div>
       </div>
       {flat.length > 0 && <Progress value={(done / flat.length) * 100} />}
       <DecomposeRunPanel run={run} title={runSeed.title} description={runSeed.description} />
@@ -526,11 +549,19 @@ function TasksSection({
           ))}
         </ItemGroup>
       )}
-      <div className="fixed inset-x-0 bottom-0 border-t border-border bg-background p-3 lg:hidden">
+      {/* Mobile/tablet only (frame 1b) — the desktop header above carries
+          the same two actions, hidden here to avoid showing both at once. */}
+      <div className="fixed inset-x-0 bottom-0 flex items-center gap-2 border-t border-border bg-background p-3 lg:hidden">
+        {/* Manual single-task creation has no backend endpoint yet (#161)
+            — shown disabled rather than silently implying it works. */}
+        <Button className="flex-1" disabled>
+          <PlusIcon data-icon="inline-start" />
+          Add task
+        </Button>
         <DecomposeTaskDialog
           onSubmit={startDecomposeTask}
           trigger={
-            <Button className="w-full" disabled={pending}>
+            <Button variant="outline" disabled={pending}>
               <SparklesIcon data-icon="inline-start" />
               Break down
             </Button>
