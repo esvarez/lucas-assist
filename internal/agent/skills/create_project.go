@@ -51,7 +51,9 @@ If the description gives you enough to commit to a name and a goal, return statu
 
 Only return status "needs_clarification" — and only on clarification_round 0 — if the description is too vague to commit to even a name and a goal. At most 3 questions.
 
-If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where a name or goal still isn't obvious, choose a sensible one from what's given rather than leaving it unset. Never re-ask anything already present in clarifications.`
+If clarification_round is greater than 0, you MUST return status "ok". Asking again is not available to you — where a name or goal still isn't obvious, choose a sensible one from what's given rather than leaving it unset. Never re-ask anything already present in clarifications.
+
+Write the project name, goal, constraints, and any questions in the same language as the description you were given — not necessarily English.`
 
 // buildCreateProjectUserMessage renders the description and, if this is a
 // follow-up round, the prior round's answered clarifications — marked
