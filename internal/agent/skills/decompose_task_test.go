@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/esvarez/lucas-assist/internal/agent"
 	"github.com/esvarez/lucas-assist/internal/domain"
@@ -279,6 +280,67 @@ func TestDecomposeTaskSkill_BuildContext_WithProjectContext(t *testing.T) {
 		if !strings.Contains(prompt, "none of your subtasks may duplicate one") {
 			t.Errorf("system prompt %q missing the anti-duplication instruction", prompt)
 		}
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_ProjectContext_Deadline documents
+// that a project's deadline reaches the model when set — formatted as a
+// calendar date (UTC), matching the web client's own UTC-midnight
+// convention for the stored value.
+func TestDecomposeTaskSkill_BuildContext_ProjectContext_Deadline(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	deadline := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	proj, err := repo.CreateProject(context.Background(), domain.Project{
+		UserID:   "user_1",
+		Name:     "Kitchen remodel",
+		Goal:     "A finished kitchen by spring",
+		Deadline: &deadline,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	ctx := agent.WithUserID(context.Background(), "user_1")
+	raw := []byte(`{"task_title": "Finish the kitchen remodel", "domain": "general", "project_id": "` + proj.ID + `"}`)
+
+	skill := NewDecomposeTaskSkill(repo)
+	messages, err := skill.BuildContext(ctx, raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+
+	projMsg := messages[1].OfSystem.Content.OfString.Value
+	if !strings.Contains(projMsg, "Deadline: 2026-03-15") {
+		t.Errorf("project context message = %q, want it to contain the deadline", projMsg)
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_ProjectContext_NoDeadline documents
+// that an unset deadline is omitted entirely rather than rendered as a
+// zero-value date.
+func TestDecomposeTaskSkill_BuildContext_ProjectContext_NoDeadline(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	proj, err := repo.CreateProject(context.Background(), domain.Project{
+		UserID: "user_1",
+		Name:   "Kitchen remodel",
+		Goal:   "A finished kitchen by spring",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	ctx := agent.WithUserID(context.Background(), "user_1")
+	raw := []byte(`{"task_title": "Finish the kitchen remodel", "domain": "general", "project_id": "` + proj.ID + `"}`)
+
+	skill := NewDecomposeTaskSkill(repo)
+	messages, err := skill.BuildContext(ctx, raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+
+	projMsg := messages[1].OfSystem.Content.OfString.Value
+	if strings.Contains(projMsg, "Deadline") {
+		t.Errorf("project context message = %q, want no Deadline mention when unset", projMsg)
 	}
 }
 

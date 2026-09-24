@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -61,10 +60,9 @@ If clarification_round is greater than 0, you MUST return status "ok". Asking ag
 func buildCreateProjectUserMessage(in CreateProjectInput) string {
 	var b strings.Builder
 	b.WriteString(in.Description)
+	fmt.Fprintf(&b, "\n\nClarification round: %d", in.ClarificationRound)
 
 	if len(in.Clarifications) > 0 {
-		b.WriteString("\n\nClarification round: ")
-		b.WriteString(strconv.Itoa(in.ClarificationRound))
 		b.WriteString("\n\nThese questions have already been answered. Treat every answer below as a settled decision:\n")
 		for _, c := range in.Clarifications {
 			fmt.Fprintf(&b, "- Q: %s\n  A: %s\n", c.Question, c.Answer)

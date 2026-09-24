@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -113,10 +112,9 @@ func systemPrompt(d Domain) string {
 func buildUserMessage(in DecomposeInput) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Title: %s\n\nDescription: %s", in.TaskTitle, in.TaskDescription)
+	fmt.Fprintf(&b, "\n\nClarification round: %d", in.ClarificationRound)
 
 	if len(in.Clarifications) > 0 {
-		b.WriteString("\n\nClarification round: ")
-		b.WriteString(strconv.Itoa(in.ClarificationRound))
 		b.WriteString("\n\nThese questions have already been answered. Treat every answer below as a settled decision, including \"no\", \"none\", \"no preference\", and \"out of scope\" — do not ask any of them again:\n")
 		for _, c := range in.Clarifications {
 			fmt.Fprintf(&b, "- Q: %s\n  A: %s\n", c.Question, c.Answer)
@@ -136,6 +134,9 @@ func buildUserMessage(in DecomposeInput) string {
 func buildProjectContextMessage(proj domain.Project, tasks []domain.Task) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Project: %s\n\nGoal: %s", proj.Name, proj.Goal)
+	if proj.Deadline != nil {
+		fmt.Fprintf(&b, "\n\nDeadline: %s", proj.Deadline.UTC().Format("2006-01-02"))
+	}
 	if len(proj.Constraints) > 0 {
 		b.WriteString("\n\nConstraints:\n")
 		for _, c := range proj.Constraints {
