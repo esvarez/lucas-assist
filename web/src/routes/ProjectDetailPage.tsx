@@ -38,12 +38,12 @@ import {
 } from '@/components/ui/item'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
 import { getProject, type Project } from '@/src/api/projects'
 import { listAgentRuns, listChangesets } from '@/src/api/skills'
 import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
 import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
 import DecomposeRunPanel from '@/src/components/DecomposeRunPanel'
-import DecomposeTaskDialog from '@/src/components/DecomposeTaskDialog'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
 import { useDecomposeRun } from '@/src/hooks/useDecomposeRun'
@@ -494,11 +494,6 @@ function TasksSection({
     void run.start(seed.title, seed.description)
   }
 
-  function startDecomposeTask(title: string, description: string) {
-    setRunSeed({ title, description })
-    void run.start(title, description)
-  }
-
   if (tasks.length === 0 && !pending) {
     return (
       <Empty className="border">
@@ -538,15 +533,19 @@ function TasksSection({
             <PlusIcon data-icon="inline-start" />
             Add task
           </Button>
-          <DecomposeTaskDialog
-            onSubmit={startDecomposeTask}
-            trigger={
-              <Button variant="outline" size="sm" disabled={pending}>
-                <SparklesIcon data-icon="inline-start" />
-                Break down
-              </Button>
-            }
-          />
+          {/* Re-runs decompose_task from the project's own card, same as the
+              empty state's "Break into tasks" (#163) — a second pass over
+              an already-started project shouldn't need re-typing what's
+              already on the card, and project_id already gets existing
+              task titles to the model as a dedup hint. */}
+          <Button variant="outline" size="sm" onClick={startBreakIntoTasks} disabled={pending}>
+            {run.state.name === 'working' ? (
+              <Spinner data-icon="inline-start" className="size-3.5" />
+            ) : (
+              <SparklesIcon data-icon="inline-start" />
+            )}
+            Break down
+          </Button>
         </div>
       </div>
       {flat.length > 0 && <Progress value={(done / flat.length) * 100} />}
@@ -567,15 +566,14 @@ function TasksSection({
           <PlusIcon data-icon="inline-start" />
           Add task
         </Button>
-        <DecomposeTaskDialog
-          onSubmit={startDecomposeTask}
-          trigger={
-            <Button variant="outline" disabled={pending}>
-              <SparklesIcon data-icon="inline-start" />
-              Break down
-            </Button>
-          }
-        />
+        <Button variant="outline" onClick={startBreakIntoTasks} disabled={pending}>
+          {run.state.name === 'working' ? (
+            <Spinner data-icon="inline-start" />
+          ) : (
+            <SparklesIcon data-icon="inline-start" />
+          )}
+          Break down
+        </Button>
       </div>
     </div>
   )
