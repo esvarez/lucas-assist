@@ -263,15 +263,70 @@ function TaskCheckRow({
   )
 }
 
-function LeafTask({ task: initial }: { task: Task }) {
-  const [task, setTask] = useState(initial)
+// TaskDetails renders a task's description and acceptance criteria — the
+// two fields a task carries beyond its title/status, shown inside a task's
+// accordion content (both LeafTask's own and TaskAccordion's) rather than
+// in the always-visible row, since most projects have many tasks and this
+// content would otherwise dominate the list.
+function TaskDetails({ task }: { task: Task }) {
+  if (!task.description && task.acceptance_criteria.length === 0) return null
 
   return (
-    <TaskCheckRow
-      task={task}
-      variant="outline"
-      onToggleDone={(done) => setTask({ ...task, status: done ? 'done' : 'todo' })}
-    />
+    <div className="flex flex-col gap-3">
+      {task.description && <p className="text-muted-foreground">{task.description}</p>}
+      {task.acceptance_criteria.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+            Acceptance criteria
+          </span>
+          <ul className="flex flex-col gap-1.5">
+            {task.acceptance_criteria.map((criterion) => (
+              <li key={criterion} className="flex items-baseline gap-2">
+                <span className="size-1 shrink-0 -translate-y-0.5 rounded-full bg-foreground" />
+                {criterion}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// A leaf task (no subtasks) with neither a description nor acceptance
+// criteria has nothing to expand into, so it stays a plain checkbox row
+// rather than an accordion with an empty panel.
+function LeafTask({ task: initial }: { task: Task }) {
+  const [task, setTask] = useState(initial)
+  const toggleDone = (done: boolean) => setTask({ ...task, status: done ? 'done' : 'todo' })
+
+  if (!task.description && task.acceptance_criteria.length === 0) {
+    return <TaskCheckRow task={task} variant="outline" onToggleDone={toggleDone} />
+  }
+
+  return (
+    <Accordion>
+      <AccordionItem value={task.id}>
+        {/* The checkbox sits beside AccordionTrigger, not inside it — Trigger
+            renders a <button>, and nesting the Checkbox's own button inside
+            would both be invalid HTML and make every done-toggle also
+            open/close the accordion. */}
+        <div className="flex items-center gap-2 p-2">
+          <Checkbox checked={task.status === 'done'} onCheckedChange={(value) => toggleDone(value === true)} />
+          <AccordionTrigger className="border-none p-0 hover:no-underline">
+            <span className="flex flex-1 items-center justify-between gap-2">
+              <span className={task.status === 'done' ? 'text-muted-foreground line-through' : undefined}>
+                {task.title}
+              </span>
+              <span className={taskStatusClassName(task.status)}>{taskStatusLabel(task.status)}</span>
+            </span>
+          </AccordionTrigger>
+        </div>
+        <AccordionContent>
+          <TaskDetails task={task} />
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
   )
 }
 
@@ -298,22 +353,25 @@ function TaskAccordion({ task }: { task: Task }) {
           />
         </div>
         <AccordionContent>
-          <ul className="flex flex-col gap-2 pt-2">
-            {subtasks.map((subtask) => (
-              <li key={subtask.id}>
-                <TaskCheckRow
-                  task={subtask}
-                  onToggleDone={(done) =>
-                    setSubtasks((current) =>
-                      current.map((item) =>
-                        item.id === subtask.id ? { ...item, status: done ? 'done' : 'todo' } : item,
-                      ),
-                    )
-                  }
-                />
-              </li>
-            ))}
-          </ul>
+          <div className="flex flex-col gap-4 pt-2">
+            <TaskDetails task={task} />
+            <ul className="flex flex-col gap-2">
+              {subtasks.map((subtask) => (
+                <li key={subtask.id}>
+                  <TaskCheckRow
+                    task={subtask}
+                    onToggleDone={(done) =>
+                      setSubtasks((current) =>
+                        current.map((item) =>
+                          item.id === subtask.id ? { ...item, status: done ? 'done' : 'todo' } : item,
+                        ),
+                      )
+                    }
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
         </AccordionContent>
       </AccordionItem>
     </Accordion>
