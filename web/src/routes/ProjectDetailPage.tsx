@@ -38,11 +38,14 @@ import {
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getProject, type Project } from '@/src/api/projects'
+import { listAgentRuns, listChangesets } from '@/src/api/skills'
 import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
 import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
+import DecomposeRunPanel from '@/src/components/DecomposeRunPanel'
 import DecomposeTaskDialog from '@/src/components/DecomposeTaskDialog'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
+import { useDecomposeRun } from '@/src/hooks/useDecomposeRun'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
 import { cn } from '@/lib/utils'
@@ -143,10 +146,7 @@ function ProjectInfoCard({ project }: { project: Project }) {
       )}
       {project.constraints.length > 0 && (
         <CardContent className={cn('flex flex-col gap-2', deadlineMeta && 'border-t border-border pt-4')}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">Constraints</span>
-            <span className="text-xs text-muted-foreground">{project.constraints.length}</span>
-          </div>
+          <span className="text-xs text-muted-foreground">Constraints</span>
           <ConstraintsList constraints={project.constraints} />
         </CardContent>
       )}
@@ -327,21 +327,99 @@ function TaskItem({ task }: { task: Task }) {
   return <TaskAccordion task={task} />
 }
 
+// projectSeed derives decompose_task's task_title/task_description from
+// the project's own card (#163) — the "Break into tasks" CTA breaks down
+// the whole project, not one task the user has in mind, so there's
+// nothing to ask for that isn't already on the card.
+function projectSeed(project: Project): { title: string; description: string } {
+  const description =
+    project.constraints.length > 0
+      ? `${project.goal}\n\nConstraints: ${project.constraints.join('; ')}`
+      : project.goal
+  return { title: project.name, description }
+}
+
 function TasksSection({
   project,
-  projectId,
   tasks,
   onAccepted,
 }: {
   project: Project
-  projectId: string
   tasks: Task[]
   onAccepted: () => void
 }) {
+  const projectId = project.id
   const flat = flattenTasks(tasks)
   const done = flat.filter((task) => task.status === 'done').length
 
-  if (tasks.length === 0) {
+  const run = useDecomposeRun(projectId, onAccepted)
+  // Remembered across the run's lifecycle (a clarify resubmit, an error
+  // retry) — whatever form collected it, if any, has already closed by
+  // the time those happen.
+  const [runSeed, setRunSeed] = useState({ title: '', description: '' })
+
+  // Rediscovers a pending proposal, or failing that a still-running
+  // dispatch, on mount — so both survive a page refresh (#169) instead of
+  // looking idle and letting the trigger below start a second, racing
+  // decompose_task run. Nothing else exposes a changeset's or an
+  // AgentRun's id without already having it from the request that created
+  // it, so this is the only way a fresh page load can find either.
+  useEffect(() => {
+    let ignore = false
+
+    async function rediscoverPending() {
+      const { changesets } = await listChangesets(projectId, 'proposed')
+      const pendingChangeset = changesets.find((c) => c.skill === 'decompose_task')
+      if (pendingChangeset) {
+        if (!ignore) run.resumeReview(pendingChangeset)
+        return
+      }
+
+      const { agent_runs: agentRuns } = await listAgentRuns(projectId)
+      const inFlightRun = agentRuns.find(
+        (r) => r.skill === 'decompose_task' && (r.status === 'queued' || r.status === 'running')
+      )
+      if (inFlightRun && !ignore) {
+        // Recovered so a later clarify resubmit or error retry has
+        // something real to redispatch with, instead of a blank task.
+        setRunSeed({
+          title: inFlightRun.input?.task_title ?? '',
+          description: inFlightRun.input?.task_description ?? '',
+        })
+        run.resumePoll(inFlightRun.id)
+      }
+    }
+
+    rediscoverPending().catch(() => {
+      // Best-effort: a fresh page still works without a rediscovered
+      // proposal or run, just as if neither existed.
+    })
+
+    return () => {
+      ignore = true
+    }
+    // Runs once per project id — run's own identity isn't a dependency
+    // this effect needs to react to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId])
+
+  // Only one proposal in flight per project at a time (#169) — starting
+  // another while this one is working, needs an answer, or awaits review
+  // would race it, so every trigger below disables while true.
+  const pending = run.state.name !== 'idle'
+
+  function startBreakIntoTasks() {
+    const seed = projectSeed(project)
+    setRunSeed(seed)
+    void run.start(seed.title, seed.description)
+  }
+
+  function startDecomposeTask(title: string, description: string) {
+    setRunSeed({ title, description })
+    void run.start(title, description)
+  }
+
+  if (tasks.length === 0 && !pending) {
     return (
       <Empty className="border">
         <EmptyHeader>
@@ -349,7 +427,7 @@ function TasksSection({
           <EmptyDescription>Let Nudge break this project into small steps.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <BreakIntoTasksButton project={project} onAccepted={onAccepted} />
+          <BreakIntoTasksButton onStart={startBreakIntoTasks} working={run.state.name === 'working'} disabled={pending} />
           {/* Manual single-task creation has no backend endpoint yet (#161)
               — shown disabled rather than silently implying it works. */}
           <Button variant="ghost" size="sm" disabled>
@@ -365,18 +443,42 @@ function TasksSection({
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-baseline gap-3">
           <h2 className="text-lg font-bold">Tasks</h2>
-          <span className="text-sm text-muted-foreground">
-            {done} of {flat.length} done
-          </span>
+          {flat.length > 0 && (
+            <span className="text-sm text-muted-foreground">
+              {done} of {flat.length} done
+            </span>
+          )}
         </div>
-        <DecomposeTaskDialog projectId={projectId} onAccepted={onAccepted} />
+        <DecomposeTaskDialog
+          onSubmit={startDecomposeTask}
+          trigger={
+            <Button variant="outline" size="sm" disabled={pending}>
+              <SparklesIcon data-icon="inline-start" />
+              Break down
+            </Button>
+          }
+        />
       </div>
-      <Progress value={(done / flat.length) * 100} />
-      <ItemGroup>
-        {tasks.map((task) => (
-          <TaskItem key={task.id} task={task} />
-        ))}
-      </ItemGroup>
+      {flat.length > 0 && <Progress value={(done / flat.length) * 100} />}
+      <DecomposeRunPanel run={run} title={runSeed.title} description={runSeed.description} />
+      {tasks.length > 0 && (
+        <ItemGroup>
+          {tasks.map((task) => (
+            <TaskItem key={task.id} task={task} />
+          ))}
+        </ItemGroup>
+      )}
+      <div className="fixed inset-x-0 bottom-0 border-t border-border bg-background p-3 lg:hidden">
+        <DecomposeTaskDialog
+          onSubmit={startDecomposeTask}
+          trigger={
+            <Button className="w-full" disabled={pending}>
+              <SparklesIcon data-icon="inline-start" />
+              Break down
+            </Button>
+          }
+        />
+      </div>
     </div>
   )
 }
@@ -446,7 +548,6 @@ function ProjectDetailPage() {
         <div className="order-2 lg:order-1">
           <TasksSection
             project={project}
-            projectId={project.id}
             tasks={tasks}
             onAccepted={() => setTaskRefreshKey((k) => k + 1)}
           />
@@ -455,21 +556,6 @@ function ProjectDetailPage() {
           <ProjectInfoCard project={project} />
         </div>
       </div>
-
-      {tasks.length > 0 && (
-        <div className="fixed inset-x-0 bottom-0 border-t border-border bg-background p-3 lg:hidden">
-          <DecomposeTaskDialog
-            projectId={project.id}
-            onAccepted={() => setTaskRefreshKey((k) => k + 1)}
-            trigger={
-              <Button className="w-full">
-                <SparklesIcon data-icon="inline-start" />
-                Break down
-              </Button>
-            }
-          />
-        </div>
-      )}
     </div>
   )
 }

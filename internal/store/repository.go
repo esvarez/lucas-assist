@@ -61,14 +61,33 @@ type Repository interface {
 
 	// CreateChangeset reads UserID/ProjectID off c itself — domain.Changeset
 	// carries UserID directly (like domain.Project, unlike domain.Task).
-	// GetChangeset and UpdateChangesetStatus still take userID and
-	// projectID explicitly since a lookup needs them before it has the
-	// changeset in hand. UpdateChangesetStatus is an unconditional status
-	// set; enforcing which prior states may transition to which next state
-	// belongs to the changeset-accept endpoint, not this primitive.
+	// GetChangeset, ListChangesets, UpdateChangesetStatus, and
+	// UpdateChangesetProposedTasks still take userID and projectID
+	// explicitly since a lookup needs them before it has the changeset in
+	// hand. UpdateChangesetStatus is an unconditional status set; enforcing
+	// which prior states may transition to which next state belongs to the
+	// changeset-accept endpoint, not this primitive.
 	CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
+
+	// ListChangesets returns every changeset for a project (any status),
+	// newest concerns filtered by the caller — used to rediscover a
+	// pending decompose_task proposal after a page refresh (#169), since
+	// nothing else lets a client find a changeset's id without already
+	// having it.
+	ListChangesets(ctx context.Context, userID, projectID string) ([]domain.Changeset, error)
+
 	UpdateChangesetStatus(ctx context.Context, userID, projectID, changesetID string, status domain.ChangesetStatus) (domain.Changeset, error)
+
+	// UpdateChangesetProposedTasks persists a "proposed" changeset's
+	// remaining proposed_tasks after the user removes one or more without
+	// accepting them (#169) — no Task rows are created. It's conditional
+	// on the changeset still being "proposed" (attribute_exists(PK) AND
+	// status = proposed), the same guard AcceptChangeset uses, so a
+	// concurrent accept and a concurrent removal can't both win. An empty
+	// tasks list transitions the changeset to "rejected" instead of
+	// leaving a "proposed" changeset with nothing left to act on.
+	UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error)
 
 	// CreateAgentRun, GetAgentRun, LeaseAgentRun, CompleteAgentRun, and
 	// FailAgentRun implement the AgentRun lifecycle (architecture.md
@@ -84,6 +103,13 @@ type Repository interface {
 	// repo-owned on creation, not client-set.
 	CreateAgentRun(ctx context.Context, r domain.AgentRun) (domain.AgentRun, error)
 	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
+
+	// ListAgentRuns returns every run for a project (any status), scoped
+	// by user the same way GetAgentRun is — used to rediscover a
+	// decompose_task run that's still queued/running after a page refresh
+	// (#169), since a client that didn't create this browser session has
+	// no run id to poll otherwise.
+	ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error)
 
 	// LeaseAgentRun conditionally moves a run from queued to running, or
 	// reclaims a running run whose LeaseUntil has already passed — the
@@ -135,17 +161,39 @@ type Repository interface {
 	//
 	// The 50-mutation cap (ADR 009) has no such ordering dependency, so it
 	// stays a fast, no-I/O check in the changeset-accept endpoint instead.
-	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error)
+	//
+	// c.ProposedTasks is exactly what gets committed as Task rows on this
+	// call — the changeset-accept endpoint has already narrowed it to
+	// whichever proposed tasks the client selected to accept now (#169).
+	// remainingProposedTasks is everything else still undecided: when
+	// non-empty, the changeset stays "proposed" with remainingProposedTasks
+	// as its new proposed_tasks and its base_version advanced to the
+	// project's new version (so a later partial accept's version check
+	// still passes); when empty, the changeset moves to "applied" as
+	// before. This is what makes "accept one, decide on the rest later"
+	// possible instead of every accept call being all-or-nothing terminal.
+	//
+	// requestFingerprint is a caller-supplied, stable representation of
+	// the client's request body (e.g. its raw task-selection JSON) used
+	// to build the idempotency hash — see requestHashWithFingerprint's
+	// doc comment for why it can't be derived from c/remainingProposedTasks
+	// themselves.
+	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (AcceptChangesetResult, error)
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (AcceptCreateProjectResult, error)
 }
 
 // AcceptChangesetResult is the outcome of a successful AcceptChangeset
 // call: the project at its new version, the tasks created from the
-// changeset's proposal, and the audit event written alongside them.
+// changeset's proposal, the audit event written alongside them, and the
+// changeset itself as it now stands — still "proposed" with whatever
+// wasn't accepted this call (#169), or "applied" once nothing is left.
+// Callers use Changeset to keep their own copy of the remaining proposal
+// in sync without a separate GetChangeset round-trip.
 type AcceptChangesetResult struct {
-	Project domain.Project `json:"project"`
-	Tasks   []domain.Task  `json:"tasks"`
-	Event   domain.Event   `json:"event"`
+	Project   domain.Project   `json:"project"`
+	Tasks     []domain.Task    `json:"tasks"`
+	Event     domain.Event     `json:"event"`
+	Changeset domain.Changeset `json:"changeset"`
 }
 
 // AcceptCreateProjectResult is the outcome of a successful

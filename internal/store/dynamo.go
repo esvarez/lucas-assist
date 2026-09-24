@@ -673,6 +673,40 @@ func (r *DynamoRepository) GetChangeset(ctx context.Context, userID, projectID, 
 	return item.toDomain(), nil
 }
 
+// ListChangesets returns every changeset item under a project's
+// P#<pid>#CHANGESET# prefix, oldest write order (DynamoDB doesn't sort by
+// created_at) — callers filter by status themselves (#169's pending-
+// proposal reload only wants "proposed" ones).
+func (r *DynamoRepository) ListChangesets(ctx context.Context, userID, projectID string) ([]domain.Changeset, error) {
+	changesets := make([]domain.Changeset, 0)
+
+	paginator := dynamodb.NewQueryPaginator(r.client, &dynamodb.QueryInput{
+		TableName:              aws.String(r.table),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":       &types.AttributeValueMemberS{Value: userPK(userID)},
+			":skPrefix": &types.AttributeValueMemberS{Value: changesetListSKPrefix(projectID)},
+		},
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("query changeset items: %w", err)
+		}
+
+		var items []changesetItem
+		if err := attributevalue.UnmarshalListOfMaps(page.Items, &items); err != nil {
+			return nil, fmt.Errorf("unmarshal changeset items: %w", err)
+		}
+		for _, item := range items {
+			changesets = append(changesets, item.toDomain())
+		}
+	}
+
+	return changesets, nil
+}
+
 // UpdateChangesetStatus sets a changeset's status via a conditional
 // UpdateItem (attribute_exists(PK)). This is an unconditional status set —
 // enforcing which prior states may transition to which next state belongs
@@ -701,6 +735,73 @@ func (r *DynamoRepository) UpdateChangesetStatus(ctx context.Context, userID, pr
 			return domain.Changeset{}, ErrNotFound
 		}
 		return domain.Changeset{}, fmt.Errorf("update changeset item: %w", err)
+	}
+
+	var item changesetItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.Changeset{}, fmt.Errorf("unmarshal changeset item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
+// UpdateChangesetProposedTasks persists a "proposed" changeset's remaining
+// proposed_tasks after removing one or more without accepting them (#169)
+// — no Task rows, no project-version change, just this one item. An empty
+// tasks list also flips status to "rejected" in the same UpdateItem call,
+// since a "proposed" changeset with nothing left to act on shouldn't
+// linger — set unconditionally alongside proposed_tasks either way (a
+// no-op re-set to "proposed" when tasks is non-empty) rather than branching
+// the expression. Conditional on the changeset still being "proposed", the
+// same guard AcceptChangeset's transaction uses, so this can't clobber a
+// changeset a concurrent accept just finished with.
+func (r *DynamoRepository) UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error) {
+	newStatus := domain.ChangesetProposed
+	if len(tasks) == 0 {
+		newStatus = domain.ChangesetRejected
+	}
+
+	tasksAV, err := attributevalue.Marshal(tasks)
+	if err != nil {
+		return domain.Changeset{}, fmt.Errorf("marshal proposed tasks: %w", err)
+	}
+	statusAV, err := attributevalue.Marshal(string(newStatus))
+	if err != nil {
+		return domain.Changeset{}, fmt.Errorf("marshal status: %w", err)
+	}
+	proposedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetProposed))
+	if err != nil {
+		return domain.Changeset{}, fmt.Errorf("marshal proposed status: %w", err)
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: changesetSK(projectID, changesetID)},
+		},
+		UpdateExpression:    aws.String("SET proposed_tasks = :tasks, #status = :new_status"),
+		ConditionExpression: aws.String("attribute_exists(PK) AND #status = :expected_proposed"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":tasks":             tasksAV,
+			":new_status":        statusAV,
+			":expected_proposed": proposedStatusAV,
+		},
+		ReturnValues: types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			// Either the changeset doesn't exist, or it's no longer
+			// "proposed" (already accepted/rejected/etc. — including by a
+			// concurrent accept that just ran). Either way there's nothing
+			// left here to remove tasks from.
+			return domain.Changeset{}, ErrConflict
+		}
+		return domain.Changeset{}, fmt.Errorf("update changeset proposed tasks: %w", err)
 	}
 
 	var item changesetItem
@@ -836,6 +937,39 @@ func (r *DynamoRepository) GetAgentRun(ctx context.Context, userID, projectID, r
 	}
 
 	return item.toDomain(), nil
+}
+
+// ListAgentRuns returns every agent run item under a project's
+// P#<pid>#RUN# prefix — callers filter by status themselves (#169's
+// pending-run reload only wants queued/running ones).
+func (r *DynamoRepository) ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error) {
+	runs := make([]domain.AgentRun, 0)
+
+	paginator := dynamodb.NewQueryPaginator(r.client, &dynamodb.QueryInput{
+		TableName:              aws.String(r.table),
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":       &types.AttributeValueMemberS{Value: userPK(userID)},
+			":skPrefix": &types.AttributeValueMemberS{Value: agentRunListSKPrefix(projectID)},
+		},
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("query agent run items: %w", err)
+		}
+
+		var items []agentRunItem
+		if err := attributevalue.UnmarshalListOfMaps(page.Items, &items); err != nil {
+			return nil, fmt.Errorf("unmarshal agent run items: %w", err)
+		}
+		for _, item := range items {
+			runs = append(runs, item.toDomain())
+		}
+	}
+
+	return runs, nil
 }
 
 // LeaseAgentRun conditionally moves a run from queued to running, or
@@ -1119,18 +1253,28 @@ func (r *DynamoRepository) getIdempotencyRecord(ctx context.Context, userID, key
 	return item, true, nil
 }
 
-// AcceptChangeset commits c's proposed tasks against p in a single
-// TransactWriteItems call: the project's version update, one Put per task,
-// the audit event, the idempotency record, and the changeset's status
-// update to "applied" — matching ADR 009's accounting of exactly 4
-// bookkeeping items alongside up to 50 task writes.
+// AcceptChangeset commits c's proposed tasks (the ones the caller selected
+// to accept on this call — see repository.go's doc comment) against p in a
+// single TransactWriteItems call: the project's version update, one Put
+// per task, the audit event, the idempotency record, and the changeset's
+// own update — matching ADR 009's accounting of exactly 4 bookkeeping
+// items alongside up to 50 task writes.
+//
+// The changeset update sets its proposed_tasks to remainingProposedTasks
+// and its base_version to the project's new version either way (#169):
+// when remainingProposedTasks is non-empty the changeset stays "proposed"
+// so a later call can accept more of it, and BaseVersion has to track the
+// project's real current version for that later call's own version check
+// to pass. Once remainingProposedTasks is empty, status flips to
+// "applied" — same terminal state every changeset used to always reach in
+// one call.
 //
 // The project's version update is always transactItems[projectItemIndex]
 // so a ConditionalCheckFailedException on it (the only condition expected
 // to fail in normal operation — a stale baseVersion) can be identified from
 // TransactionCanceledException.CancellationReasons without guessing.
-func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error) {
-	hash := requestHash(c.UserID, c.ProjectID, c.ID)
+func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (AcceptChangesetResult, error) {
+	hash := requestHashWithFingerprint(c.UserID, c.ProjectID, c.ID, requestFingerprint)
 
 	existing, found, err := r.getIdempotencyRecord(ctx, c.UserID, idempotencyKey)
 	if err != nil {
@@ -1191,7 +1335,18 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		CreatedAt:   now,
 	}
 
-	result := AcceptChangesetResult{Project: updatedProject, Tasks: tasks, Event: event}
+	// resultChangeset is c as it stands after this call: still "proposed"
+	// with whatever's left, or "applied" once nothing is (#169) — see the
+	// doc comment above.
+	resultChangeset := c
+	resultChangeset.ProposedTasks = remainingProposedTasks
+	resultChangeset.BaseVersion = updatedProject.Version
+	resultChangeset.Status = domain.ChangesetApplied
+	if len(remainingProposedTasks) > 0 {
+		resultChangeset.Status = domain.ChangesetProposed
+	}
+
+	result := AcceptChangesetResult{Project: updatedProject, Tasks: tasks, Event: event, Changeset: resultChangeset}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return AcceptChangesetResult{}, fmt.Errorf("marshal accept result: %w", err)
@@ -1209,13 +1364,17 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	if err != nil {
 		return AcceptChangesetResult{}, fmt.Errorf("marshal updated_at: %w", err)
 	}
-	appliedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetApplied))
+	newChangesetStatusAV, err := attributevalue.Marshal(string(resultChangeset.Status))
 	if err != nil {
-		return AcceptChangesetResult{}, fmt.Errorf("marshal applied status: %w", err)
+		return AcceptChangesetResult{}, fmt.Errorf("marshal new changeset status: %w", err)
 	}
 	proposedStatusAV, err := attributevalue.Marshal(string(domain.ChangesetProposed))
 	if err != nil {
 		return AcceptChangesetResult{}, fmt.Errorf("marshal proposed status: %w", err)
+	}
+	remainingTasksAV, err := attributevalue.Marshal(remainingProposedTasks)
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal remaining proposed tasks: %w", err)
 	}
 
 	const projectItemIndex = 0
@@ -1294,14 +1453,16 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 				"PK": &types.AttributeValueMemberS{Value: userPK(c.UserID)},
 				"SK": &types.AttributeValueMemberS{Value: changesetSK(c.ProjectID, c.ID)},
 			},
-			UpdateExpression:    aws.String("SET #status = :applied"),
+			UpdateExpression:    aws.String("SET #status = :new_status, proposed_tasks = :remaining, base_version = :new_base_version"),
 			ConditionExpression: aws.String("attribute_exists(PK) AND #status = :proposed"),
 			ExpressionAttributeNames: map[string]string{
 				"#status": "status",
 			},
 			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":applied":  appliedStatusAV,
-				":proposed": proposedStatusAV,
+				":new_status":       newChangesetStatusAV,
+				":remaining":        remainingTasksAV,
+				":new_base_version": newVersionAV,
+				":proposed":         proposedStatusAV,
 			},
 		},
 	})

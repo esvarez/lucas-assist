@@ -214,6 +214,45 @@ func (r *MemoryRepository) UpdateChangesetStatus(ctx context.Context, userID, pr
 	return c, nil
 }
 
+func (r *MemoryRepository) ListChangesets(ctx context.Context, userID, projectID string) ([]domain.Changeset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	changesets := make([]domain.Changeset, 0)
+	for _, c := range r.changesets {
+		if c.UserID == userID && c.ProjectID == projectID {
+			changesets = append(changesets, c)
+		}
+	}
+	return changesets, nil
+}
+
+// UpdateChangesetProposedTasks mirrors DynamoRepository's: conditional on
+// the changeset still being "proposed", sets its proposed_tasks to tasks,
+// and flips status to "rejected" when tasks is empty (#169). Both a
+// missing changeset and one that isn't "proposed" return ErrConflict, not
+// ErrNotFound — matching DynamoDB's single compound condition
+// (attribute_exists(PK) AND status = proposed), which can't cheaply tell
+// the two apart without an extra read. Callers needing a clean 404 for a
+// genuinely missing changeset should GetChangeset first, as
+// updateChangesetTasksHandler does.
+func (r *MemoryRepository) UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	c, ok := r.changesets[changesetID]
+	if !ok || c.UserID != userID || c.ProjectID != projectID || c.Status != domain.ChangesetProposed {
+		return domain.Changeset{}, ErrConflict
+	}
+
+	c.ProposedTasks = tasks
+	if len(tasks) == 0 {
+		c.Status = domain.ChangesetRejected
+	}
+	r.changesets[changesetID] = c
+	return c, nil
+}
+
 func (r *MemoryRepository) CreateAgentRun(ctx context.Context, run domain.AgentRun) (domain.AgentRun, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -247,6 +286,19 @@ func (r *MemoryRepository) GetAgentRun(ctx context.Context, userID, projectID, r
 		return domain.AgentRun{}, ErrNotFound
 	}
 	return run, nil
+}
+
+func (r *MemoryRepository) ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	runs := make([]domain.AgentRun, 0)
+	for _, run := range r.agentRuns {
+		if run.UserID == userID && run.ProjectID == projectID {
+			runs = append(runs, run)
+		}
+	}
+	return runs, nil
 }
 
 // LeaseAgentRun is leasable when the run is still queued, or when it's
@@ -333,11 +385,14 @@ func (r *MemoryRepository) NeedsInputAgentRun(ctx context.Context, userID, proje
 // AcceptChangeset holds r.mu for the whole operation, which is what makes
 // it atomic here — there's no separate transaction primitive to reach for
 // in a single in-memory map, unlike DynamoRepository's TransactWriteItems.
-func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (AcceptChangesetResult, error) {
+// c.ProposedTasks is committed as Task rows; remainingProposedTasks is
+// what's left on the changeset afterward — see repository.go's doc
+// comment for the partial-accept semantics this enables (#169).
+func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (AcceptChangesetResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	hash := requestHash(c.UserID, c.ProjectID, c.ID)
+	hash := requestHashWithFingerprint(c.UserID, c.ProjectID, c.ID, requestFingerprint)
 	idemKey := c.UserID + "|" + idempotencyKey
 	if rec, ok := r.idempotency[idemKey]; ok {
 		if rec.RequestHash != hash {
@@ -407,10 +462,18 @@ func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	}
 	r.events[event.ID] = event
 
-	c.Status = domain.ChangesetApplied
-	r.changesets[c.ID] = c
+	// resultChangeset is c as it stands after this call: still "proposed"
+	// with whatever's left, or "applied" once nothing is (#169).
+	resultChangeset := c
+	resultChangeset.ProposedTasks = remainingProposedTasks
+	resultChangeset.BaseVersion = existingProject.Version
+	resultChangeset.Status = domain.ChangesetApplied
+	if len(remainingProposedTasks) > 0 {
+		resultChangeset.Status = domain.ChangesetProposed
+	}
+	r.changesets[c.ID] = resultChangeset
 
-	result := AcceptChangesetResult{Project: existingProject, Tasks: tasks, Event: event}
+	result := AcceptChangesetResult{Project: existingProject, Tasks: tasks, Event: event, Changeset: resultChangeset}
 	r.idempotency[idemKey] = idempotencyRecord{RequestHash: hash, Result: result}
 
 	return result, nil
