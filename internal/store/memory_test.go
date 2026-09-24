@@ -169,6 +169,68 @@ func TestMemoryRepository_DeleteProject(t *testing.T) {
 	}
 }
 
+// TestMemoryRepository_DeleteProject_CascadesChildren documents issue
+// #167: deleting a project must also remove its tasks, changesets, and
+// agent runs — not just leave them orphaned — and must leave another
+// project's children (and a task of the same deleted project's ID space
+// owned by a different user) untouched.
+func TestMemoryRepository_DeleteProject_CascadesChildren(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	other, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Widget"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	task, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: created.ID, Title: "Do the thing"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	otherTask, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: other.ID, Title: "Untouched"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{UserID: "user_1", ProjectID: created.ID, Skill: "decompose_task", Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: created.ID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	event := domain.Event{ID: domain.NewID(), ProjectID: created.ID, UserID: "user_1", Type: domain.EventChangesetAccepted}
+	repo.events[event.ID] = event
+
+	if err := repo.DeleteProject(ctx, "user_1", created.ID); err != nil {
+		t.Fatalf("DeleteProject() error = %v", err)
+	}
+
+	if _, err := repo.GetTask(ctx, "user_1", created.ID, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetTask() after project delete error = %v, want %v", err, ErrNotFound)
+	}
+	if _, err := repo.GetChangeset(ctx, "user_1", created.ID, changeset.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetChangeset() after project delete error = %v, want %v", err, ErrNotFound)
+	}
+	if _, err := repo.GetAgentRun(ctx, "user_1", created.ID, run.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetAgentRun() after project delete error = %v, want %v", err, ErrNotFound)
+	}
+	if _, ok := repo.events[event.ID]; ok {
+		t.Errorf("event %q still present after project delete", event.ID)
+	}
+
+	if _, err := repo.GetTask(ctx, "user_1", other.ID, otherTask.ID); err != nil {
+		t.Errorf("GetTask() for other project after unrelated delete error = %v, want task still present", err)
+	}
+}
+
 func TestMemoryRepository_DeleteProject_NotFound(t *testing.T) {
 	repo := NewMemoryRepository()
 

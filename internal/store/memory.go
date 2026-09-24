@@ -86,6 +86,10 @@ func (r *MemoryRepository) GetProject(ctx context.Context, userID, id string) (d
 	return p, nil
 }
 
+// DeleteProject removes the project itself along with every Task,
+// Changeset, AgentRun, and Event scoped to it (issue #167) — mirroring
+// DynamoRepository's cascade, whose child items share the project's
+// P#<pid># SK prefix.
 func (r *MemoryRepository) DeleteProject(ctx context.Context, userID, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,6 +100,28 @@ func (r *MemoryRepository) DeleteProject(ctx context.Context, userID, id string)
 	}
 
 	delete(r.projects, id)
+
+	for taskID, rec := range r.tasks {
+		if rec.UserID == userID && rec.ProjectID == id {
+			delete(r.tasks, taskID)
+		}
+	}
+	for changesetID, c := range r.changesets {
+		if c.UserID == userID && c.ProjectID == id {
+			delete(r.changesets, changesetID)
+		}
+	}
+	for runID, run := range r.agentRuns {
+		if run.UserID == userID && run.ProjectID == id {
+			delete(r.agentRuns, runID)
+		}
+	}
+	for eventID, e := range r.events {
+		if e.UserID == userID && e.ProjectID == id {
+			delete(r.events, eventID)
+		}
+	}
+
 	return nil
 }
 
