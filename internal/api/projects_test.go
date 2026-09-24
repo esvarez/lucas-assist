@@ -239,11 +239,23 @@ func (s stubRepository) GetAgentRun(ctx context.Context, userID, projectID, runI
 	return domain.AgentRun{}, s.getRunErr
 }
 
+func (s stubRepository) ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error) {
+	return nil, s.getRunErr
+}
+
 func (s stubRepository) GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error) {
 	return domain.Changeset{}, s.getChangeErr
 }
 
-func (s stubRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (store.AcceptChangesetResult, error) {
+func (s stubRepository) ListChangesets(ctx context.Context, userID, projectID string) ([]domain.Changeset, error) {
+	return nil, s.getChangeErr
+}
+
+func (s stubRepository) UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error) {
+	return domain.Changeset{}, s.acceptErr
+}
+
+func (s stubRepository) AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (store.AcceptChangesetResult, error) {
 	return store.AcceptChangesetResult{}, s.acceptErr
 }
 

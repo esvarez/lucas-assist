@@ -24,8 +24,11 @@ type ProjectRepository interface {
 	DeleteProject(ctx context.Context, userID, id string) error
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
+	ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
-	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, idempotencyKey string) (store.AcceptChangesetResult, error)
+	ListChangesets(ctx context.Context, userID, projectID string) ([]domain.Changeset, error)
+	UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error)
+	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (store.AcceptChangesetResult, error)
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (store.AcceptCreateProjectResult, error)
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
 }
@@ -39,7 +42,10 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("PUT /projects/{id}", updateProjectHandler(repo))
 	mux.HandleFunc("DELETE /projects/{id}", deleteProjectHandler(repo))
 	mux.HandleFunc("GET /agent-runs/{id}", getAgentRunHandler(repo))
+	mux.HandleFunc("GET /projects/{id}/agent-runs", listAgentRunsHandler(repo))
+	mux.HandleFunc("GET /projects/{id}/changesets", listChangesetsHandler(repo))
 	mux.HandleFunc("POST /projects/{id}/changesets/{changesetId}/accept", acceptChangesetHandler(repo))
+	mux.HandleFunc("PATCH /projects/{id}/changesets/{changesetId}/tasks", updateChangesetTasksHandler(repo))
 	mux.HandleFunc("POST /changesets/{changesetId}/accept", acceptCreateProjectChangesetHandler(repo))
 	mux.HandleFunc("GET /projects/{id}/tasks", listTasksHandler(repo))
 	return mux

@@ -53,6 +53,12 @@ export interface AgentRun {
   // "needs_input" (round 0 only) — see internal/domain.AgentRun.Questions.
   questions?: string[]
   changeset_id?: string
+  // The raw dispatch input captured at enqueue time — for decompose_task,
+  // task_title/task_description (#169: reading these back is how a
+  // rediscovered in-flight run, found via listAgentRuns after a page
+  // refresh, recovers what to redispatch with if it later needs a
+  // clarification answer or a retry after failing).
+  input?: { task_title?: string; task_description?: string }
   created_at: string
   updated_at: string
 }
@@ -66,6 +72,18 @@ export interface AgentRunResult extends AgentRun {
 export interface AcceptChangesetResult {
   project: Project
   tasks: FlatTask[]
+  // The changeset as it now stands (#169): still "proposed" with whatever
+  // wasn't selected this call, or "applied" once nothing is left. Drives
+  // whether the review UI keeps going or is done.
+  changeset: Changeset
+}
+
+// AcceptTaskSelection pairs a proposed task's current index — into
+// Changeset.proposed_tasks, as last returned by getChangeset/
+// listChangesets/a prior accept — with the content to commit for it,
+// possibly edited from what the model proposed (#169).
+export interface AcceptTaskSelection extends ProposedTask {
+  index: number
 }
 
 // dispatchDecomposeTask starts a decompose_task run for projectId and
@@ -159,16 +177,63 @@ export async function pollAgentRun(
   }
 }
 
+// selections, when passed, picks which of the changeset's currently-
+// proposed tasks to commit on this call, by index, with each one's
+// (possibly edited) content (#169) — anything not selected stays
+// "proposed" on the returned changeset instead of being discarded, so
+// "accept one now, decide on the rest later" works. Omit it to accept
+// every currently-proposed task unmodified.
 export async function acceptChangeset(
   projectId: string,
   changesetId: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  selections?: AcceptTaskSelection[]
 ): Promise<AcceptChangesetResult> {
   return request<AcceptChangesetResult>(
     `/api/projects/${encodeURIComponent(projectId)}/changesets/${encodeURIComponent(changesetId)}/accept`,
     {
       method: 'POST',
-      body: JSON.stringify({ idempotency_key: idempotencyKey }),
+      body: JSON.stringify({ idempotency_key: idempotencyKey, ...(selections ? { tasks: selections } : {}) }),
+    }
+  )
+}
+
+// listChangesets returns a project's changesets, optionally filtered to
+// one status (#169) — used to rediscover a pending decompose_task
+// proposal's id after a page refresh, since nothing else exposes one
+// without already having it from the AgentRun that created it.
+export async function listChangesets(projectId: string, status?: string): Promise<{ changesets: Changeset[] }> {
+  const params = status ? `?${new URLSearchParams({ status })}` : ''
+  return request<{ changesets: Changeset[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/changesets${params}`
+  )
+}
+
+// listAgentRuns returns a project's agent runs, optionally filtered to one
+// status (#169) — used to rediscover a decompose_task run that's still
+// queued/running after a page refresh, so the client can resume polling
+// it instead of the trigger looking idle and letting a second dispatch
+// race the first.
+export async function listAgentRuns(projectId: string, status?: string): Promise<{ agent_runs: AgentRun[] }> {
+  const params = status ? `?${new URLSearchParams({ status })}` : ''
+  return request<{ agent_runs: AgentRun[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-runs${params}`
+  )
+}
+
+// updateChangesetTasks persists removing one or more proposed tasks from a
+// still-"proposed" changeset without accepting anything (#169) — tasks is
+// the full list that should remain. An empty list rejects the changeset.
+export async function updateChangesetTasks(
+  projectId: string,
+  changesetId: string,
+  tasks: ProposedTask[]
+): Promise<{ changeset: Changeset }> {
+  return request<{ changeset: Changeset }>(
+    `/api/projects/${encodeURIComponent(projectId)}/changesets/${encodeURIComponent(changesetId)}/tasks`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ tasks }),
     }
   )
 }

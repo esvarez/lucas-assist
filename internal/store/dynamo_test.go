@@ -848,6 +848,125 @@ func TestDynamoRepository_UpdateChangesetStatus_WrongUser(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_ListChangesets documents #169's pending-proposal
+// reload: every changeset under a project's P#<pid>#CHANGESET# prefix
+// comes back, scoped by user the same way GetChangeset is.
+func TestDynamoRepository_ListChangesets(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+	otherProjectID := "proj-" + domain.NewID()
+
+	inProject, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: projectID, UserID: userID, Status: domain.ChangesetProposed})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+	if _, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: otherProjectID, UserID: userID, Status: domain.ChangesetProposed}); err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+	if _, err := repo.CreateChangeset(ctx, domain.Changeset{ProjectID: projectID, UserID: testUserID(), Status: domain.ChangesetProposed}); err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	got, err := repo.ListChangesets(ctx, userID, projectID)
+	if err != nil {
+		t.Fatalf("ListChangesets() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != inProject.ID {
+		t.Fatalf("ListChangesets() = %+v, want just %+v", got, inProject)
+	}
+}
+
+// TestDynamoRepository_UpdateChangesetProposedTasks documents #169:
+// removing a proposed task without accepting it persists against the
+// still-"proposed" changeset, with no Task rows created.
+func TestDynamoRepository_UpdateChangesetProposedTasks(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID:     projectID,
+		UserID:        userID,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{{Title: "First"}, {Title: "Second"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	remaining := []domain.ProposedTask{{Title: "First"}}
+	updated, err := repo.UpdateChangesetProposedTasks(ctx, userID, projectID, created.ID, remaining)
+	if err != nil {
+		t.Fatalf("UpdateChangesetProposedTasks() error = %v", err)
+	}
+	if updated.Status != domain.ChangesetProposed {
+		t.Errorf("Status = %q, want unchanged %q", updated.Status, domain.ChangesetProposed)
+	}
+	if len(updated.ProposedTasks) != 1 || updated.ProposedTasks[0].Title != "First" {
+		t.Errorf("ProposedTasks = %+v, want just [First]", updated.ProposedTasks)
+	}
+
+	got, err := repo.GetChangeset(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if len(got.ProposedTasks) != 1 {
+		t.Errorf("GetChangeset() ProposedTasks = %+v, want just [First]", got.ProposedTasks)
+	}
+}
+
+// TestDynamoRepository_UpdateChangesetProposedTasks_Empty documents that
+// removing every remaining proposed task rejects the changeset instead of
+// leaving a "proposed" changeset with nothing left to act on.
+func TestDynamoRepository_UpdateChangesetProposedTasks_Empty(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID:     projectID,
+		UserID:        userID,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{{Title: "First"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	updated, err := repo.UpdateChangesetProposedTasks(ctx, userID, projectID, created.ID, nil)
+	if err != nil {
+		t.Fatalf("UpdateChangesetProposedTasks() error = %v", err)
+	}
+	if updated.Status != domain.ChangesetRejected {
+		t.Errorf("Status = %q, want %q", updated.Status, domain.ChangesetRejected)
+	}
+}
+
+func TestDynamoRepository_UpdateChangesetProposedTasks_NotProposed(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID: projectID,
+		UserID:    userID,
+		Status:    domain.ChangesetApplied,
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	_, err = repo.UpdateChangesetProposedTasks(ctx, userID, projectID, created.ID, []domain.ProposedTask{{Title: "First"}})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("UpdateChangesetProposedTasks() error = %v, want %v", err, ErrConflict)
+	}
+}
+
 func TestDynamoRepository_CreateAgentRun(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
@@ -936,6 +1055,36 @@ func TestDynamoRepository_GetAgentRun_WrongUser(t *testing.T) {
 	_, err = repo.GetAgentRun(ctx, testUserID(), projectID, created.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetAgentRun() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+// TestDynamoRepository_ListAgentRuns documents #169's pending-run reload:
+// every run under a project's P#<pid>#RUN# prefix comes back, scoped by
+// user the same way GetAgentRun is.
+func TestDynamoRepository_ListAgentRuns(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+	otherProjectID := "proj-" + domain.NewID()
+
+	inProject, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: otherProjectID}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: testUserID(), ProjectID: projectID}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	got, err := repo.ListAgentRuns(ctx, userID, projectID)
+	if err != nil {
+		t.Fatalf("ListAgentRuns() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != inProject.ID {
+		t.Fatalf("ListAgentRuns() = %+v, want just %+v", got, inProject)
 	}
 }
 
@@ -1200,7 +1349,7 @@ func TestDynamoRepository_AcceptChangeset(t *testing.T) {
 		{Title: "Second", Description: "Do the second thing"},
 	})
 
-	result, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-1")
+	result, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
 	if err != nil {
 		t.Fatalf("AcceptChangeset() error = %v", err)
 	}
@@ -1246,6 +1395,68 @@ func TestDynamoRepository_AcceptChangeset(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_AcceptChangeset_Partial documents #169: accepting
+// only some of a changeset's proposed tasks leaves it "proposed" with the
+// rest, and a second accept call for the remainder succeeds — its
+// base_version must have advanced to the project's new version after the
+// first call, or the second call's own version check would wrongly
+// conflict.
+func TestDynamoRepository_AcceptChangeset_Partial(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	project, changeset := newTestAcceptableChangeset(t, repo, userID, []domain.ProposedTask{
+		{Title: "First"},
+		{Title: "Second"},
+	})
+
+	firstAccept := changeset
+	firstAccept.ProposedTasks = []domain.ProposedTask{{Title: "First"}}
+	remaining := []domain.ProposedTask{{Title: "Second"}}
+
+	result, err := repo.AcceptChangeset(ctx, project, firstAccept, remaining, "round-1", "idem-key-1")
+	if err != nil {
+		t.Fatalf("first AcceptChangeset() error = %v", err)
+	}
+	if len(result.Tasks) != 1 || result.Tasks[0].Title != "First" {
+		t.Fatalf("first AcceptChangeset() Tasks = %+v, want just [First]", result.Tasks)
+	}
+	if result.Changeset.Status != domain.ChangesetProposed {
+		t.Fatalf("result.Changeset.Status = %q, want still %q", result.Changeset.Status, domain.ChangesetProposed)
+	}
+
+	gotChangeset, err := repo.GetChangeset(ctx, userID, project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetProposed {
+		t.Fatalf("stored Changeset.Status = %q, want still %q", gotChangeset.Status, domain.ChangesetProposed)
+	}
+	if gotChangeset.BaseVersion != result.Project.Version {
+		t.Fatalf("stored Changeset.BaseVersion = %d, want advanced to the project's new version %d", gotChangeset.BaseVersion, result.Project.Version)
+	}
+
+	secondResult, err := repo.AcceptChangeset(ctx, result.Project, gotChangeset, nil, "round-2", "idem-key-2")
+	if err != nil {
+		t.Fatalf("second AcceptChangeset() error = %v", err)
+	}
+	if len(secondResult.Tasks) != 1 || secondResult.Tasks[0].Title != "Second" {
+		t.Fatalf("second AcceptChangeset() Tasks = %+v, want just [Second]", secondResult.Tasks)
+	}
+	if secondResult.Changeset.Status != domain.ChangesetApplied {
+		t.Fatalf("second result.Changeset.Status = %q, want %q", secondResult.Changeset.Status, domain.ChangesetApplied)
+	}
+
+	tasks, err := repo.ListTasks(ctx, userID, project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("ListTasks() returned %d tasks, want 2 (both partial accepts)", len(tasks))
+	}
+}
+
 // TestDynamoRepository_AcceptChangeset_VersionConflict documents the
 // architecture.md §8 optimistic-concurrency path for accept: a changeset
 // whose baseVersion no longer matches the project's stored version is
@@ -1263,7 +1474,7 @@ func TestDynamoRepository_AcceptChangeset_VersionConflict(t *testing.T) {
 		t.Fatalf("UpdateProject() error = %v", err)
 	}
 
-	_, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-1")
+	_, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("AcceptChangeset() error = %v, want %v", err, ErrConflict)
 	}
@@ -1301,11 +1512,11 @@ func TestDynamoRepository_AcceptChangeset_ConcurrentAcceptDoesNotOverwriteApplie
 
 	project, changeset := newTestAcceptableChangeset(t, repo, userID, []domain.ProposedTask{{Title: "First"}})
 
-	if _, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-winner"); err != nil {
+	if _, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-winner"); err != nil {
 		t.Fatalf("winner AcceptChangeset() error = %v", err)
 	}
 
-	_, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-loser")
+	_, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-loser")
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("loser AcceptChangeset() error = %v, want %v", err, ErrConflict)
 	}
@@ -1338,12 +1549,12 @@ func TestDynamoRepository_AcceptChangeset_IdempotentReplay(t *testing.T) {
 
 	project, changeset := newTestAcceptableChangeset(t, repo, userID, []domain.ProposedTask{{Title: "First"}})
 
-	first, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-1")
+	first, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
 	if err != nil {
 		t.Fatalf("first AcceptChangeset() error = %v", err)
 	}
 
-	second, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-1")
+	second, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
 	if err != nil {
 		t.Fatalf("second AcceptChangeset() error = %v", err)
 	}
@@ -1379,13 +1590,13 @@ func TestDynamoRepository_AcceptChangeset_IdempotencyKeyReused(t *testing.T) {
 	userID := testUserID()
 
 	project, changeset := newTestAcceptableChangeset(t, repo, userID, []domain.ProposedTask{{Title: "First"}})
-	if _, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-1"); err != nil {
+	if _, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1"); err != nil {
 		t.Fatalf("first AcceptChangeset() error = %v", err)
 	}
 
 	_, otherChangeset := newTestAcceptableChangeset(t, repo, userID, []domain.ProposedTask{{Title: "Unrelated"}})
 
-	_, err := repo.AcceptChangeset(ctx, project, otherChangeset, "idem-key-1")
+	_, err := repo.AcceptChangeset(ctx, project, otherChangeset, nil, "", "idem-key-1")
 	if !errors.Is(err, ErrIdempotencyKeyReused) {
 		t.Fatalf("AcceptChangeset() with reused key error = %v, want %v", err, ErrIdempotencyKeyReused)
 	}
@@ -1406,7 +1617,7 @@ func TestDynamoRepository_AcceptChangeset_NotProposed(t *testing.T) {
 		t.Fatalf("UpdateChangesetStatus() error = %v", err)
 	}
 
-	_, err = repo.AcceptChangeset(ctx, project, changeset, "idem-key-1")
+	_, err = repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("AcceptChangeset() on a rejected changeset error = %v, want %v", err, ErrConflict)
 	}
@@ -1437,7 +1648,7 @@ func TestDynamoRepository_AcceptChangeset_OversizedChangeset(t *testing.T) {
 	}
 	project, changeset := newTestAcceptableChangeset(t, repo, userID, tasks)
 
-	result, err := repo.AcceptChangeset(ctx, project, changeset, "idem-key-1")
+	result, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
 	if err != nil {
 		t.Fatalf("AcceptChangeset() error = %v", err)
 	}

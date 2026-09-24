@@ -310,6 +310,322 @@ func TestAcceptChangeset_OversizedChangeset(t *testing.T) {
 	}
 }
 
+// TestAcceptChangeset_TaskSelectionEditAndAcceptAll documents #169: a
+// client can edit decompose_task's proposed tasks during review by index,
+// and omitting `tasks` entirely still accepts everything unmodified (the
+// original all-at-once behavior).
+func TestAcceptChangeset_TaskSelectionEditAndAcceptAll(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{
+		{Title: "First", Description: "Original description"},
+		{Title: "Second", Description: "Unedited"},
+	})
+
+	body := `{
+		"idempotency_key": "idem-key-1",
+		"tasks": [{"index": 0, "title": "First (edited)", "description": "Edited description"}, {"index": 1, "title": "Second"}]
+	}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got acceptChangesetResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.Tasks) != 2 {
+		t.Fatalf("len(Tasks) = %d, want 2", len(got.Tasks))
+	}
+	if got.Tasks[0].Title != "First (edited)" || got.Tasks[0].Description != "Edited description" {
+		t.Errorf("Tasks[0] = %+v, want the edited title/description", got.Tasks[0])
+	}
+	if got.Changeset.Status != domain.ChangesetApplied {
+		t.Errorf("Changeset.Status = %q, want %q (nothing left proposed)", got.Changeset.Status, domain.ChangesetApplied)
+	}
+}
+
+// TestAcceptChangeset_TaskSelectionPartial documents #169's core behavior:
+// accepting only some of a changeset's proposed tasks by index leaves it
+// "proposed" with the rest, instead of discarding them.
+func TestAcceptChangeset_TaskSelectionPartial(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{
+		{Title: "First"},
+		{Title: "Second"},
+		{Title: "Third"},
+	})
+
+	body := `{"idempotency_key": "idem-key-1", "tasks": [{"index": 1, "title": "Second"}]}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got acceptChangesetResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.Tasks) != 1 || got.Tasks[0].Title != "Second" {
+		t.Fatalf("Tasks = %+v, want just [Second]", got.Tasks)
+	}
+	if got.Changeset.Status != domain.ChangesetProposed {
+		t.Fatalf("Changeset.Status = %q, want still %q", got.Changeset.Status, domain.ChangesetProposed)
+	}
+	if len(got.Changeset.ProposedTasks) != 2 {
+		t.Fatalf("Changeset.ProposedTasks = %+v, want First and Third still pending", got.Changeset.ProposedTasks)
+	}
+
+	// A follow-up accept for the rest, using the changeset the first
+	// response returned, must succeed — its base_version has to have
+	// advanced along with the project's.
+	secondBody, err := json.Marshal(map[string]any{
+		"idempotency_key": "idem-key-2",
+		"tasks": []map[string]any{
+			{"index": 0, "title": got.Changeset.ProposedTasks[0].Title},
+			{"index": 1, "title": got.Changeset.ProposedTasks[1].Title},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal second body: %v", err)
+	}
+	second := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBuffer(secondBody)), "user_1")
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, second)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second accept status = %d, want %d (body: %s)", secondRec.Code, http.StatusOK, secondRec.Body.String())
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 3 {
+		t.Errorf("ListTasks() returned %d tasks, want 3 (both accept calls combined)", len(tasks))
+	}
+}
+
+// TestAcceptChangeset_TaskSelectionEmpty documents that selecting nothing
+// out of an available proposal is rejected rather than silently applying
+// a changeset with nothing committed.
+func TestAcceptChangeset_TaskSelectionEmpty(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
+
+	body := `{"idempotency_key": "idem-key-1", "tasks": []}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	gotChangeset, err := repo.GetChangeset(context.Background(), "user_1", project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetProposed {
+		t.Errorf("Changeset.Status = %q, want unchanged %q", gotChangeset.Status, domain.ChangesetProposed)
+	}
+}
+
+// TestAcceptChangeset_TaskSelectionBlankTitle documents that an edited
+// task still needs a title — the one thing decompose_task's own output
+// always has and client-edited input can't be assumed to.
+func TestAcceptChangeset_TaskSelectionBlankTitle(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
+
+	body := `{"idempotency_key": "idem-key-1", "tasks": [{"index": 0, "title": "  "}]}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// TestAcceptChangeset_TaskSelectionOutOfRange documents that an index past
+// the end of the changeset's stored proposed_tasks is rejected rather than
+// silently ignored.
+func TestAcceptChangeset_TaskSelectionOutOfRange(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
+
+	body := `{"idempotency_key": "idem-key-1", "tasks": [{"index": 5, "title": "First"}]}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// TestAcceptChangeset_TaskSelectionDuplicateIndex documents that selecting
+// the same index twice is rejected — each proposed task can only be
+// resolved once per accept call.
+func TestAcceptChangeset_TaskSelectionDuplicateIndex(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}, {Title: "Second"}})
+
+	body := `{"idempotency_key": "idem-key-1", "tasks": [{"index": 0, "title": "First"}, {"index": 0, "title": "First again"}]}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, acceptChangesetPath(project, changeset), bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// TestListChangesets documents #169's pending-proposal reload: a project's
+// changesets come back, optionally filtered to one status.
+func TestListChangesets(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
+	if _, err := repo.UpdateChangesetStatus(context.Background(), "user_1", project.ID, changeset.ID, domain.ChangesetProposed); err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+	_, appliedChangeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "Other"}})
+	if _, err := repo.UpdateChangesetStatus(context.Background(), "user_1", appliedChangeset.ProjectID, appliedChangeset.ID, domain.ChangesetApplied); err != nil {
+		t.Fatalf("UpdateChangesetStatus() error = %v", err)
+	}
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/changesets?status=proposed", nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got listChangesetsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.Changesets) != 1 || got.Changesets[0].ID != changeset.ID {
+		t.Fatalf("Changesets = %+v, want just %+v", got.Changesets, changeset)
+	}
+}
+
+func TestListChangesets_ProjectNotFound(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/does-not-exist/changesets", nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// TestUpdateChangesetTasks documents #169's other durable half: removing a
+// proposed task persists immediately, with no Task rows created.
+func TestUpdateChangesetTasks(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{
+		{Title: "First"},
+		{Title: "Second"},
+	})
+
+	body := `{"tasks": [{"title": "First"}]}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/changesets/"+changeset.ID+"/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got updateChangesetTasksResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.Changeset.ProposedTasks) != 1 || got.Changeset.ProposedTasks[0].Title != "First" {
+		t.Fatalf("Changeset.ProposedTasks = %+v, want just [First]", got.Changeset.ProposedTasks)
+	}
+	if got.Changeset.Status != domain.ChangesetProposed {
+		t.Errorf("Changeset.Status = %q, want unchanged %q", got.Changeset.Status, domain.ChangesetProposed)
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("ListTasks() returned %d tasks, want 0 (removal creates none)", len(tasks))
+	}
+}
+
+func TestUpdateChangesetTasks_EmptyRejectsChangeset(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, changeset := createProjectAndChangeset(t, repo, "user_1", []domain.ProposedTask{{Title: "First"}})
+
+	body := `{"tasks": []}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/changesets/"+changeset.ID+"/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	gotChangeset, err := repo.GetChangeset(context.Background(), "user_1", project.ID, changeset.ID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if gotChangeset.Status != domain.ChangesetRejected {
+		t.Errorf("Changeset.Status = %q, want %q", gotChangeset.Status, domain.ChangesetRejected)
+	}
+}
+
+func TestUpdateChangesetTasks_NotFound(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	body := `{"tasks": []}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/changesets/does-not-exist/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
 // createCreateProjectChangeset is shared setup for the project-less
 // accept-changeset tests below: a proposed create_project changeset, ready
 // to accept — createCreateProjectAndChangeset's counterpart for a

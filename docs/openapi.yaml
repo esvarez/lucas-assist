@@ -138,6 +138,51 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /projects/{id}/changesets:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+    get:
+      summary: List a project's changesets
+      description: >
+        Returns every changeset belonging to the project, optionally
+        filtered to one status via ?status= (#169, e.g. ?status=proposed).
+        Added so a client can rediscover a pending decompose_task
+        proposal's id after a page refresh — nothing else exposes a
+        changeset's id without already having it from the AgentRun that
+        created it.
+      operationId: listChangesets
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [proposed, accepted, applying, applied, rejected, expired, conflict]
+      responses:
+        "200":
+          description: The project's changesets (possibly empty), filtered if requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changesets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Changeset"
+                required:
+                  - changesets
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No project with this id in this user's partition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /projects/{id}/changesets/{changesetId}/accept:
     parameters:
       - $ref: "#/components/parameters/ProjectIdPath"
@@ -147,15 +192,23 @@ paths:
         schema:
           type: string
     post:
-      summary: Accept a proposed changeset
+      summary: Accept some or all of a proposed changeset's tasks
       description: >
-        Atomically commits a changeset's proposed tasks: creates each as a
+        Atomically commits the selected proposed tasks: creates each as a
         Task, increments the project's version, and appends one Event, all
         in a single transaction (architecture.md §1/§9's "Accept changeset
-        -> conditional transaction -> applied result"). A changeset over 50
-        mutations (ADR 009) is rejected before any write. idempotency_key
-        deduplicates retries (architecture.md §15) — replaying the same key
-        against the same changeset returns the original result unchanged.
+        -> conditional transaction -> applied result"). The request body's
+        optional tasks (#169) selects which proposed tasks to commit now,
+        by index, with optional edits — see AcceptChangesetRequest. Any
+        proposed task not selected stays "proposed" on the changeset
+        (returned in the response's changeset field) for a later accept or
+        a PATCH .../tasks removal, instead of every accept call being
+        all-at-once terminal. Selecting more than 50 tasks in one call
+        (ADR 009) is rejected before any write. idempotency_key
+        deduplicates retries (architecture.md §15) — replaying the exact
+        same request (same key, same selection) returns the original
+        result unchanged; reusing a key with a different selection is
+        rejected instead.
       operationId: acceptChangeset
       requestBody:
         required: true
@@ -165,15 +218,17 @@ paths:
               $ref: "#/components/schemas/AcceptChangesetRequest"
       responses:
         "200":
-          description: Changeset accepted and applied
+          description: The selected tasks were accepted and applied
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AcceptChangesetResponse"
         "400":
           description: >
-            Invalid body, missing idempotency_key, or the changeset
-            exceeds the 50-mutation cap
+            Invalid body, missing idempotency_key, the selection exceeds
+            the 50-mutation cap, resolves to nothing when tasks are
+            actually available to select, repeats an index, references an
+            index out of range, or edits a task to a blank title
           content:
             application/json:
               schema:
@@ -188,12 +243,82 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >
-            The changeset isn't in "proposed" status (already applied with
-            a different idempotency key, rejected, expired, or already
+            The changeset isn't in "proposed" status (already fully applied
+            with a different idempotency key, rejected, expired, or already
             conflict), the project's version no longer matches the
             changeset's base_version (moved to "conflict" — re-propose,
             don't retry this request), or idempotency_key was already used
-            for a different changeset
+            for a different selection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /projects/{id}/changesets/{changesetId}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+      - name: changesetId
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      summary: Remove one or more proposed tasks without accepting them
+      description: >
+        Persists removing proposed tasks from a still-"proposed" changeset
+        (#169) — no Task rows are created, no project version change. The
+        request body is the full list of proposed tasks that should remain
+        (the client's current list minus whatever it just removed), the
+        same "send the current desired state" shape accept used before
+        index selection replaced it there. An empty list rejects the
+        changeset — there's nothing "proposed" left to act on. An edit the
+        user hasn't accepted yet is never sent here; edits are only
+        persisted by accepting that same task (see the accept route).
+      operationId: updateChangesetTasks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tasks:
+                  type: array
+                  items:
+                    type: object
+                    description: domain.ProposedTask — see internal/domain/task.go.
+              required:
+                - tasks
+      responses:
+        "200":
+          description: The changeset's proposed_tasks now reflect the request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  changeset:
+                    $ref: "#/components/schemas/Changeset"
+                required:
+                  - changeset
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No project or changeset with these ids in this user's partition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The changeset isn't in "proposed" status (a concurrent accept may have just finished it)
           content:
             application/json:
               schema:
@@ -285,6 +410,51 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /projects/{id}/agent-runs:
+    parameters:
+      - $ref: "#/components/parameters/ProjectIdPath"
+    get:
+      summary: List a project's agent runs
+      description: >
+        Returns every agent run belonging to the project, optionally
+        filtered to one status via ?status= (#169, e.g. ?status=running).
+        Added so a client can rediscover a decompose_task run that's still
+        queued/running after a page refresh and resume polling it — the
+        run's id would otherwise only ever be known from the response to
+        the request that created it.
+      operationId: listAgentRuns
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [queued, running, completed, failed, cancelled, needs_input]
+      responses:
+        "200":
+          description: The project's agent runs (possibly empty), filtered if requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentRunResult"
+                required:
+                  - agent_runs
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No project with this id in this user's partition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -677,9 +847,53 @@ components:
         idempotency_key:
           type: string
           description: >
-            Required. Replaying an accept with the same key against the
-            same changeset returns the original result instead of
-            re-applying it (architecture.md §15).
+            Required. Replaying an identical accept with the same key
+            against the same changeset returns the original result instead
+            of re-applying it (architecture.md §15) — "identical" now
+            includes which tasks were selected (#169): reusing a key with
+            a different selection against the same changeset is rejected
+            as a reused key, the same as any other differing request.
+        tasks:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+                description: >
+                  Position in the changeset's currently-stored
+                  proposed_tasks (as last returned by this changeset's
+                  GetChangeset/ListChangesets/a prior accept response) —
+                  not a stable id, since it's only ever resolved against
+                  that same snapshot.
+              title:
+                type: string
+              description:
+                type: string
+              acceptance_criteria:
+                type: array
+                items:
+                  type: string
+            required:
+              - index
+              - title
+          description: >
+            Optional, and only meaningful on POST
+            /projects/{id}/changesets/{changesetId}/accept (#169) — ignored
+            by the create_project accept route, which has no proposed
+            tasks. Selects which of the changeset's currently-proposed
+            tasks to commit on this call, by index, with each one's
+            (possibly edited) content — lets the client remove or edit
+            decompose_task's proposal during review without a separate
+            edit endpoint. Omit entirely to accept every currently-proposed
+            task unmodified (the original all-at-once behavior). Any
+            proposed task whose index isn't listed stays "proposed" on the
+            changeset for a later accept (or removal via PATCH
+            .../changesets/{changesetId}/tasks) instead of being discarded
+            — see AcceptChangesetResponse's changeset field. The resolved
+            selection can't be empty when the changeset has tasks to
+            select from, can't repeat an index, and every title must be
+            non-blank.
       required:
         - idempotency_key
 
@@ -692,12 +906,21 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Task"
+          description: Only the tasks committed by *this* call — not the changeset's original full proposal.
         event:
           $ref: "#/components/schemas/Event"
+        changeset:
+          $ref: "#/components/schemas/Changeset"
+          description: >
+            The changeset as it now stands (#169): still "proposed" with
+            whatever wasn't selected this call, or "applied" once nothing
+            is left. Use its proposed_tasks and updated indices for a
+            follow-up accept or removal call.
       required:
         - project
         - tasks
         - event
+        - changeset
 
     Task:
       type: object

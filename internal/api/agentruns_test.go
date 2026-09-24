@@ -228,3 +228,54 @@ func TestGetAgentRun_WrongUser(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
+
+// TestListAgentRuns documents #169's pending-run reload: a project's
+// agent runs come back, optionally filtered to one status.
+func TestListAgentRuns(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	queued, err := repo.CreateAgentRun(context.Background(), domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	completed, err := repo.CreateAgentRun(context.Background(), domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.CompleteAgentRun(context.Background(), "user_1", project.ID, completed.ID, "cs_1"); err != nil {
+		t.Fatalf("CompleteAgentRun() error = %v", err)
+	}
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/"+project.ID+"/agent-runs?status=queued", nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got listAgentRunsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(got.AgentRuns) != 1 || got.AgentRuns[0].ID != queued.ID {
+		t.Fatalf("AgentRuns = %+v, want just the queued run %+v", got.AgentRuns, queued)
+	}
+}
+
+func TestListAgentRuns_ProjectNotFound(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := withUserID(httptest.NewRequest(http.MethodGet, "/projects/does-not-exist/agent-runs", nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
