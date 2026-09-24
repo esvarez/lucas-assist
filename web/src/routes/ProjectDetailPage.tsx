@@ -294,16 +294,33 @@ function TaskDetails({ task }: { task: Task }) {
   )
 }
 
-// A leaf task (no subtasks) with neither a description nor acceptance
-// criteria has nothing to expand into, so it stays a plain checkbox row
-// rather than an accordion with an empty panel.
+// AddSubtaskRow is every task's way to add a subtask by hand, or to hand
+// the task (further, if breakLabel says "more") to decompose_task —
+// shared by LeafTask and TaskAccordion so both offer it identically.
+// Adding a subtask manually, and decomposing a task (further), both need
+// a backend way to attach new tasks under this task's id —
+// decompose_task has no such input yet and there's no manual
+// task-creation endpoint (#161), so this stays disabled rather than
+// silently doing nothing.
+function AddSubtaskRow({ breakLabel }: { breakLabel: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <Input placeholder="Add a subtask" disabled className="h-8" />
+      <Button variant="outline" size="sm" disabled>
+        <SparklesIcon data-icon="inline-start" />
+        {breakLabel}
+      </Button>
+    </div>
+  )
+}
+
+// Every task can be expanded now — even one with no description,
+// acceptance criteria, or subtasks yet still has AddSubtaskRow to show —
+// so LeafTask always renders the accordion rather than short-circuiting
+// to a plain checkbox row.
 function LeafTask({ task: initial }: { task: Task }) {
   const [task, setTask] = useState(initial)
   const toggleDone = (done: boolean) => setTask({ ...task, status: done ? 'done' : 'todo' })
-
-  if (!task.description && task.acceptance_criteria.length === 0) {
-    return <TaskCheckRow task={task} variant="outline" onToggleDone={toggleDone} />
-  }
 
   return (
     <Accordion>
@@ -324,7 +341,10 @@ function LeafTask({ task: initial }: { task: Task }) {
           </AccordionTrigger>
         </div>
         <AccordionContent>
-          <TaskDetails task={task} />
+          <div className="flex flex-col gap-4 pt-2">
+            <TaskDetails task={task} />
+            <AddSubtaskRow breakLabel="Break into subtasks" />
+          </div>
         </AccordionContent>
       </AccordionItem>
     </Accordion>
@@ -372,18 +392,7 @@ function TaskAccordion({ task }: { task: Task }) {
                 </li>
               ))}
             </ul>
-            {/* Adding a subtask manually, and decomposing an already-existing
-                task further, both need a backend way to attach new tasks
-                under this task's id — decompose_task has no such input yet
-                and there's no manual task-creation endpoint (#161), so
-                these stay disabled rather than silently doing nothing. */}
-            <div className="flex items-center gap-2">
-              <Input placeholder="Add a subtask" disabled className="h-8" />
-              <Button variant="outline" size="sm" disabled>
-                <SparklesIcon data-icon="inline-start" />
-                Break down more
-              </Button>
-            </div>
+            <AddSubtaskRow breakLabel="Break down more" />
           </div>
         </AccordionContent>
       </AccordionItem>
