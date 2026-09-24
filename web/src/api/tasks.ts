@@ -59,3 +59,20 @@ export async function listTasks(projectId: string): Promise<Task[]> {
   const body = await request<FlatTask[]>(`/api/projects/${encodeURIComponent(projectId)}/tasks`)
   return buildTaskTree(body)
 }
+
+// CreateTaskRequest mirrors docs/openapi.yaml's CreateTaskRequest — a
+// single task added by hand (#175), outside decompose_task's
+// propose/accept flow. parent_id nests it under an existing task.
+export interface CreateTaskRequest {
+  title: string
+  description?: string
+  acceptance_criteria?: string[]
+  parent_id?: string
+}
+
+export function createTask(projectId: string, input: CreateTaskRequest): Promise<FlatTask> {
+  return request<FlatTask>(`/api/projects/${encodeURIComponent(projectId)}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}

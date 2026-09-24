@@ -30,6 +30,8 @@ type ProjectRepository interface {
 	UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error)
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (store.AcceptChangesetResult, error)
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (store.AcceptCreateProjectResult, error)
+	CreateTask(ctx context.Context, userID string, t domain.Task) (domain.Task, error)
+	GetTask(ctx context.Context, userID, projectID, taskID string) (domain.Task, error)
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
 }
 
@@ -48,5 +50,6 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("PATCH /projects/{id}/changesets/{changesetId}/tasks", updateChangesetTasksHandler(repo))
 	mux.HandleFunc("POST /changesets/{changesetId}/accept", acceptCreateProjectChangesetHandler(repo))
 	mux.HandleFunc("GET /projects/{id}/tasks", listTasksHandler(repo))
+	mux.HandleFunc("POST /projects/{id}/tasks", createTaskHandler(repo))
 	return mux
 }

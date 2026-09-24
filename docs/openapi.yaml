@@ -412,6 +412,41 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+    post:
+      summary: Add a task by hand
+      description: >
+        Creates a single task directly, outside the decompose_task
+        propose/accept flow (#175). The task starts as "todo" and is
+        ordered after its existing siblings. Set parent_id to add it as a
+        subtask of another task in the same project.
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: >
+            Invalid body or failed validation (e.g. missing title, or a
+            parent_id that isn't a task in this project)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /projects/{id}/agent-runs:
     parameters:
@@ -660,6 +695,25 @@ components:
       required:
         - name
         - goal
+
+    CreateTaskRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Required; surrounding whitespace is trimmed.
+        description:
+          type: string
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+          description: Blank entries are dropped.
+        parent_id:
+          type: string
+          description: Optional — an existing task in the same project to nest this under.
+      required:
+        - title
 
     UpdateProjectRequest:
       type: object

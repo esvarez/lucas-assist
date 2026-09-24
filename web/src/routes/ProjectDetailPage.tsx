@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { AlertCircleIcon, ChevronLeftIcon, EllipsisIcon, PlusIcon, SparklesIcon } from 'lucide-react'
 import {
@@ -41,12 +41,14 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { getProject, type Project } from '@/src/api/projects'
 import { listAgentRuns, listChangesets } from '@/src/api/skills'
-import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
+import { createTask, flattenTasks, listTasks, type Task } from '@/src/api/tasks'
+import AddTaskDialog from '@/src/components/AddTaskDialog'
 import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
 import DecomposeRunPanel from '@/src/components/DecomposeRunPanel'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
 import { useDecomposeRun } from '@/src/hooks/useDecomposeRun'
+import { notify } from '@/src/lib/notify'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
 import { cn } from '@/lib/utils'
@@ -294,23 +296,66 @@ function TaskDetails({ task }: { task: Task }) {
   )
 }
 
+// onAddSubtask creates a subtask under the given parent from just a
+// title — AddSubtaskRow's quick-add. Rejects on failure so the row can
+// keep what was typed.
+type AddSubtask = (parentId: string, title: string) => Promise<void>
+
 // AddSubtaskRow is every task's way to add a subtask by hand, or to hand
 // the task (further, if breakLabel says "more") to decompose_task —
 // shared by LeafTask and TaskAccordion so both offer it identically.
-// Adding a subtask manually, and decomposing a task (further), both need
-// a backend way to attach new tasks under this task's id —
-// decompose_task has no such input yet and there's no manual
-// task-creation endpoint (#161), so this stays disabled rather than
-// silently doing nothing.
-function AddSubtaskRow({ breakLabel }: { breakLabel: string }) {
+// Typing a title and pressing Enter adds it as a subtask via POST
+// /projects/{id}/tasks (#175); the dialog's "Add task" covers the other
+// fields. Decomposing a task (further) still needs a way to attach new
+// tasks under this task's id — decompose_task has no such input yet
+// (#161) — so that button stays disabled rather than silently doing
+// nothing.
+function AddSubtaskRow({
+  parentId,
+  breakLabel,
+  onAddSubtask,
+}: {
+  parentId: string
+  breakLabel: string
+  onAddSubtask: AddSubtask
+}) {
+  const [title, setTitle] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    const trimmed = title.trim()
+    if (!trimmed || submitting) return
+
+    setSubmitting(true)
+    try {
+      await onAddSubtask(parentId, trimmed)
+      setTitle('')
+    } catch {
+      // onAddSubtask already told the user; keep the title for a retry.
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
-    <div className="flex items-center gap-2">
-      <Input placeholder="Add a subtask" disabled className="h-8" />
-      <Button variant="outline" size="sm" disabled>
+    <form onSubmit={handleSubmit} className="flex items-center gap-2">
+      <Input
+        placeholder="Add a subtask"
+        aria-label="Add a subtask"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        disabled={submitting}
+        className="h-8"
+      />
+      <Button type="submit" variant="ghost" size="icon-sm" aria-label="Add subtask" disabled={submitting || !title.trim()}>
+        {submitting ? <Spinner /> : <PlusIcon />}
+      </Button>
+      <Button type="button" variant="outline" size="sm" disabled>
         <SparklesIcon data-icon="inline-start" />
         {breakLabel}
       </Button>
-    </div>
+    </form>
   )
 }
 
@@ -318,7 +363,7 @@ function AddSubtaskRow({ breakLabel }: { breakLabel: string }) {
 // acceptance criteria, or subtasks yet still has AddSubtaskRow to show —
 // so LeafTask always renders the accordion rather than short-circuiting
 // to a plain checkbox row.
-function LeafTask({ task: initial }: { task: Task }) {
+function LeafTask({ task: initial, onAddSubtask }: { task: Task; onAddSubtask: AddSubtask }) {
   const [task, setTask] = useState(initial)
   const toggleDone = (done: boolean) => setTask({ ...task, status: done ? 'done' : 'todo' })
 
@@ -343,7 +388,7 @@ function LeafTask({ task: initial }: { task: Task }) {
         <AccordionContent>
           <div className="flex flex-col gap-4 pt-2">
             <TaskDetails task={task} />
-            <AddSubtaskRow breakLabel="Break into subtasks" />
+            <AddSubtaskRow parentId={task.id} breakLabel="Break into subtasks" onAddSubtask={onAddSubtask} />
           </div>
         </AccordionContent>
       </AccordionItem>
@@ -351,8 +396,17 @@ function LeafTask({ task: initial }: { task: Task }) {
   )
 }
 
-function TaskAccordion({ task }: { task: Task }) {
+function TaskAccordion({ task, onAddSubtask }: { task: Task; onAddSubtask: AddSubtask }) {
   const [subtasks, setSubtasks] = useState(task.subtasks)
+  // Re-sync when the task list is refetched (e.g. after adding a
+  // subtask), which hands this still-mounted accordion a new subtasks
+  // array — otherwise the local copy above would keep showing the old
+  // list.
+  const [syncedSubtasks, setSyncedSubtasks] = useState(task.subtasks)
+  if (task.subtasks !== syncedSubtasks) {
+    setSyncedSubtasks(task.subtasks)
+    setSubtasks(task.subtasks)
+  }
   const done = subtasks.filter((subtask) => subtask.status === 'done').length
 
   return (
@@ -392,7 +446,7 @@ function TaskAccordion({ task }: { task: Task }) {
                 </li>
               ))}
             </ul>
-            <AddSubtaskRow breakLabel="Break down more" />
+            <AddSubtaskRow parentId={task.id} breakLabel="Break down more" onAddSubtask={onAddSubtask} />
           </div>
         </AccordionContent>
       </AccordionItem>
@@ -400,11 +454,11 @@ function TaskAccordion({ task }: { task: Task }) {
   )
 }
 
-function TaskItem({ task }: { task: Task }) {
+function TaskItem({ task, onAddSubtask }: { task: Task; onAddSubtask: AddSubtask }) {
   if (task.subtasks.length === 0) {
-    return <LeafTask task={task} />
+    return <LeafTask task={task} onAddSubtask={onAddSubtask} />
   }
-  return <TaskAccordion task={task} />
+  return <TaskAccordion task={task} onAddSubtask={onAddSubtask} />
 }
 
 // projectSeed derives decompose_task's task_title/task_description from
@@ -422,17 +476,38 @@ function projectSeed(project: Project): { title: string; description: string } {
 function TasksSection({
   project,
   tasks,
-  onAccepted,
+  onTasksChanged,
 }: {
   project: Project
   tasks: Task[]
-  onAccepted: () => void
+  onTasksChanged: () => void
 }) {
   const projectId = project.id
   const flat = flattenTasks(tasks)
   const done = flat.filter((task) => task.status === 'done').length
+  const [addTaskOpen, setAddTaskOpen] = useState(false)
 
-  const run = useDecomposeRun(projectId, onAccepted)
+  const run = useDecomposeRun(projectId, onTasksChanged)
+
+  async function addSubtask(parentId: string, title: string) {
+    try {
+      await createTask(projectId, { title, parent_id: parentId })
+    } catch (err) {
+      notify.error(err instanceof Error ? `Failed to add subtask: ${err.message}` : 'Failed to add subtask')
+      throw err
+    }
+    onTasksChanged()
+  }
+
+  const addTaskDialog = (
+    <AddTaskDialog
+      projectId={projectId}
+      tasks={tasks}
+      open={addTaskOpen}
+      onOpenChange={setAddTaskOpen}
+      onCreated={onTasksChanged}
+    />
+  )
   // Remembered across the run's lifecycle (a clarify resubmit, an error
   // retry) — whatever form collected it, if any, has already closed by
   // the time those happen.
@@ -503,12 +578,11 @@ function TasksSection({
         </EmptyHeader>
         <EmptyContent>
           <BreakIntoTasksButton onStart={startBreakIntoTasks} working={run.state.name === 'working'} disabled={pending} />
-          {/* Manual single-task creation has no backend endpoint yet (#161)
-              — shown disabled rather than silently implying it works. */}
-          <Button variant="ghost" size="sm" disabled>
+          <Button variant="ghost" size="sm" onClick={() => setAddTaskOpen(true)}>
             Add a task manually
           </Button>
         </EmptyContent>
+        {addTaskDialog}
       </Empty>
     )
   }
@@ -527,9 +601,7 @@ function TasksSection({
         {/* Desktop only (frame 2a) — mobile gets the same two actions in the
             fixed footer below instead, so they don't render twice at once. */}
         <div className="hidden items-center gap-2 lg:flex">
-          {/* Manual single-task creation has no backend endpoint yet (#161)
-              — shown disabled rather than silently implying it works. */}
-          <Button size="sm" disabled>
+          <Button size="sm" onClick={() => setAddTaskOpen(true)}>
             <PlusIcon data-icon="inline-start" />
             Add task
           </Button>
@@ -553,16 +625,14 @@ function TasksSection({
       {tasks.length > 0 && (
         <ItemGroup>
           {tasks.map((task) => (
-            <TaskItem key={task.id} task={task} />
+            <TaskItem key={task.id} task={task} onAddSubtask={addSubtask} />
           ))}
         </ItemGroup>
       )}
       {/* Mobile/tablet only (frame 1b) — the desktop header above carries
           the same two actions, hidden here to avoid showing both at once. */}
       <div className="fixed inset-x-0 bottom-0 flex items-center gap-2 border-t border-border bg-background p-3 lg:hidden">
-        {/* Manual single-task creation has no backend endpoint yet (#161)
-            — shown disabled rather than silently implying it works. */}
-        <Button className="flex-1" disabled>
+        <Button className="flex-1" onClick={() => setAddTaskOpen(true)}>
           <PlusIcon data-icon="inline-start" />
           Add task
         </Button>
@@ -575,6 +645,7 @@ function TasksSection({
           Break down
         </Button>
       </div>
+      {addTaskDialog}
     </div>
   )
 }
@@ -584,8 +655,8 @@ function ProjectDetailPage() {
   const [project, setProject] = useState<Project | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState<string | null>(null)
-  // Bumped after a decompose_task changeset is accepted, so the task list
-  // is refetched and picks up the newly committed tasks.
+  // Bumped after a decompose_task changeset is accepted or a task is added
+  // by hand, so the task list is refetched and picks up the new tasks.
   const [taskRefreshKey, setTaskRefreshKey] = useState(0)
 
   useEffect(() => {
@@ -645,7 +716,7 @@ function ProjectDetailPage() {
           <TasksSection
             project={project}
             tasks={tasks}
-            onAccepted={() => setTaskRefreshKey((k) => k + 1)}
+            onTasksChanged={() => setTaskRefreshKey((k) => k + 1)}
           />
         </div>
         <div className="order-1 lg:order-2">
