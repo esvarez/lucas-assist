@@ -106,6 +106,18 @@ export function ReviewStep({
     setTasks((prev) => prev.map((task, i) => (i === index ? { ...task, ...patch } : task)))
   }
 
+  // removeTask drops `remaining` from the on-screen list immediately, in
+  // addition to persisting it via onRemoveTasks (#173) — the row otherwise
+  // stayed visible after a successful removal, since nothing else here
+  // ever wrote back to `tasks` (the state this component actually
+  // renders): onRemoveTasks's result only reaches this component as a new
+  // `changeset` prop, and ReviewStep isn't remounted when that changes, so
+  // the `useState` initializer below never re-runs to pick it up.
+  function removeTask(remaining: ProposedTask[]) {
+    setTasks(remaining)
+    onRemoveTasks(remaining)
+  }
+
   return (
     <Card>
       <CardContent className="flex flex-col gap-4">
@@ -166,7 +178,7 @@ export function ReviewStep({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  onClick={() => onRemoveTasks(tasks.filter((_, i) => i !== index))}
+                  onClick={() => removeTask(tasks.filter((_, i) => i !== index))}
                   aria-label={`Remove subtask ${index + 1}`}
                 >
                   <XIcon />
@@ -176,7 +188,7 @@ export function ReviewStep({
           ))}
         </ItemGroup>
         <div className={actionsRowClassName}>
-          <Button type="button" variant="outline" onClick={() => onRemoveTasks([])}>
+          <Button type="button" variant="outline" onClick={() => removeTask([])}>
             Reject all
           </Button>
           <Button
