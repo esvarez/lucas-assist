@@ -41,12 +41,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { getProject, type Project } from '@/src/api/projects'
 import { listAgentRuns, listChangesets } from '@/src/api/skills'
-import { flattenTasks, listTasks, type Task } from '@/src/api/tasks'
+import { flattenTasks, listTasks, updateTaskStatus, type Task } from '@/src/api/tasks'
 import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
 import DecomposeRunPanel from '@/src/components/DecomposeRunPanel'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
 import EditProjectDialog from '@/src/components/EditProjectDialog'
 import { useDecomposeRun } from '@/src/hooks/useDecomposeRun'
+import { notify } from '@/src/lib/notify'
 import { statusBadgeClassName } from '@/src/lib/project-status'
 import { taskStatusClassName, taskStatusLabel } from '@/src/lib/task-status'
 import { cn } from '@/lib/utils'
@@ -294,6 +295,20 @@ function TaskDetails({ task }: { task: Task }) {
   )
 }
 
+// persistTaskStatus is the durable half of a task's done checkbox (#181)
+// — PATCH /projects/:id/tasks/:taskId. Callers apply the optimistic UI
+// update themselves before calling this, and undo it via onRollback if
+// the request fails; the retry action re-runs this same call rather than
+// re-deriving status from whatever the UI has drifted to by then.
+function persistTaskStatus(projectId: string, taskId: string, status: string, onRollback: () => void) {
+  updateTaskStatus(projectId, taskId, status).catch(() => {
+    onRollback()
+    notify.error('Failed to update task', {
+      retry: () => persistTaskStatus(projectId, taskId, status, onRollback),
+    })
+  })
+}
+
 // AddSubtaskRow is every task's way to add a subtask by hand, or to hand
 // the task (further, if breakLabel says "more") to decompose_task —
 // shared by LeafTask and TaskAccordion so both offer it identically.
@@ -318,9 +333,14 @@ function AddSubtaskRow({ breakLabel }: { breakLabel: string }) {
 // acceptance criteria, or subtasks yet still has AddSubtaskRow to show —
 // so LeafTask always renders the accordion rather than short-circuiting
 // to a plain checkbox row.
-function LeafTask({ task: initial }: { task: Task }) {
+function LeafTask({ task: initial, projectId }: { task: Task; projectId: string }) {
   const [task, setTask] = useState(initial)
-  const toggleDone = (done: boolean) => setTask({ ...task, status: done ? 'done' : 'todo' })
+  const toggleDone = (done: boolean) => {
+    const status = done ? 'done' : 'todo'
+    const previousStatus = task.status
+    setTask({ ...task, status })
+    persistTaskStatus(projectId, task.id, status, () => setTask((current) => ({ ...current, status: previousStatus })))
+  }
 
   return (
     <Accordion>
@@ -351,9 +371,20 @@ function LeafTask({ task: initial }: { task: Task }) {
   )
 }
 
-function TaskAccordion({ task }: { task: Task }) {
+function TaskAccordion({ task, projectId }: { task: Task; projectId: string }) {
   const [subtasks, setSubtasks] = useState(task.subtasks)
   const done = subtasks.filter((subtask) => subtask.status === 'done').length
+
+  function toggleSubtaskDone(subtaskId: string, doneNow: boolean) {
+    const status = doneNow ? 'done' : 'todo'
+    const previousStatus = subtasks.find((subtask) => subtask.id === subtaskId)?.status
+    setSubtasks((current) => current.map((item) => (item.id === subtaskId ? { ...item, status } : item)))
+    persistTaskStatus(projectId, subtaskId, status, () =>
+      setSubtasks((current) =>
+        current.map((item) => (item.id === subtaskId ? { ...item, status: previousStatus ?? item.status } : item)),
+      ),
+    )
+  }
 
   return (
     <Accordion>
@@ -379,16 +410,7 @@ function TaskAccordion({ task }: { task: Task }) {
             <ul className="flex flex-col gap-2">
               {subtasks.map((subtask) => (
                 <li key={subtask.id}>
-                  <TaskCheckRow
-                    task={subtask}
-                    onToggleDone={(done) =>
-                      setSubtasks((current) =>
-                        current.map((item) =>
-                          item.id === subtask.id ? { ...item, status: done ? 'done' : 'todo' } : item,
-                        ),
-                      )
-                    }
-                  />
+                  <TaskCheckRow task={subtask} onToggleDone={(done) => toggleSubtaskDone(subtask.id, done)} />
                 </li>
               ))}
             </ul>
@@ -400,11 +422,11 @@ function TaskAccordion({ task }: { task: Task }) {
   )
 }
 
-function TaskItem({ task }: { task: Task }) {
+function TaskItem({ task, projectId }: { task: Task; projectId: string }) {
   if (task.subtasks.length === 0) {
-    return <LeafTask task={task} />
+    return <LeafTask task={task} projectId={projectId} />
   }
-  return <TaskAccordion task={task} />
+  return <TaskAccordion task={task} projectId={projectId} />
 }
 
 // projectSeed derives decompose_task's task_title/task_description from
@@ -553,7 +575,7 @@ function TasksSection({
       {tasks.length > 0 && (
         <ItemGroup>
           {tasks.map((task) => (
-            <TaskItem key={task.id} task={task} />
+            <TaskItem key={task.id} task={task} projectId={projectId} />
           ))}
         </ItemGroup>
       )}

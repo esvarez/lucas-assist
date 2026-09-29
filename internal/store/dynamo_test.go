@@ -706,6 +706,67 @@ func TestDynamoRepository_ListTasks_Empty(t *testing.T) {
 	}
 }
 
+func TestDynamoRepository_UpdateTaskStatus(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: projectID, Title: "Add login command", Status: "todo"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	updated, err := repo.UpdateTaskStatus(ctx, userID, projectID, created.ID, "done")
+	if err != nil {
+		t.Fatalf("UpdateTaskStatus() error = %v", err)
+	}
+	if updated.Status != "done" {
+		t.Errorf("UpdateTaskStatus() Status = %q, want %q", updated.Status, "done")
+	}
+
+	got, err := repo.GetTask(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("GetTask() after UpdateTaskStatus Status = %q, want %q", got.Status, "done")
+	}
+}
+
+func TestDynamoRepository_UpdateTaskStatus_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+
+	_, err := repo.UpdateTaskStatus(context.Background(), testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID(), "done")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateTaskStatus() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestDynamoRepository_UpdateTaskStatus_WrongUser(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: projectID, Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	if _, err := repo.UpdateTaskStatus(ctx, testUserID(), projectID, created.ID, "done"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateTaskStatus() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+
+	got, err := repo.GetTask(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if got.Status == "done" {
+		t.Error("UpdateTaskStatus() with wrong userID changed the task's status")
+	}
+}
+
 func TestDynamoRepository_CreateChangeset(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()

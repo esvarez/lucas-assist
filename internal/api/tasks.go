@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/esvarez/lucas-assist/internal/auth"
+	"github.com/esvarez/lucas-assist/internal/domain"
 	"github.com/esvarez/lucas-assist/internal/store"
 )
 
@@ -43,5 +45,53 @@ func listTasksHandler(repo ProjectRepository) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, tasks)
+	}
+}
+
+// updateTaskStatusRequest's Status is restricted to the vocabulary
+// web/src/lib/task-status.ts already renders a label/color for — the only
+// four values any client does anything with today (#181).
+type updateTaskStatusRequest struct {
+	Status string `json:"status" validate:"required,oneof=todo in-progress done blocked"`
+}
+
+type updateTaskStatusResponse struct {
+	Task domain.Task `json:"task"`
+}
+
+// updateTaskStatusHandler backs PATCH /projects/{id}/tasks/{taskId} (#181)
+// — the durable half of the project detail page's done checkbox, which
+// previously only ever updated its own local React state and forgot the
+// change on the next page load. No precheck fetch: UpdateTaskStatus's own
+// conditional update already reports ErrNotFound unambiguously (unlike
+// updateChangesetTasksHandler's UpdateChangesetProposedTasks, which
+// conflates "missing" with "wrong status" and so needs one).
+func updateTaskStatusHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req updateTaskStatusRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+			return
+		}
+
+		if !validateStruct(w, req) {
+			return
+		}
+
+		userID, _ := auth.UserIDFromContext(r.Context())
+		projectID := r.PathValue("id")
+		taskID := r.PathValue("taskId")
+
+		task, err := repo.UpdateTaskStatus(r.Context(), userID, projectID, taskID, req.Status)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, updateTaskStatusResponse{Task: task})
 	}
 }
