@@ -1,0 +1,22 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Cross-compiles every Lambda entrypoint (linux/arm64) so a build break
+  # fails the PR instead of surfacing at sam build/deploy time.
+  build:
+    name: Build Lambda binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build

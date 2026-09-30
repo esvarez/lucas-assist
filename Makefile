@@ -5,8 +5,13 @@
 ENVIRONMENT ?= dev
 STACK_NAME ?= nudge-$(ENVIRONMENT)
 
-# Cross-compiles all Lambda binaries.
-build: build-SkillsFunction build-ApiFunction build-WorkerFunction
+# Cross-compiles all Lambda binaries, each into its own bin/<Function>/
+# directory. SAM calls the per-function targets directly with its own
+# $(ARTIFACTS_DIR), so this override only applies to `make build`.
+build:
+	$(MAKE) build-SkillsFunction ARTIFACTS_DIR=$(CURDIR)/bin/SkillsFunction
+	$(MAKE) build-ApiFunction ARTIFACTS_DIR=$(CURDIR)/bin/ApiFunction
+	$(MAKE) build-WorkerFunction ARTIFACTS_DIR=$(CURDIR)/bin/WorkerFunction
 
 # SAM invokes this target (Metadata.BuildMethod: makefile in template.yaml)
 # for the SkillsFunction resource, with $(ARTIFACTS_DIR) set to the build
