@@ -311,27 +311,38 @@ function persistTaskStatus(projectId: string, taskId: string, status: string, on
 
 // AddSubtaskRow is every task's way to add a subtask by hand (#175/#185),
 // or to hand the task (further, if breakLabel says "more") to
-// decompose_task — shared by LeafTask and TaskAccordion so both offer it
-// identically. decompose_task has no per-task input yet (#161), so that
-// half stays disabled; onSubtaskAdded re-fetches the project's task tree
-// (same callback the decompose_task accept flow already uses) so a newly
-// added subtask shows up without a manual page reload.
+// decompose_task (#199/#200) — shared by LeafTask and TaskAccordion so
+// both offer it identically. onSubtaskAdded/onBreakDown both re-fetch the
+// project's task tree (the same taskRefreshKey-bumping callback the
+// manual-add and decompose_task accept flows already use) so either one
+// shows up without a manual page reload. pending disables both triggers
+// while any decomposition — this task's or another's — is in flight,
+// generalizing the existing "one proposal per project at a time" rule
+// (#169) rather than letting a second dispatch race the first; working
+// is only true for the task whose own "Break into subtasks"/"Break down
+// more" click started the run currently in flight.
 function AddSubtaskRow({
+  task,
   projectId,
-  parentId,
   breakLabel,
+  pending,
+  working,
   onSubtaskAdded,
+  onBreakDown,
 }: {
+  task: Task
   projectId: string
-  parentId: string
   breakLabel: string
+  pending: boolean
+  working: boolean
   onSubtaskAdded: () => void
+  onBreakDown: (task: Task) => void
 }) {
   return (
     <div className="flex items-center gap-2">
       <AddTaskDialog
         projectId={projectId}
-        parentId={parentId}
+        parentId={task.id}
         onCreated={onSubtaskAdded}
         trigger={
           <Button variant="outline" size="sm" className="h-8">
@@ -340,8 +351,8 @@ function AddSubtaskRow({
           </Button>
         }
       />
-      <Button variant="outline" size="sm" disabled>
-        <SparklesIcon data-icon="inline-start" />
+      <Button variant="outline" size="sm" onClick={() => onBreakDown(task)} disabled={pending}>
+        {working ? <Spinner data-icon="inline-start" className="size-3.5" /> : <SparklesIcon data-icon="inline-start" />}
         {breakLabel}
       </Button>
     </div>
@@ -356,10 +367,16 @@ function LeafTask({
   task: initial,
   projectId,
   onTaskAdded,
+  onBreakDown,
+  pending,
+  working,
 }: {
   task: Task
   projectId: string
   onTaskAdded: () => void
+  onBreakDown: (task: Task) => void
+  pending: boolean
+  working: boolean
 }) {
   const [task, setTask] = useState(initial)
   const toggleDone = (done: boolean) => {
@@ -391,10 +408,13 @@ function LeafTask({
           <div className="flex flex-col gap-4 pt-2">
             <TaskDetails task={task} />
             <AddSubtaskRow
+              task={task}
               projectId={projectId}
-              parentId={task.id}
               breakLabel="Break into subtasks"
+              pending={pending}
+              working={working}
               onSubtaskAdded={onTaskAdded}
+              onBreakDown={onBreakDown}
             />
           </div>
         </AccordionContent>
@@ -407,10 +427,16 @@ function TaskAccordion({
   task,
   projectId,
   onTaskAdded,
+  onBreakDown,
+  pending,
+  working,
 }: {
   task: Task
   projectId: string
   onTaskAdded: () => void
+  onBreakDown: (task: Task) => void
+  pending: boolean
+  working: boolean
 }) {
   const [subtasks, setSubtasks] = useState(task.subtasks)
   const done = subtasks.filter((subtask) => subtask.status === 'done').length
@@ -455,10 +481,13 @@ function TaskAccordion({
               ))}
             </ul>
             <AddSubtaskRow
+              task={task}
               projectId={projectId}
-              parentId={task.id}
               breakLabel="Break down more"
+              pending={pending}
+              working={working}
               onSubtaskAdded={onTaskAdded}
+              onBreakDown={onBreakDown}
             />
           </div>
         </AccordionContent>
@@ -471,15 +500,39 @@ function TaskItem({
   task,
   projectId,
   onTaskAdded,
+  onBreakDown,
+  pending,
+  working,
 }: {
   task: Task
   projectId: string
   onTaskAdded: () => void
+  onBreakDown: (task: Task) => void
+  pending: boolean
+  working: boolean
 }) {
   if (task.subtasks.length === 0) {
-    return <LeafTask task={task} projectId={projectId} onTaskAdded={onTaskAdded} />
+    return (
+      <LeafTask
+        task={task}
+        projectId={projectId}
+        onTaskAdded={onTaskAdded}
+        onBreakDown={onBreakDown}
+        pending={pending}
+        working={working}
+      />
+    )
   }
-  return <TaskAccordion task={task} projectId={projectId} onTaskAdded={onTaskAdded} />
+  return (
+    <TaskAccordion
+      task={task}
+      projectId={projectId}
+      onTaskAdded={onTaskAdded}
+      onBreakDown={onBreakDown}
+      pending={pending}
+      working={working}
+    />
+  )
 }
 
 // projectSeed derives decompose_task's task_title/task_description from
@@ -512,6 +565,11 @@ function TasksSection({
   // retry) — whatever form collected it, if any, has already closed by
   // the time those happen.
   const [runSeed, setRunSeed] = useState({ title: '', description: '' })
+  // Which task (if any) the in-flight run is decomposing further
+  // (#199/#200) — null for a project-level run. Only used to pick which
+  // trigger shows a spinner; useDecomposeRun itself is what actually
+  // remembers the run's scope across a clarify resubmit or error retry.
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
 
   // Rediscovers a pending proposal, or failing that a still-running
   // dispatch, on mount — so both survive a page refresh (#169) instead of
@@ -572,7 +630,18 @@ function TasksSection({
   function startBreakIntoTasks() {
     const seed = projectSeed(project)
     setRunSeed(seed)
-    void run.start(seed.title, seed.description)
+    setActiveTaskId(null)
+    void run.start(seed.title, seed.description, undefined, { parentTaskId: null })
+  }
+
+  // startBreakDownTask is AddSubtaskRow's "Break into subtasks"/"Break
+  // down more" trigger (#199/#200) — seeded from the task's own
+  // title/description, mirroring projectSeed's role for the project-level
+  // flow, plus its id as the parent task new subtasks attach under.
+  function startBreakDownTask(task: Task) {
+    setRunSeed({ title: task.title, description: task.description })
+    setActiveTaskId(task.id)
+    void run.start(task.title, task.description, undefined, { parentTaskId: task.id })
   }
 
   if (tasks.length === 0 && !pending) {
@@ -583,7 +652,11 @@ function TasksSection({
           <EmptyDescription>Let Nudge break this project into small steps.</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <BreakIntoTasksButton onStart={startBreakIntoTasks} working={run.state.name === 'working'} disabled={pending} />
+          <BreakIntoTasksButton
+            onStart={startBreakIntoTasks}
+            working={run.state.name === 'working' && activeTaskId === null}
+            disabled={pending}
+          />
           <AddTaskDialog
             projectId={projectId}
             onCreated={onAccepted}
@@ -628,7 +701,7 @@ function TasksSection({
               already on the card, and project_id already gets existing
               task titles to the model as a dedup hint. */}
           <Button variant="outline" size="sm" onClick={startBreakIntoTasks} disabled={pending}>
-            {run.state.name === 'working' ? (
+            {run.state.name === 'working' && activeTaskId === null ? (
               <Spinner data-icon="inline-start" className="size-3.5" />
             ) : (
               <SparklesIcon data-icon="inline-start" />
@@ -642,7 +715,15 @@ function TasksSection({
       {tasks.length > 0 && (
         <ItemGroup>
           {tasks.map((task) => (
-            <TaskItem key={task.id} task={task} projectId={projectId} onTaskAdded={onAccepted} />
+            <TaskItem
+              key={task.id}
+              task={task}
+              projectId={projectId}
+              onTaskAdded={onAccepted}
+              onBreakDown={startBreakDownTask}
+              pending={pending}
+              working={run.state.name === 'working' && activeTaskId === task.id}
+            />
           ))}
         </ItemGroup>
       )}
@@ -660,7 +741,7 @@ function TasksSection({
           }
         />
         <Button variant="outline" onClick={startBreakIntoTasks} disabled={pending}>
-          {run.state.name === 'working' ? (
+          {run.state.name === 'working' && activeTaskId === null ? (
             <Spinner data-icon="inline-start" />
           ) : (
             <SparklesIcon data-icon="inline-start" />

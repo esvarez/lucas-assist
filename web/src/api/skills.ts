@@ -87,7 +87,10 @@ export interface AcceptTaskSelection extends ProposedTask {
 }
 
 // dispatchDecomposeTask starts a decompose_task run for projectId and
-// returns its run id to poll.
+// returns its run id to poll. parentTaskId, when set, scopes the
+// decomposition to that existing task (#199/#200) — the backend attaches
+// the resulting subtasks as its children instead of root-level tasks;
+// omit it for a project-level decomposition.
 //
 // clarification carries a prior needs_input round's answered questions
 // (round 0 leaves it undefined). Each answered round is a fresh dispatch,
@@ -99,6 +102,7 @@ export async function dispatchDecomposeTask(
   taskTitle: string,
   taskDescription: string,
   domain: ProjectDomain,
+  parentTaskId?: string,
   clarification?: { round: number; clarifications: Clarification[] }
 ): Promise<{ run_id: string }> {
   return request<{ run_id: string }>('/api/skills', {
@@ -111,6 +115,7 @@ export async function dispatchDecomposeTask(
         task_description: taskDescription,
         project_id: projectId,
         domain,
+        ...(parentTaskId ? { parent_task_id: parentTaskId } : {}),
         clarification_round: clarification?.round ?? 0,
         clarifications: clarification?.clarifications ?? [],
       },

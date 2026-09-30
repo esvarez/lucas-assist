@@ -47,6 +47,13 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
   // Cancels an in-flight poll on reset (or unmount) so a stale response
   // doesn't land after the caller has moved on.
   const pollAbort = useRef<AbortController | null>(null)
+  // Which existing task (if any) the current run is scoped to (#199/#200)
+  // — remembered here, not re-passed by every caller, since a
+  // clarification resubmit (DecomposeRunPanel.handleClarifySubmit) and an
+  // error retry only know title/description, not which task round 0 was
+  // decomposing. start()'s scope param is how a fresh dispatch sets or
+  // clears this; omitting it (every resubmit/retry call) leaves it as-is.
+  const parentTaskIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     return () => pollAbort.current?.abort()
@@ -55,6 +62,7 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
   function reset() {
     pollAbort.current?.abort()
     pollAbort.current = null
+    parentTaskIdRef.current = undefined
     setState({ name: 'idle' })
   }
 
@@ -108,11 +116,20 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
     }
   }
 
+  // scope sets (or explicitly clears, via { parentTaskId: null }) which
+  // task this run is decomposing further — pass it on every fresh
+  // dispatch (project-level or per-task) so a stale scope from a prior
+  // run can't leak into this one; omit it on a clarification resubmit or
+  // error retry, which continue whatever round 0 already set.
   async function start(
     title: string,
     description: string,
-    clarification?: { round: number; clarifications: Clarification[] }
+    clarification?: { round: number; clarifications: Clarification[] },
+    scope?: { parentTaskId: string | null }
   ) {
+    if (scope) {
+      parentTaskIdRef.current = scope.parentTaskId ?? undefined
+    }
     setState({ name: 'working', label: 'Starting decomposition…' })
     try {
       const { run_id } = await dispatchDecomposeTask(
@@ -120,6 +137,7 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
         title.trim(),
         description.trim(),
         domain,
+        parentTaskIdRef.current,
         clarification
       )
       await pollAndResolve(run_id)
