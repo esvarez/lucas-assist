@@ -39,3 +39,6 @@ go.work.sum
 
 # AWS SAM build artifacts
 .aws-sam/
+
+# `make build` output
+/bin/
