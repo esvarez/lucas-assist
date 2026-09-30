@@ -16,27 +16,25 @@ function emailFromState(state: unknown): string | null {
 function ConfirmSignUpPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const email = emailFromState(location.state)
+  const emailId = useId()
   const codeId = useId()
+  const [email, setEmail] = useState(() => emailFromState(location.state) ?? '')
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   async function handleSubmit(event: SubmitEvent) {
     event.preventDefault()
+    const trimmedEmail = email.trim()
     const trimmedCode = code.trim()
-    if (!trimmedCode || submitting) {
-      if (!trimmedCode) setError('Enter the confirmation code from your email.')
-      return
-    }
-    if (!email) {
-      setError('Missing email — start over from the sign-up form.')
+    if (!trimmedEmail || !trimmedCode || submitting) {
+      if (!trimmedEmail || !trimmedCode) setError('Enter your email and the confirmation code from it.')
       return
     }
     setError(null)
     setSubmitting(true)
     try {
-      await confirmSignUp(email, trimmedCode)
+      await confirmSignUp(trimmedEmail, trimmedCode)
       navigate('/sign-in')
     } catch (err) {
       setError(cognitoErrorMessage(err))
@@ -48,11 +46,7 @@ function ConfirmSignUpPage() {
   return (
     <AuthForm
       title="Confirm your email"
-      description={
-        email
-          ? `Enter the confirmation code sent to ${email}.`
-          : 'Enter the confirmation code sent to your email.'
-      }
+      description="Enter your email and the confirmation code sent to it."
       errorTitle="Couldn't confirm your email"
       error={error}
       submitLabel={submitting ? 'Confirming…' : 'Confirm'}
@@ -61,9 +55,9 @@ function ConfirmSignUpPage() {
       footer={
         <div className="flex flex-col gap-1 text-center text-muted-foreground">
           <p>
-            Wrong email?{' '}
+            Don&apos;t have an account yet?{' '}
             <Link to="/sign-up" className="font-medium text-foreground underline-offset-4 hover:underline">
-              Start over
+              Sign up
             </Link>
           </p>
           <p>
@@ -75,6 +69,24 @@ function ConfirmSignUpPage() {
         </div>
       }
     >
+      <div className="flex flex-col gap-2">
+        <Label htmlFor={emailId}>Email</Label>
+        <Input
+          id={emailId}
+          type="email"
+          name="email"
+          autoComplete="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(event) => {
+            setEmail(event.target.value)
+            setError(null)
+          }}
+          autoFocus={!email}
+          disabled={submitting}
+          aria-invalid={Boolean(error) && !email.trim()}
+        />
+      </div>
       <div className="flex flex-col gap-2">
         <Label htmlFor={codeId}>Confirmation code</Label>
         <Input
@@ -88,7 +100,7 @@ function ConfirmSignUpPage() {
             setCode(event.target.value)
             setError(null)
           }}
-          autoFocus
+          autoFocus={Boolean(email)}
           disabled={submitting}
           aria-invalid={Boolean(error) && !code.trim()}
         />
