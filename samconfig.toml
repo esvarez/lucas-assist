@@ -7,8 +7,21 @@ s3_prefix = "nudge-dev"
 region = "us-east-1"
 confirm_changeset = true
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "Environment=\"dev\" DomainName=\"\" AcmCertificateArn=\"\""
+parameter_overrides = "Environment=\"dev\" DomainName=\"dev.shipmate.one\" AcmCertificateArn=\"{{resolve:ssm:/dev/nudge/acm-certificate-arn}}\""
 image_repositories = []
 
 [default.global.parameters]
+region = "us-east-1"
+
+[prod.deploy.parameters]
+stack_name = "nudge-prod"
+resolve_s3 = true
+s3_prefix = "nudge-prod"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "Environment=\"prod\" DomainName=\"shipmate.one\" AcmCertificateArn=\"{{resolve:ssm:/prod/nudge/acm-certificate-arn}}\""
+image_repositories = []
+
+[prod.global.parameters]
 region = "us-east-1"
