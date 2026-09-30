@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError } from '@/src/api/projects'
+import { ApiError, type ProjectDomain } from '@/src/api/projects'
 import {
   acceptChangeset,
   dispatchDecomposeTask,
@@ -38,8 +38,11 @@ function isAbortError(err: unknown): boolean {
 // useDecomposeRun owns decompose_task's dispatch/poll/accept/remove
 // mechanics so every entry point on a project page (a fresh project's
 // empty state, an arbitrary task's manual form) shares one implementation
-// and one in-flight proposal instead of independent copies.
-export function useDecomposeRun(projectId: string, onAccepted: () => void) {
+// and one in-flight proposal instead of independent copies. domain is the
+// owning project's own domain (#172) — forwarded on every dispatch,
+// including a clarification resubmit, so decompose_task always sees what
+// the project was actually created as instead of falling back to general.
+export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAccepted: () => void) {
   const [state, setState] = useState<RunState>({ name: 'idle' })
   // Cancels an in-flight poll on reset (or unmount) so a stale response
   // doesn't land after the caller has moved on.
@@ -108,6 +111,7 @@ export function useDecomposeRun(projectId: string, onAccepted: () => void) {
         projectId,
         title.trim(),
         description.trim(),
+        domain,
         clarification
       )
       await pollAndResolve(run_id)

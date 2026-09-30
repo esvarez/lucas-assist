@@ -3,7 +3,7 @@
 // the three routes architecture.md §1/§10 describes as "propose, poll,
 // accept." Every model-backed operation is a job: dispatch returns 202
 // with a run id immediately, nothing is written until an explicit accept.
-import { request, type Project } from '@/src/api/projects'
+import { request, type Project, type ProjectDomain } from '@/src/api/projects'
 import type { FlatTask } from '@/src/api/tasks'
 
 // ProposedTask mirrors internal/domain.ProposedTask — a subtask as
@@ -87,8 +87,12 @@ export interface AcceptTaskSelection extends ProposedTask {
 }
 
 // dispatchDecomposeTask starts a decompose_task run for projectId and
-// returns its run id to poll. domain is left unset — the skill defaults
-// to "general" — since #123 doesn't add a domain picker to the UI.
+// returns its run id to poll. domain picks which of decompose_task's two
+// system prompts frames the decomposition (internal/agent/skills/
+// decompose_task.go's DomainGeneral/DomainSoftware) — pass the project's
+// own `domain` (#172) so a project created as "software" actually gets
+// the vertical-slice, runnable-first prompt instead of always falling
+// back to general.
 //
 // clarification carries a prior needs_input round's answered questions
 // (round 0 leaves it undefined). Each answered round is a fresh dispatch,
@@ -99,6 +103,7 @@ export async function dispatchDecomposeTask(
   projectId: string,
   taskTitle: string,
   taskDescription: string,
+  domain: ProjectDomain,
   clarification?: { round: number; clarifications: Clarification[] }
 ): Promise<{ run_id: string }> {
   return request<{ run_id: string }>('/api/skills', {
@@ -110,6 +115,7 @@ export async function dispatchDecomposeTask(
         task_title: taskTitle,
         task_description: taskDescription,
         project_id: projectId,
+        domain,
         clarification_round: clarification?.round ?? 0,
         clarifications: clarification?.clarifications ?? [],
       },
