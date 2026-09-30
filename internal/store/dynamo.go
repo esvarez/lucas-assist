@@ -1433,7 +1433,13 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		})
 	}
 
+	// mergeConstraints folds c's disclosed Assumptions onto the project card
+	// (#178) so a decision made during this changeset — including one that
+	// started as an answered clarification question, since decompose_task
+	// folds those into Assumptions by the time a changeset exists — outlives
+	// this one accept instead of only ever having shaped this run's prompt.
 	updatedProject := p
+	updatedProject.Constraints = mergeConstraints(p.Constraints, c.Assumptions)
 	updatedProject.Version = c.BaseVersion + 1
 	updatedProject.UpdatedAt = now
 
@@ -1473,6 +1479,10 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 	if err != nil {
 		return AcceptChangesetResult{}, fmt.Errorf("marshal new version: %w", err)
 	}
+	constraintsAV, err := attributevalue.Marshal(updatedProject.Constraints)
+	if err != nil {
+		return AcceptChangesetResult{}, fmt.Errorf("marshal constraints: %w", err)
+	}
 	updatedAtAV, err := attributevalue.Marshal(now)
 	if err != nil {
 		return AcceptChangesetResult{}, fmt.Errorf("marshal updated_at: %w", err)
@@ -1500,16 +1510,18 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 					"PK": &types.AttributeValueMemberS{Value: userPK(c.UserID)},
 					"SK": &types.AttributeValueMemberS{Value: projectSK(c.ProjectID)},
 				},
-				UpdateExpression:    aws.String("SET #version = :new_version, #updated_at = :updated_at"),
+				UpdateExpression:    aws.String("SET #version = :new_version, #updated_at = :updated_at, #constraints = :new_constraints"),
 				ConditionExpression: aws.String("attribute_exists(PK) AND #version = :base_version"),
 				ExpressionAttributeNames: map[string]string{
-					"#version":    "version",
-					"#updated_at": "updated_at",
+					"#version":     "version",
+					"#updated_at":  "updated_at",
+					"#constraints": "constraints",
 				},
 				ExpressionAttributeValues: map[string]types.AttributeValue{
-					":new_version":  newVersionAV,
-					":updated_at":   updatedAtAV,
-					":base_version": baseVersionAV,
+					":new_version":     newVersionAV,
+					":updated_at":      updatedAtAV,
+					":base_version":    baseVersionAV,
+					":new_constraints": constraintsAV,
 				},
 				ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
 			},
