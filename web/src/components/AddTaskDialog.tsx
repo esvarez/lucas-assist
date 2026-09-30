@@ -211,7 +211,7 @@ function AddTaskDialog({
 
   if (isMobile) {
     return (
-      <Drawer open={open} onOpenChange={handleOpenChange}>
+      <Drawer open={open} onOpenChange={handleOpenChange} showSwipeHandle>
         <DrawerTrigger render={trigger} />
         <DrawerContent>
           <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
