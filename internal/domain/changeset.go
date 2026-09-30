@@ -39,32 +39,9 @@ type Changeset struct {
 	Skill       string          `json:"skill"`
 	BaseVersion int             `json:"base_version"`
 	Status      ChangesetStatus `json:"status"`
-
-	// ProposedTasks is the mutation payload for decompose_task's
-	// changesets. Exactly one of ProposedTasks/ProposedProject is
-	// populated, matching Skill — there's no dedicated "changeset kind"
-	// field, since Skill already says which shape to expect.
 	ProposedTasks []ProposedTask `json:"proposed_tasks,omitempty"`
-
-	// Assumptions are decompose_task's disclosed unspecified-choice
-	// decisions — every choice the model made on the user's behalf because
-	// the task didn't specify it, meant to be read before the subtask diff
-	// during changeset review. Empty for create_project changesets.
 	Assumptions []string `json:"assumptions,omitempty"`
-
-	// ParentTaskID, when set, means ProposedTasks break an existing task
-	// down further rather than proposing root-level tasks for the project
-	// (#199) — AcceptChangeset commits each one with ParentID set to this.
-	// Empty for a project-level decompose_task changeset, and always empty
-	// for create_project's (which has no task to attach under).
 	ParentTaskID string `json:"parent_task_id,omitempty"`
-
-	// ProposedProject is create_project's mutation payload (#101) — the
-	// second proposal shape #73 anticipated needing "when actually
-	// needed." A create_project run has no ProjectID yet (that's the
-	// point of the run), so BaseVersion is meaningless for these
-	// changesets: there's no existing project version to check against.
 	ProposedProject *ProposedProject `json:"proposed_project,omitempty"`
-
 	CreatedAt time.Time `json:"created_at"`
 }

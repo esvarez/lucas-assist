@@ -38,34 +38,10 @@ type Clarification struct {
 type DecomposeInput struct {
 	TaskTitle       string `json:"task_title"`
 	TaskDescription string `json:"task_description"`
-	// Domain selects the system prompt. Empty or unrecognized falls back
-	// to DomainGeneral.
 	Domain Domain `json:"domain"`
-
-	// ProjectID is optional — when set, BuildContext loads the project and
-	// its existing tasks and includes them in the prompt (architecture.md
-	// §7's project card + active task subset), so the model doesn't
-	// propose a subtask duplicating one that already exists. Omit it for
-	// ad-hoc decomposition with no project behind it yet.
 	ProjectID string `json:"project_id"`
-
-	// ParentTaskID, when set, means this call breaks an existing task down
-	// further rather than proposing root-level tasks for the project
-	// (#199) — requires ProjectID (BuildContext rejects one without the
-	// other with agent.ErrInvalidInput), and must name a task that exists
-	// in that project. The resulting Changeset carries it through so
-	// AcceptChangeset commits each new task as this one's child.
 	ParentTaskID string `json:"parent_task_id"`
-
-	// ClarificationRound is 0 on the first call. A caller resubmitting
-	// with Clarifications answered increments it. Round 1+ must never
-	// come back needs_clarification (see systemPrompt) — asking twice
-	// isn't available to the model.
 	ClarificationRound int `json:"clarification_round"`
-
-	// Clarifications are the prior round's questions with answers
-	// attached, so the model sees them as resolved instead of as more
-	// prose to question again.
 	Clarifications []Clarification `json:"clarifications"`
 }
 
@@ -168,10 +144,6 @@ func buildProjectContextMessage(proj domain.Project, tasks []domain.Task) string
 	return b.String()
 }
 
-// childrenOf narrows tasks to parentID's direct children (#199) — used
-// when decomposing an existing task further, so the model's
-// duplicate-avoidance context is scoped to that task's own subtasks
-// instead of the whole project's flat task list.
 func childrenOf(tasks []domain.Task, parentID string) []domain.Task {
 	children := make([]domain.Task, 0, len(tasks))
 	for _, t := range tasks {
@@ -245,20 +217,12 @@ func (d DecomposeTaskSkill) BuildContext(ctx context.Context, rawInput json.RawM
 		}
 
 		if in.ParentTaskID != "" {
-			// Same structural-safety pattern as createTaskHandler's
-			// parent_id validation (#175): GetTask is user+project-scoped,
-			// so this also rejects a parent task id that belongs to
-			// another project or another user, not just one that doesn't
-			// exist at all.
 			if _, err := d.repo.GetTask(ctx, userID, in.ProjectID, in.ParentTaskID); err != nil {
 				if errors.Is(err, store.ErrNotFound) {
 					return nil, fmt.Errorf("decompose_task: parent task %q not found in project %q: %w: %w", in.ParentTaskID, in.ProjectID, agent.ErrInvalidInput, err)
 				}
 				return nil, fmt.Errorf("decompose_task: get parent task: %w", err)
-			}
-			// Narrowed to the parent's own children so "break this down
-			// further" only avoids duplicating siblings under the same
-			// task, not every unrelated task elsewhere in the project.
+			}	
 			tasks = childrenOf(tasks, in.ParentTaskID)
 		}
 
