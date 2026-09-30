@@ -531,17 +531,23 @@ function TasksSection({
       }
 
       const { agent_runs: agentRuns } = await listAgentRuns(projectId)
-      const inFlightRun = agentRuns.find(
-        (r) => r.skill === 'decompose_task' && (r.status === 'queued' || r.status === 'running')
+      const pendingRun = agentRuns.find(
+        (r) =>
+          r.skill === 'decompose_task' &&
+          (r.status === 'queued' || r.status === 'running' || r.status === 'needs_input')
       )
-      if (inFlightRun && !ignore) {
+      if (pendingRun && !ignore) {
         // Recovered so a later clarify resubmit or error retry has
         // something real to redispatch with, instead of a blank task.
         setRunSeed({
-          title: inFlightRun.input?.task_title ?? '',
-          description: inFlightRun.input?.task_description ?? '',
+          title: pendingRun.input?.task_title ?? '',
+          description: pendingRun.input?.task_description ?? '',
         })
-        run.resumePoll(inFlightRun.id)
+        if (pendingRun.status === 'needs_input') {
+          run.resumeClarify(pendingRun.questions ?? [])
+        } else {
+          run.resumePoll(pendingRun.id)
+        }
       }
     }
 
