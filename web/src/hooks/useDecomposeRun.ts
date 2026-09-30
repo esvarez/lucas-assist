@@ -65,6 +65,14 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
     setState({ name: 'review', changeset, idempotencyKey: crypto.randomUUID() })
   }
 
+  // resumeClarify puts an already-needs_input run's questions (e.g. one
+  // rediscovered via listAgentRuns after a page refresh, #182) straight
+  // into 'clarify' — no dispatch, no poll. Mirrors resumeReview: the run
+  // that asked is terminal, so there's nothing left to poll.
+  function resumeClarify(questions: string[]) {
+    setState({ name: 'clarify', questions })
+  }
+
   // pollAndResolve polls an already-dispatched run to a terminal status and
   // transitions state accordingly — shared by start() (right after
   // dispatching) and resumePoll() (picking a run back up after a page
@@ -190,5 +198,5 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
     }
   }
 
-  return { state, start, accept, removeTasks, resumeReview, resumePoll, reset }
+  return { state, start, accept, removeTasks, resumeReview, resumeClarify, resumePoll, reset }
 }
