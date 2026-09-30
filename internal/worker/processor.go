@@ -35,6 +35,7 @@ type RunRepository interface {
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
 	NeedsInputAgentRun(ctx context.Context, userID, projectID, runID string, questions []string) (domain.AgentRun, error)
 	GetProject(ctx context.Context, userID, id string) (domain.Project, error)
+	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 	CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
 }
@@ -190,6 +191,36 @@ func (p *Processor) ProcessRun(ctx context.Context, userID, projectID, runID str
 			// a model result we already paid for.
 			return fmt.Errorf("load project for changeset base version, agent run %q: %w", runID, err)
 		}
+
+		// A decompose_task run whose input carries answered clarifications
+		// (round 1+) folds them onto the project's own constraints (#178) —
+		// they're settled decisions ("no SSO", "out of scope"), not just
+		// input to the one decomposition that asked for them. Done here,
+		// once per successfully-processed run, rather than inside
+		// DecomposeTaskSkill.BuildContext, which also runs once at dispatch
+		// time purely to validate the request (internal/skillsapi's
+		// handler) — persisting there would fire on every dispatch attempt,
+		// not just ones that actually complete.
+		if leased.Skill == "decompose_task" {
+			if withClarifications, ok := appendClarificationConstraints(project, leased.Input); ok {
+				updated, err := p.Repo.UpdateProject(ctx, userID, withClarifications)
+				if err != nil {
+					// Transient: same reasoning as the GetProject error above —
+					// a DynamoDB write failure, not a reason to discard a model
+					// result we already paid for. A concurrent edit elsewhere
+					// (store.ErrConflict) also belongs here rather than
+					// p.fail: it's a timing collision, not this run's fault,
+					// and retrying re-reads the project fresh.
+					return fmt.Errorf("persist clarification answers onto project for agent run %q: %w", runID, err)
+				}
+				project = updated
+			}
+		}
+
+		// Read after the possible update above so a version this bumped is
+		// what the changeset is actually based against — otherwise the
+		// accept-time version check (#77) would see the project as having
+		// changed "elsewhere" when it was really just this run's own write.
 		changeset.BaseVersion = project.Version
 	}
 
@@ -251,6 +282,40 @@ func (p *Processor) fail(ctx context.Context, run domain.AgentRun, cause error) 
 		return fmt.Errorf("%w (and failed to mark run %q failed: %v)", cause, run.ID, err)
 	}
 	return nil
+}
+
+// appendClarificationConstraints folds a decompose_task run's answered
+// clarifications (round 1+ — round 0's input carries none) onto project's
+// constraints, deduping against what's already there so a retried run
+// (the same rawInput leased again) never appends the same decision twice.
+// rawInput is decoded loosely, not with DecomposeTaskSkill.BuildContext's
+// strict unknown-fields rejection: by the time ProcessRun reaches this
+// point the run already succeeded, so a decode failure here just means
+// "nothing to persist," not a reason to fail an already-completed run.
+// ok reports whether project.Constraints actually gained anything; the
+// caller skips the UpdateProject call entirely when it's false.
+func appendClarificationConstraints(project domain.Project, rawInput json.RawMessage) (domain.Project, bool) {
+	var in skills.DecomposeInput
+	if err := json.Unmarshal(rawInput, &in); err != nil || len(in.Clarifications) == 0 {
+		return project, false
+	}
+
+	seen := make(map[string]bool, len(project.Constraints))
+	for _, c := range project.Constraints {
+		seen[c] = true
+	}
+
+	added := false
+	for _, c := range in.Clarifications {
+		entry := fmt.Sprintf("%s: %s", c.Question, c.Answer)
+		if seen[entry] {
+			continue
+		}
+		project.Constraints = append(project.Constraints, entry)
+		seen[entry] = true
+		added = true
+	}
+	return project, added
 }
 
 // changesetFromResult converts a skill's Parse output into the Changeset

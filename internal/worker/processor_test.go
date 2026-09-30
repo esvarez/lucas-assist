@@ -115,6 +115,138 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 }
 
+// TestProcessor_ProcessRun_DecomposeTask_PersistsClarificationAnswers
+// covers #178: a decompose_task run whose input carries round 1+'s
+// answered clarifications should fold them onto the project's own
+// constraints, not just the one decomposition that asked for them — and
+// the changeset it produces should be based against the version that
+// write left the project at, not the version read before it.
+func TestProcessor_ProcessRun_DecomposeTask_PersistsClarificationAnswers(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	input := json.RawMessage(`{"clarification_round":1,"clarifications":[{"question":"SSO or general OAuth?","answer":"General OAuth only, no SSO"}]}`)
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task", Input: input})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Add login command"}}}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	if err := p.ProcessRun(ctx, "user_1", project.ID, run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	updated, err := repo.GetProject(ctx, "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	wantConstraint := "SSO or general OAuth?: General OAuth only, no SSO"
+	if len(updated.Constraints) != 1 || updated.Constraints[0] != wantConstraint {
+		t.Fatalf("Constraints = %#v, want [%q]", updated.Constraints, wantConstraint)
+	}
+	if updated.Version != project.Version+1 {
+		t.Errorf("Version = %d, want %d (bumped by the constraint write)", updated.Version, project.Version+1)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", project.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	changeset, err := repo.GetChangeset(ctx, "user_1", project.ID, got.ChangesetID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if changeset.BaseVersion != updated.Version {
+		t.Errorf("Changeset.BaseVersion = %d, want the post-write project version %d — otherwise accept-time's version check would see this run's own write as a conflicting concurrent edit", changeset.BaseVersion, updated.Version)
+	}
+}
+
+// TestProcessor_ProcessRun_DecomposeTask_ClarificationAnswers_Deduped
+// documents appendClarificationConstraints' dedup: two separate
+// decompose_task runs that happen to answer the same question the same
+// way (plausible — it's the same project) must not pile up duplicate
+// constraint entries.
+func TestProcessor_ProcessRun_DecomposeTask_ClarificationAnswers_Deduped(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	input := json.RawMessage(`{"clarification_round":1,"clarifications":[{"question":"SSO or general OAuth?","answer":"General OAuth only, no SSO"}]}`)
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Add login command"}}}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	for i := 0; i < 2; i++ {
+		run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task", Input: input})
+		if err != nil {
+			t.Fatalf("CreateAgentRun() error = %v", err)
+		}
+		if err := p.ProcessRun(ctx, "user_1", project.ID, run.ID); err != nil {
+			t.Fatalf("ProcessRun() [%d] error = %v", i, err)
+		}
+	}
+
+	updated, err := repo.GetProject(ctx, "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if len(updated.Constraints) != 1 {
+		t.Fatalf("Constraints = %#v, want exactly one entry — the second run's identical answer shouldn't duplicate it", updated.Constraints)
+	}
+}
+
+// TestProcessor_ProcessRun_DecomposeTask_NoClarifications_LeavesProjectAlone
+// guards round 0 (no prior clarifications to fold in) against an
+// unnecessary UpdateProject call / version bump.
+func TestProcessor_ProcessRun_DecomposeTask_NoClarifications_LeavesProjectAlone(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task", Input: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Add login command"}}}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	if err := p.ProcessRun(ctx, "user_1", project.ID, run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	updated, err := repo.GetProject(ctx, "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if len(updated.Constraints) != 0 {
+		t.Errorf("Constraints = %#v, want none — this run had no clarifications to persist", updated.Constraints)
+	}
+	if updated.Version != project.Version {
+		t.Errorf("Version = %d, want unchanged %d — no UpdateProject call should have happened", updated.Version, project.Version)
+	}
+}
+
 // TestProcessor_ProcessRun_AttachesUserIDToContext guards against a
 // regression of the bug where ProcessRun called the skill with the bare
 // ctx it received, never agent.WithUserID(ctx, userID) — leaving a
