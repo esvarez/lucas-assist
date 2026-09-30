@@ -1433,11 +1433,6 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		})
 	}
 
-	// mergeConstraints folds c's disclosed Assumptions onto the project card
-	// (#178) so a decision made during this changeset — including one that
-	// started as an answered clarification question, since decompose_task
-	// folds those into Assumptions by the time a changeset exists — outlives
-	// this one accept instead of only ever having shaped this run's prompt.
 	updatedProject := p
 	updatedProject.Constraints = mergeConstraints(p.Constraints, c.Assumptions)
 	updatedProject.Version = c.BaseVersion + 1
