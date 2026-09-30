@@ -310,17 +310,7 @@ function persistTaskStatus(projectId: string, taskId: string, status: string, on
 }
 
 // AddSubtaskRow is every task's way to add a subtask by hand (#175/#185),
-// or to hand the task (further, if breakLabel says "more") to
-// decompose_task (#199/#200) — shared by LeafTask and TaskAccordion so
-// both offer it identically. onSubtaskAdded/onBreakDown both re-fetch the
-// project's task tree (the same taskRefreshKey-bumping callback the
-// manual-add and decompose_task accept flows already use) so either one
-// shows up without a manual page reload. pending disables both triggers
-// while any decomposition — this task's or another's — is in flight,
-// generalizing the existing "one proposal per project at a time" rule
-// (#169) rather than letting a second dispatch race the first; working
-// is only true for the task whose own "Break into subtasks"/"Break down
-// more" click started the run currently in flight.
+// or to hand the task (further, if breakLabel says "more") 
 function AddSubtaskRow({
   task,
   projectId,
