@@ -32,6 +32,8 @@ type ProjectRepository interface {
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (store.AcceptCreateProjectResult, error)
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
 	UpdateTaskStatus(ctx context.Context, userID, projectID, taskID, status string) (domain.Task, error)
+	CreateTask(ctx context.Context, userID string, t domain.Task) (domain.Task, error)
+	GetTask(ctx context.Context, userID, projectID, taskID string) (domain.Task, error)
 }
 
 // NewRouter builds the API's route table against repo.
@@ -49,6 +51,7 @@ func NewRouter(repo ProjectRepository) *http.ServeMux {
 	mux.HandleFunc("PATCH /projects/{id}/changesets/{changesetId}/tasks", updateChangesetTasksHandler(repo))
 	mux.HandleFunc("POST /changesets/{changesetId}/accept", acceptCreateProjectChangesetHandler(repo))
 	mux.HandleFunc("GET /projects/{id}/tasks", listTasksHandler(repo))
+	mux.HandleFunc("POST /projects/{id}/tasks", createTaskHandler(repo))
 	mux.HandleFunc("PATCH /projects/{id}/tasks/{taskId}", updateTaskStatusHandler(repo))
 	return mux
 }

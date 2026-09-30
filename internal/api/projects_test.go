@@ -214,6 +214,8 @@ type stubRepository struct {
 	acceptErr     error
 	listTasksErr  error
 	updateTaskErr error
+	createTaskErr error
+	getTaskErr    error
 }
 
 func (s stubRepository) CreateProject(ctx context.Context, p domain.Project) (domain.Project, error) {
@@ -270,6 +272,14 @@ func (s stubRepository) ListTasks(ctx context.Context, userID, projectID string)
 
 func (s stubRepository) UpdateTaskStatus(ctx context.Context, userID, projectID, taskID, status string) (domain.Task, error) {
 	return domain.Task{}, s.updateTaskErr
+}
+
+func (s stubRepository) CreateTask(ctx context.Context, userID string, t domain.Task) (domain.Task, error) {
+	return domain.Task{}, s.createTaskErr
+}
+
+func (s stubRepository) GetTask(ctx context.Context, userID, projectID, taskID string) (domain.Task, error) {
+	return domain.Task{}, s.getTaskErr
 }
 
 func TestCreateProject_DuplicateID(t *testing.T) {

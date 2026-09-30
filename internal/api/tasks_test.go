@@ -128,6 +128,149 @@ func TestListTasks_WrongOwner(t *testing.T) {
 	}
 }
 
+// TestCreateTask documents #175: a user can add a single task by hand,
+// without going through decompose_task's proposal/review/accept flow.
+func TestCreateTask(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	router := NewRouter(repo)
+
+	body := `{"title": "Add login command", "description": "Device-flow login for the CLI", "acceptance_criteria": ["running nudge login prints a device code"]}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var got createTaskResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Task.ID == "" {
+		t.Error("Task.ID = \"\", want a generated ID")
+	}
+	if got.Task.Title != "Add login command" {
+		t.Errorf("Task.Title = %q, want %q", got.Task.Title, "Add login command")
+	}
+	if got.Task.Status != "todo" {
+		t.Errorf("Task.Status = %q, want %q", got.Task.Status, "todo")
+	}
+
+	stored, err := repo.GetTask(context.Background(), "user_1", project.ID, got.Task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Title != "Add login command" {
+		t.Errorf("stored Task.Title = %q, want %q — creation didn't persist", stored.Title, "Add login command")
+	}
+}
+
+// TestCreateTask_Subtask documents that a task created with a parent_id
+// attaches under that task, ordered after any existing siblings.
+func TestCreateTask_Subtask(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	parent, err := repo.CreateTask(context.Background(), "user_1", domain.Task{ProjectID: project.ID, Title: "Ship the POC", Status: "todo"})
+	if err != nil {
+		t.Fatalf("CreateTask (parent): %v", err)
+	}
+	if _, err := repo.CreateTask(context.Background(), "user_1", domain.Task{ProjectID: project.ID, ParentID: parent.ID, Title: "First subtask", Status: "todo", Order: 0}); err != nil {
+		t.Fatalf("CreateTask (existing sibling): %v", err)
+	}
+	router := NewRouter(repo)
+
+	body := `{"title": "Second subtask", "parent_id": "` + parent.ID + `"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var got createTaskResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Task.ParentID != parent.ID {
+		t.Errorf("Task.ParentID = %q, want %q", got.Task.ParentID, parent.ID)
+	}
+	if got.Task.Order != 1 {
+		t.Errorf("Task.Order = %d, want 1 (after the existing sibling)", got.Task.Order)
+	}
+}
+
+func TestCreateTask_MissingTitle(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	router := NewRouter(repo)
+
+	body := `{"description": "no title"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestCreateTask_UnknownParent(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	router := NewRouter(repo)
+
+	body := `{"title": "Orphan", "parent_id": "does-not-exist"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestCreateTask_UnknownProject(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"title": "Add login command"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/does-not-exist/tasks", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// TestCreateTask_WrongOwner documents that a project ID belonging to a
+// different user 404s, same as TestListTasks_WrongOwner — it must not let
+// one user create a task inside another user's project.
+func TestCreateTask_WrongOwner(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	router := NewRouter(repo)
+
+	body := `{"title": "Add login command"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/tasks", bytes.NewBufferString(body)), "user_2")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	tasks, err := repo.ListTasks(context.Background(), "user_1", project.ID)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Error("a different user's request created a task in this project")
+	}
+}
+
 // TestUpdateTaskStatus documents #181's durable half: checking a task
 // done persists it, instead of only updating the browser's own React
 // state until the next page load quietly forgets it.

@@ -48,6 +48,94 @@ func listTasksHandler(repo ProjectRepository) http.HandlerFunc {
 	}
 }
 
+// createTaskRequest is the body for POST /projects/{id}/tasks (#175) — the
+// manual counterpart to decompose_task's proposal/review/accept flow, for
+// jotting down a single task the user already knows they want without an
+// LLM round trip. Status and Order aren't request fields: createTaskHandler
+// assigns "todo" (the same unstarted status AcceptChangeset gives a freshly
+// accepted task) and an Order past every existing sibling itself.
+type createTaskRequest struct {
+	Title              string   `json:"title" validate:"required"`
+	Description        string   `json:"description"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	ParentID           string   `json:"parent_id"`
+}
+
+type createTaskResponse struct {
+	Task domain.Task `json:"task"`
+}
+
+// createTaskHandler backs POST /projects/{id}/tasks (#175). Same ownership
+// check as listTasksHandler: the project is fetched first so a nonexistent
+// or another user's project 404s instead of CreateTask silently writing
+// into it. When ParentID is set, it must name a task that already exists
+// in this project — GetTask is user+project-scoped, so this also rejects a
+// parent_id that belongs to someone else's task.
+func createTaskHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req createTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+			return
+		}
+
+		if !validateStruct(w, req) {
+			return
+		}
+
+		userID, _ := auth.UserIDFromContext(r.Context())
+		projectID := r.PathValue("id")
+
+		if _, err := repo.GetProject(r.Context(), userID, projectID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		if req.ParentID != "" {
+			if _, err := repo.GetTask(r.Context(), userID, projectID, req.ParentID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parent_id does not name a task in this project"})
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+
+		siblings, err := repo.ListTasks(r.Context(), userID, projectID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		order := 0
+		for _, t := range siblings {
+			if t.ParentID == req.ParentID {
+				order++
+			}
+		}
+
+		task, err := repo.CreateTask(r.Context(), userID, domain.Task{
+			ProjectID:          projectID,
+			ParentID:           req.ParentID,
+			Title:              req.Title,
+			Description:        req.Description,
+			Status:             "todo",
+			Order:              order,
+			AcceptanceCriteria: req.AcceptanceCriteria,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, createTaskResponse{Task: task})
+	}
+}
+
 // updateTaskStatusRequest's Status is restricted to the vocabulary
 // web/src/lib/task-status.ts already renders a label/color for — the only
 // four values any client does anything with today (#181).
