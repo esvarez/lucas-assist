@@ -486,6 +486,7 @@ func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		tasks = append(tasks, t)
 	}
 
+	existingProject.Constraints = mergeConstraints(existingProject.Constraints, c.Assumptions)
 	existingProject.Version++
 	existingProject.UpdatedAt = now
 	r.projects[existingProject.ID] = existingProject

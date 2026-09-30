@@ -1536,6 +1536,54 @@ func TestDynamoRepository_AcceptChangeset(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_AcceptChangeset_MergesAssumptionsIntoConstraints
+// documents #178: a changeset's disclosed Assumptions — including
+// decisions that started as answered clarification questions — land on
+// the project's Constraints once accepted, not just the one run's prompt.
+func TestDynamoRepository_AcceptChangeset_MergesAssumptionsIntoConstraints(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge", Goal: "Ship the POC", Constraints: []string{"No SSO"}})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID:     project.ID,
+		UserID:        userID,
+		Skill:         "decompose_task",
+		BaseVersion:   project.Version,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{{Title: "First"}},
+		// "No SSO" repeats a constraint the project already has (must not
+		// duplicate); "SQLite for local storage" is new.
+		Assumptions: []string{"No SSO", "SQLite for local storage"},
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	result, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
+	if err != nil {
+		t.Fatalf("AcceptChangeset() error = %v", err)
+	}
+
+	want := []string{"No SSO", "SQLite for local storage"}
+	if !reflect.DeepEqual(result.Project.Constraints, want) {
+		t.Errorf("result Project.Constraints = %v, want %v", result.Project.Constraints, want)
+	}
+
+	gotProject, err := repo.GetProject(ctx, userID, project.ID)
+	if err != nil {
+		t.Fatalf("GetProject() error = %v", err)
+	}
+	if !reflect.DeepEqual(gotProject.Constraints, want) {
+		t.Errorf("stored Project.Constraints = %v, want %v", gotProject.Constraints, want)
+	}
+}
+
 // TestDynamoRepository_AcceptChangeset_Partial documents #169: accepting
 // only some of a changeset's proposed tasks leaves it "proposed" with the
 // rest, and a second accept call for the remainder succeeds — its
