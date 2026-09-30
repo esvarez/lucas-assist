@@ -328,15 +328,24 @@ func (r *MemoryRepository) GetAgentRun(ctx context.Context, userID, projectID, r
 	return run, nil
 }
 
-func (r *MemoryRepository) ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error) {
+func (r *MemoryRepository) ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	wanted := make(map[domain.AgentRunStatus]bool, len(statuses))
+	for _, s := range statuses {
+		wanted[s] = true
+	}
+
 	runs := make([]domain.AgentRun, 0)
 	for _, run := range r.agentRuns {
-		if run.UserID == userID && run.ProjectID == projectID {
-			runs = append(runs, run)
+		if run.UserID != userID || run.ProjectID != projectID {
+			continue
 		}
+		if len(wanted) > 0 && !wanted[run.Status] {
+			continue
+		}
+		runs = append(runs, run)
 	}
 	return runs, nil
 }

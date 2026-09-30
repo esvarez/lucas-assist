@@ -64,11 +64,7 @@ type listAgentRunsResponse struct {
 }
 
 // listAgentRunsHandler returns a project's agent runs, optionally
-// filtered to one status via ?status= (e.g. ?status=running). Added so a
-// client can rediscover a decompose_task run that's still queued/running
-// after a page refresh (#169) and resume polling it, instead of only ever
-// finding out about a run from the response to the request that created
-// it.
+// filtered to one or more statuses via repeated ?status= 
 func listAgentRunsHandler(repo ProjectRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
@@ -83,20 +79,16 @@ func listAgentRunsHandler(repo ProjectRepository) http.HandlerFunc {
 			return
 		}
 
-		runs, err := repo.ListAgentRuns(r.Context(), userID, projectID)
+		rawStatuses := r.URL.Query()["status"]
+		statuses := make([]domain.AgentRunStatus, len(rawStatuses))
+		for i, s := range rawStatuses {
+			statuses[i] = domain.AgentRunStatus(s)
+		}
+
+		runs, err := repo.ListAgentRuns(r.Context(), userID, projectID, statuses)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
-		}
-
-		if status := r.URL.Query().Get("status"); status != "" {
-			filtered := make([]domain.AgentRun, 0, len(runs))
-			for _, run := range runs {
-				if string(run.Status) == status {
-					filtered = append(filtered, run)
-				}
-			}
-			runs = filtered
 		}
 
 		writeJSON(w, http.StatusOK, listAgentRunsResponse{AgentRuns: runs})

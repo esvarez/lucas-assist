@@ -1220,12 +1220,42 @@ func TestDynamoRepository_ListAgentRuns(t *testing.T) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 
-	got, err := repo.ListAgentRuns(ctx, userID, projectID)
+	got, err := repo.ListAgentRuns(ctx, userID, projectID, nil)
 	if err != nil {
 		t.Fatalf("ListAgentRuns() error = %v", err)
 	}
 	if len(got) != 1 || got[0].ID != inProject.ID {
 		t.Fatalf("ListAgentRuns() = %+v, want just %+v", got, inProject)
+	}
+}
+
+// TestDynamoRepository_ListAgentRuns_FilteredByStatus documents #183: a
+// non-empty statuses filter is pushed into the DynamoDB read via a
+// FilterExpression, not applied by the caller afterward.
+func TestDynamoRepository_ListAgentRuns_FilteredByStatus(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	queued, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	failed, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.FailAgentRun(ctx, userID, projectID, failed.ID, "boom"); err != nil {
+		t.Fatalf("FailAgentRun() error = %v", err)
+	}
+
+	got, err := repo.ListAgentRuns(ctx, userID, projectID, []domain.AgentRunStatus{domain.AgentRunQueued})
+	if err != nil {
+		t.Fatalf("ListAgentRuns() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != queued.ID {
+		t.Fatalf("ListAgentRuns(statuses=[queued]) = %+v, want just the queued run %+v", got, queued)
 	}
 }
 

@@ -242,7 +242,7 @@ func (s stubRepository) GetAgentRun(ctx context.Context, userID, projectID, runI
 	return domain.AgentRun{}, s.getRunErr
 }
 
-func (s stubRepository) ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error) {
+func (s stubRepository) ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
 	return nil, s.getRunErr
 }
 

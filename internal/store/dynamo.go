@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -1058,17 +1059,30 @@ func (r *DynamoRepository) GetAgentRun(ctx context.Context, userID, projectID, r
 // ListAgentRuns returns every agent run item under a project's
 // P#<pid>#RUN# prefix — callers filter by status themselves (#169's
 // pending-run reload only wants queued/running ones).
-func (r *DynamoRepository) ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error) {
+func (r *DynamoRepository) ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
 	runs := make([]domain.AgentRun, 0)
 
-	paginator := dynamodb.NewQueryPaginator(r.client, &dynamodb.QueryInput{
+	queryInput := &dynamodb.QueryInput{
 		TableName:              aws.String(r.table),
 		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk":       &types.AttributeValueMemberS{Value: userPK(userID)},
 			":skPrefix": &types.AttributeValueMemberS{Value: agentRunListSKPrefix(projectID)},
 		},
-	})
+	}
+
+	if len(statuses) > 0 {
+		placeholders := make([]string, len(statuses))
+		for i, s := range statuses {
+			placeholder := fmt.Sprintf(":status%d", i)
+			placeholders[i] = placeholder
+			queryInput.ExpressionAttributeValues[placeholder] = &types.AttributeValueMemberS{Value: string(s)}
+		}
+		queryInput.FilterExpression = aws.String("#status IN (" + strings.Join(placeholders, ", ") + ")")
+		queryInput.ExpressionAttributeNames = map[string]string{"#status": "status"}
+	}
+
+	paginator := dynamodb.NewQueryPaginator(r.client, queryInput)
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)

@@ -210,15 +210,17 @@ export async function listChangesets(projectId: string, status?: string): Promis
   )
 }
 
-// listAgentRuns returns a project's agent runs, optionally filtered to one
-// status (#169) — used to rediscover a decompose_task run that's still
-// queued/running after a page refresh, so the client can resume polling
-// it instead of the trigger looking idle and letting a second dispatch
-// race the first.
-export async function listAgentRuns(projectId: string, status?: string): Promise<{ agent_runs: AgentRun[] }> {
-  const params = status ? `?${new URLSearchParams({ status })}` : ''
+export async function listAgentRuns(
+  projectId: string,
+  statuses?: AgentRunStatus[]
+): Promise<{ agent_runs: AgentRun[] }> {
+  const params = new URLSearchParams()
+  for (const status of statuses ?? []) {
+    params.append('status', status)
+  }
+  const query = params.size > 0 ? `?${params}` : ''
   return request<{ agent_runs: AgentRun[] }>(
-    `/api/projects/${encodeURIComponent(projectId)}/agent-runs${params}`
+    `/api/projects/${encodeURIComponent(projectId)}/agent-runs${query}`
   )
 }
 

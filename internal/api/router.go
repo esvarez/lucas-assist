@@ -24,7 +24,7 @@ type ProjectRepository interface {
 	DeleteProject(ctx context.Context, userID, id string) error
 	UpdateProject(ctx context.Context, userID string, p domain.Project) (domain.Project, error)
 	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
-	ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error)
+	ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error)
 	GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error)
 	ListChangesets(ctx context.Context, userID, projectID string) ([]domain.Changeset, error)
 	UpdateChangesetProposedTasks(ctx context.Context, userID, projectID, changesetID string, tasks []domain.ProposedTask) (domain.Changeset, error)
