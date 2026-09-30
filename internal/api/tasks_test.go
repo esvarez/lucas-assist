@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -124,5 +125,107 @@ func TestListTasks_WrongOwner(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// TestUpdateTaskStatus documents #181's durable half: checking a task
+// done persists it, instead of only updating the browser's own React
+// state until the next page load quietly forgets it.
+func TestUpdateTaskStatus(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	task, err := repo.CreateTask(context.Background(), "user_1", domain.Task{ProjectID: project.ID, Title: "Add login command", Status: "todo"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	router := NewRouter(repo)
+
+	body := `{"status": "done"}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/tasks/"+task.ID, bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got updateTaskStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Task.Status != "done" {
+		t.Errorf("Task.Status = %q, want %q", got.Task.Status, "done")
+	}
+
+	stored, err := repo.GetTask(context.Background(), "user_1", project.ID, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != "done" {
+		t.Errorf("stored Task.Status = %q, want %q — update didn't persist", stored.Status, "done")
+	}
+}
+
+func TestUpdateTaskStatus_InvalidStatus(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	task, err := repo.CreateTask(context.Background(), "user_1", domain.Task{ProjectID: project.ID, Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	router := NewRouter(repo)
+
+	body := `{"status": "not-a-real-status"}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/tasks/"+task.ID, bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestUpdateTaskStatus_UnknownTask(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	router := NewRouter(repo)
+
+	body := `{"status": "done"}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/tasks/does-not-exist", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// TestUpdateTaskStatus_WrongOwner documents that a task ID belonging to a
+// different user 404s, same as TestListTasks_WrongOwner — it must not let
+// one user mutate another's task.
+func TestUpdateTaskStatus_WrongOwner(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	project := createTestProject(t, repo, "user_1", "Nudge")
+	task, err := repo.CreateTask(context.Background(), "user_1", domain.Task{ProjectID: project.ID, Title: "Add login command", Status: "todo"})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	router := NewRouter(repo)
+
+	body := `{"status": "done"}`
+	req := withUserID(httptest.NewRequest(http.MethodPatch, "/projects/"+project.ID+"/tasks/"+task.ID, bytes.NewBufferString(body)), "user_2")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	stored, err := repo.GetTask(context.Background(), "user_1", project.ID, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status == "done" {
+		t.Error("a different user's request changed the task's status")
 	}
 }

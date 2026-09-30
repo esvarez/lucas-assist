@@ -59,3 +59,16 @@ export async function listTasks(projectId: string): Promise<Task[]> {
   const body = await request<FlatTask[]>(`/api/projects/${encodeURIComponent(projectId)}/tasks`)
   return buildTaskTree(body)
 }
+
+// updateTaskStatus persists a task's status (#181) — PATCH
+// /projects/:id/tasks/:taskId, backed by store.Repository.UpdateTaskStatus.
+// Previously the project detail page's done checkbox only ever updated its
+// own local React state, so it silently forgot every change on the next
+// page load; this is the durable half of that toggle.
+export async function updateTaskStatus(projectId: string, taskId: string, status: string): Promise<FlatTask> {
+  const { task } = await request<{ task: FlatTask }>(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+    { method: 'PATCH', body: JSON.stringify({ status }) }
+  )
+  return task
+}

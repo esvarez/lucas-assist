@@ -199,6 +199,20 @@ func (r *MemoryRepository) ListTasks(ctx context.Context, userID, projectID stri
 	return tasks, nil
 }
 
+func (r *MemoryRepository) UpdateTaskStatus(ctx context.Context, userID, projectID, taskID, status string) (domain.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rec, ok := r.tasks[taskID]
+	if !ok || rec.UserID != userID || rec.ProjectID != projectID {
+		return domain.Task{}, ErrNotFound
+	}
+
+	rec.Status = status
+	r.tasks[taskID] = rec
+	return rec.Task, nil
+}
+
 func (r *MemoryRepository) CreateChangeset(ctx context.Context, c domain.Changeset) (domain.Changeset, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

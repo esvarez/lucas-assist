@@ -640,6 +640,45 @@ func (r *DynamoRepository) ListTasks(ctx context.Context, userID, projectID stri
 	return tasks, nil
 }
 
+// UpdateTaskStatus sets one task's status via a conditional UpdateItem
+// (attribute_exists(PK)) — the same unconditional-status-set pattern as
+// UpdateChangesetStatus (#181). ErrNotFound covers both a nonexistent task
+// and one belonging to a different user/project, since either lives under
+// a different PK/SK entirely.
+func (r *DynamoRepository) UpdateTaskStatus(ctx context.Context, userID, projectID, taskID, status string) (domain.Task, error) {
+	statusAV, err := attributevalue.Marshal(status)
+	if err != nil {
+		return domain.Task{}, fmt.Errorf("marshal status: %w", err)
+	}
+
+	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: taskSK(projectID, taskID)},
+		},
+		UpdateExpression:          aws.String("SET #status = :status"),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeNames:  map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":status": statusAV},
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return domain.Task{}, ErrNotFound
+		}
+		return domain.Task{}, fmt.Errorf("update task item: %w", err)
+	}
+
+	var item taskItem
+	if err := attributevalue.UnmarshalMap(out.Attributes, &item); err != nil {
+		return domain.Task{}, fmt.Errorf("unmarshal task item: %w", err)
+	}
+
+	return item.toDomain(), nil
+}
+
 // changesetItem is the DynamoDB item shape for a changeset. Unlike
 // taskItem, UserID here just mirrors domain.Changeset.UserID rather than
 // being carried solely for key-building — Changeset owns its UserID

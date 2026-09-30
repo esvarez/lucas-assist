@@ -576,6 +576,63 @@ func TestMemoryRepository_ListTasks_Empty(t *testing.T) {
 	}
 }
 
+func TestMemoryRepository_UpdateTaskStatus(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_1", Title: "Add login command", Status: "todo"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	updated, err := repo.UpdateTaskStatus(ctx, "user_1", "proj_1", created.ID, "done")
+	if err != nil {
+		t.Fatalf("UpdateTaskStatus() error = %v", err)
+	}
+	if updated.Status != "done" {
+		t.Errorf("UpdateTaskStatus() Status = %q, want %q", updated.Status, "done")
+	}
+
+	got, err := repo.GetTask(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if got.Status != "done" {
+		t.Errorf("GetTask() after UpdateTaskStatus Status = %q, want %q", got.Status, "done")
+	}
+}
+
+func TestMemoryRepository_UpdateTaskStatus_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.UpdateTaskStatus(context.Background(), "user_1", "proj_1", "does-not-exist", "done")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateTaskStatus() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestMemoryRepository_UpdateTaskStatus_WrongUser(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: "proj_1", Title: "Add login command"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	if _, err := repo.UpdateTaskStatus(ctx, "user_2", "proj_1", created.ID, "done"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateTaskStatus() with wrong userID error = %v, want %v", err, ErrNotFound)
+	}
+
+	got, err := repo.GetTask(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if got.Status == "done" {
+		t.Error("UpdateTaskStatus() with wrong userID changed the task's status")
+	}
+}
+
 func TestMemoryRepository_CreateChangeset(t *testing.T) {
 	repo := NewMemoryRepository()
 

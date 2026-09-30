@@ -59,6 +59,13 @@ type Repository interface {
 	GetTask(ctx context.Context, userID, projectID, taskID string) (domain.Task, error)
 	ListTasks(ctx context.Context, userID, projectID string) ([]domain.Task, error)
 
+	// UpdateTaskStatus sets one task's status unconditionally, once it
+	// exists (#181) — the same unconditional-status-set pattern
+	// UpdateChangesetStatus uses. Enforcing which prior status may
+	// transition to which next one (e.g. not resurrecting a "blocked" task
+	// straight to "done") is presentation logic, not this primitive's job.
+	UpdateTaskStatus(ctx context.Context, userID, projectID, taskID, status string) (domain.Task, error)
+
 	// CreateChangeset reads UserID/ProjectID off c itself — domain.Changeset
 	// carries UserID directly (like domain.Project, unlike domain.Task).
 	// GetChangeset, ListChangesets, UpdateChangesetStatus, and
