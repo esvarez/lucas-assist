@@ -28,7 +28,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
-import { Input } from '@/components/ui/input'
 import {
   Item,
   ItemContent,
@@ -42,6 +41,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { getProject, type Project } from '@/src/api/projects'
 import { listAgentRuns, listChangesets } from '@/src/api/skills'
 import { flattenTasks, listTasks, updateTaskStatus, type Task } from '@/src/api/tasks'
+import AddTaskDialog from '@/src/components/AddTaskDialog'
 import BreakIntoTasksButton from '@/src/components/BreakIntoTasksButton'
 import DecomposeRunPanel from '@/src/components/DecomposeRunPanel'
 import DeleteProjectDialog from '@/src/components/DeleteProjectDialog'
@@ -309,18 +309,37 @@ function persistTaskStatus(projectId: string, taskId: string, status: string, on
   })
 }
 
-// AddSubtaskRow is every task's way to add a subtask by hand, or to hand
-// the task (further, if breakLabel says "more") to decompose_task —
-// shared by LeafTask and TaskAccordion so both offer it identically.
-// Adding a subtask manually, and decomposing a task (further), both need
-// a backend way to attach new tasks under this task's id —
-// decompose_task has no such input yet and there's no manual
-// task-creation endpoint (#161), so this stays disabled rather than
-// silently doing nothing.
-function AddSubtaskRow({ breakLabel }: { breakLabel: string }) {
+// AddSubtaskRow is every task's way to add a subtask by hand (#175/#185),
+// or to hand the task (further, if breakLabel says "more") to
+// decompose_task — shared by LeafTask and TaskAccordion so both offer it
+// identically. decompose_task has no per-task input yet (#161), so that
+// half stays disabled; onSubtaskAdded re-fetches the project's task tree
+// (same callback the decompose_task accept flow already uses) so a newly
+// added subtask shows up without a manual page reload.
+function AddSubtaskRow({
+  projectId,
+  parentId,
+  breakLabel,
+  onSubtaskAdded,
+}: {
+  projectId: string
+  parentId: string
+  breakLabel: string
+  onSubtaskAdded: () => void
+}) {
   return (
     <div className="flex items-center gap-2">
-      <Input placeholder="Add a subtask" disabled className="h-8" />
+      <AddTaskDialog
+        projectId={projectId}
+        parentId={parentId}
+        onCreated={onSubtaskAdded}
+        trigger={
+          <Button variant="outline" size="sm" className="h-8">
+            <PlusIcon data-icon="inline-start" />
+            Add a subtask
+          </Button>
+        }
+      />
       <Button variant="outline" size="sm" disabled>
         <SparklesIcon data-icon="inline-start" />
         {breakLabel}
@@ -333,7 +352,15 @@ function AddSubtaskRow({ breakLabel }: { breakLabel: string }) {
 // acceptance criteria, or subtasks yet still has AddSubtaskRow to show —
 // so LeafTask always renders the accordion rather than short-circuiting
 // to a plain checkbox row.
-function LeafTask({ task: initial, projectId }: { task: Task; projectId: string }) {
+function LeafTask({
+  task: initial,
+  projectId,
+  onTaskAdded,
+}: {
+  task: Task
+  projectId: string
+  onTaskAdded: () => void
+}) {
   const [task, setTask] = useState(initial)
   const toggleDone = (done: boolean) => {
     const status = done ? 'done' : 'todo'
@@ -363,7 +390,12 @@ function LeafTask({ task: initial, projectId }: { task: Task; projectId: string 
         <AccordionContent>
           <div className="flex flex-col gap-4 pt-2">
             <TaskDetails task={task} />
-            <AddSubtaskRow breakLabel="Break into subtasks" />
+            <AddSubtaskRow
+              projectId={projectId}
+              parentId={task.id}
+              breakLabel="Break into subtasks"
+              onSubtaskAdded={onTaskAdded}
+            />
           </div>
         </AccordionContent>
       </AccordionItem>
@@ -371,7 +403,15 @@ function LeafTask({ task: initial, projectId }: { task: Task; projectId: string 
   )
 }
 
-function TaskAccordion({ task, projectId }: { task: Task; projectId: string }) {
+function TaskAccordion({
+  task,
+  projectId,
+  onTaskAdded,
+}: {
+  task: Task
+  projectId: string
+  onTaskAdded: () => void
+}) {
   const [subtasks, setSubtasks] = useState(task.subtasks)
   const done = subtasks.filter((subtask) => subtask.status === 'done').length
 
@@ -414,7 +454,12 @@ function TaskAccordion({ task, projectId }: { task: Task; projectId: string }) {
                 </li>
               ))}
             </ul>
-            <AddSubtaskRow breakLabel="Break down more" />
+            <AddSubtaskRow
+              projectId={projectId}
+              parentId={task.id}
+              breakLabel="Break down more"
+              onSubtaskAdded={onTaskAdded}
+            />
           </div>
         </AccordionContent>
       </AccordionItem>
@@ -422,11 +467,19 @@ function TaskAccordion({ task, projectId }: { task: Task; projectId: string }) {
   )
 }
 
-function TaskItem({ task, projectId }: { task: Task; projectId: string }) {
+function TaskItem({
+  task,
+  projectId,
+  onTaskAdded,
+}: {
+  task: Task
+  projectId: string
+  onTaskAdded: () => void
+}) {
   if (task.subtasks.length === 0) {
-    return <LeafTask task={task} projectId={projectId} />
+    return <LeafTask task={task} projectId={projectId} onTaskAdded={onTaskAdded} />
   }
-  return <TaskAccordion task={task} projectId={projectId} />
+  return <TaskAccordion task={task} projectId={projectId} onTaskAdded={onTaskAdded} />
 }
 
 // projectSeed derives decompose_task's task_title/task_description from
@@ -525,11 +578,15 @@ function TasksSection({
         </EmptyHeader>
         <EmptyContent>
           <BreakIntoTasksButton onStart={startBreakIntoTasks} working={run.state.name === 'working'} disabled={pending} />
-          {/* Manual single-task creation has no backend endpoint yet (#161)
-              — shown disabled rather than silently implying it works. */}
-          <Button variant="ghost" size="sm" disabled>
-            Add a task manually
-          </Button>
+          <AddTaskDialog
+            projectId={projectId}
+            onCreated={onAccepted}
+            trigger={
+              <Button variant="ghost" size="sm">
+                Add a task manually
+              </Button>
+            }
+          />
         </EmptyContent>
       </Empty>
     )
@@ -549,12 +606,16 @@ function TasksSection({
         {/* Desktop only (frame 2a) — mobile gets the same two actions in the
             fixed footer below instead, so they don't render twice at once. */}
         <div className="hidden items-center gap-2 lg:flex">
-          {/* Manual single-task creation has no backend endpoint yet (#161)
-              — shown disabled rather than silently implying it works. */}
-          <Button size="sm" disabled>
-            <PlusIcon data-icon="inline-start" />
-            Add task
-          </Button>
+          <AddTaskDialog
+            projectId={projectId}
+            onCreated={onAccepted}
+            trigger={
+              <Button size="sm">
+                <PlusIcon data-icon="inline-start" />
+                Add task
+              </Button>
+            }
+          />
           {/* Re-runs decompose_task from the project's own card, same as the
               empty state's "Break into tasks" (#163) — a second pass over
               an already-started project shouldn't need re-typing what's
@@ -575,19 +636,23 @@ function TasksSection({
       {tasks.length > 0 && (
         <ItemGroup>
           {tasks.map((task) => (
-            <TaskItem key={task.id} task={task} projectId={projectId} />
+            <TaskItem key={task.id} task={task} projectId={projectId} onTaskAdded={onAccepted} />
           ))}
         </ItemGroup>
       )}
       {/* Mobile/tablet only (frame 1b) — the desktop header above carries
           the same two actions, hidden here to avoid showing both at once. */}
       <div className="fixed inset-x-0 bottom-0 flex items-center gap-2 border-t border-border bg-background p-3 lg:hidden">
-        {/* Manual single-task creation has no backend endpoint yet (#161)
-            — shown disabled rather than silently implying it works. */}
-        <Button className="flex-1" disabled>
-          <PlusIcon data-icon="inline-start" />
-          Add task
-        </Button>
+        <AddTaskDialog
+          projectId={projectId}
+          onCreated={onAccepted}
+          trigger={
+            <Button className="flex-1">
+              <PlusIcon data-icon="inline-start" />
+              Add task
+            </Button>
+          }
+        />
         <Button variant="outline" onClick={startBreakIntoTasks} disabled={pending}>
           {run.state.name === 'working' ? (
             <Spinner data-icon="inline-start" />
