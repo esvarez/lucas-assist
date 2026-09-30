@@ -18,11 +18,6 @@ function ConfirmSignUpPage() {
   const navigate = useNavigate()
   const emailId = useId()
   const codeId = useId()
-  // Pre-filled from the post-signup redirect's navigation state when
-  // present (#202) — but always editable and required, since state
-  // doesn't survive the "Have a confirmation code? Enter it" link, a
-  // fresh tab, or a bookmark, and erroring out with no way to recover in
-  // those cases is the bug this fixes.
   const [email, setEmail] = useState(() => emailFromState(location.state) ?? '')
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
