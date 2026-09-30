@@ -87,12 +87,7 @@ export interface AcceptTaskSelection extends ProposedTask {
 }
 
 // dispatchDecomposeTask starts a decompose_task run for projectId and
-// returns its run id to poll. domain picks which of decompose_task's two
-// system prompts frames the decomposition (internal/agent/skills/
-// decompose_task.go's DomainGeneral/DomainSoftware) — pass the project's
-// own `domain` (#172) so a project created as "software" actually gets
-// the vertical-slice, runnable-first prompt instead of always falling
-// back to general.
+// returns its run id to poll.
 //
 // clarification carries a prior needs_input round's answered questions
 // (round 0 leaves it undefined). Each answered round is a fresh dispatch,
