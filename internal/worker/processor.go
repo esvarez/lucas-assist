@@ -312,27 +312,17 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 
 	switch r := result.(type) {
 	case skills.DecomposeResult:
-		// No Status check here: ProcessRun already intercepted
-		// "needs_clarification" before this function was ever called (see
-		// this function's doc comment above), so r.Status is always "ok".
-		//
-		// Defensive: strict mode's schema can't express "Subtasks is
-		// non-empty when Status is ok" as a hard constraint, so a
-		// malformed response could otherwise complete the run with an
-		// empty, useless changeset.
 		if len(r.Subtasks) == 0 {
 			return domain.Changeset{}, fmt.Errorf("%s: status \"ok\" but no subtasks in the model's response", run.Skill)
 		}
 		base.ProposedTasks = r.Subtasks
 		base.Assumptions = r.Assumptions
+
+		var in skills.DecomposeInput
+		if err := json.Unmarshal(run.Input, &in); err == nil {
+			base.ParentTaskID = in.ParentTaskID
+		}
 	case skills.CreateProjectResult:
-		// No Status check here: same reasoning as DecomposeResult above —
-		// ProcessRun already intercepted "needs_clarification" before this
-		// function was ever called, so r.Status is always "ok".
-		//
-		// Defensive, same reasoning as Subtasks above — Project is a
-		// nullable field of the status union, so strict mode doesn't
-		// forbid status "ok" with Project null.
 		if r.Project == nil {
 			return domain.Changeset{}, fmt.Errorf("%s: status \"ok\" but no project in the model's response", run.Skill)
 		}

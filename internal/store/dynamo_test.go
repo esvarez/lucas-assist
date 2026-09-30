@@ -1536,6 +1536,55 @@ func TestDynamoRepository_AcceptChangeset(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_AcceptChangeset_SetsParentTaskID covers #199: a
+// changeset carrying ParentTaskID (decompose_task breaking an existing
+// task down further) must commit each newly accepted task as that task's
+// child, not a root-level task.
+func TestDynamoRepository_AcceptChangeset_SetsParentTaskID(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: userID, Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	parent, err := repo.CreateTask(ctx, userID, domain.Task{ProjectID: project.ID, Title: "Add authentication"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	changeset, err := repo.CreateChangeset(ctx, domain.Changeset{
+		ProjectID:     project.ID,
+		UserID:        userID,
+		Skill:         "decompose_task",
+		BaseVersion:   project.Version,
+		Status:        domain.ChangesetProposed,
+		ProposedTasks: []domain.ProposedTask{{Title: "Add login form"}},
+		ParentTaskID:  parent.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateChangeset() error = %v", err)
+	}
+
+	result, err := repo.AcceptChangeset(ctx, project, changeset, nil, "", "idem-key-1")
+	if err != nil {
+		t.Fatalf("AcceptChangeset() error = %v", err)
+	}
+
+	if len(result.Tasks) != 1 || result.Tasks[0].ParentID != parent.ID {
+		t.Fatalf("Tasks = %+v, want exactly one task with ParentID %q", result.Tasks, parent.ID)
+	}
+
+	gotTask, err := repo.GetTask(ctx, userID, project.ID, result.Tasks[0].ID)
+	if err != nil {
+		t.Fatalf("GetTask() error = %v", err)
+	}
+	if gotTask.ParentID != parent.ID {
+		t.Errorf("stored Task.ParentID = %q, want %q", gotTask.ParentID, parent.ID)
+	}
+}
+
 // TestDynamoRepository_AcceptChangeset_MergesAssumptionsIntoConstraints
 // documents #178: a changeset's disclosed Assumptions — including
 // decisions that started as answered clarification questions — land on

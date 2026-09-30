@@ -115,6 +115,51 @@ func TestProcessor_ProcessRun_DecomposeTask_Success(t *testing.T) {
 	}
 }
 
+// TestProcessor_ProcessRun_DecomposeTask_CarriesParentTaskID covers #199:
+// a run dispatched with parent_task_id in its input must produce a
+// Changeset carrying it, so AcceptChangeset knows to commit the proposed
+// tasks as that task's children rather than root-level tasks.
+func TestProcessor_ProcessRun_DecomposeTask_CarriesParentTaskID(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+
+	project, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	parent, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: project.ID, Title: "Add authentication"})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+
+	input := json.RawMessage(`{"task_title":"Add authentication","project_id":"` + project.ID + `","parent_task_id":"` + parent.ID + `"}`)
+	run, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task", Input: input})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	runSkill := func(ctx context.Context, s agent.Skill, raw json.RawMessage) (any, error) {
+		return skills.DecomposeResult{Status: "ok", Subtasks: []domain.ProposedTask{{Title: "Add login form"}}}, nil
+	}
+	p := newTestProcessor(repo, runSkill, agent.NewRegistry(fakeSkill{name: "decompose_task"}))
+
+	if err := p.ProcessRun(ctx, "user_1", project.ID, run.ID); err != nil {
+		t.Fatalf("ProcessRun() error = %v", err)
+	}
+
+	got, err := repo.GetAgentRun(ctx, "user_1", project.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	changeset, err := repo.GetChangeset(ctx, "user_1", project.ID, got.ChangesetID)
+	if err != nil {
+		t.Fatalf("GetChangeset() error = %v", err)
+	}
+	if changeset.ParentTaskID != parent.ID {
+		t.Errorf("Changeset.ParentTaskID = %q, want %q", changeset.ParentTaskID, parent.ID)
+	}
+}
+
 // TestProcessor_ProcessRun_DecomposeTask_PersistsClarificationAnswers
 // covers #178: a decompose_task run whose input carries round 1+'s
 // answered clarifications should fold them onto the project's own

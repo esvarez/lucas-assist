@@ -694,6 +694,7 @@ type changesetItem struct {
 	Status          string                  `dynamodbav:"status"`
 	ProposedTasks   []domain.ProposedTask   `dynamodbav:"proposed_tasks,omitempty"`
 	Assumptions     []string                `dynamodbav:"assumptions,omitempty"`
+	ParentTaskID    string                  `dynamodbav:"parent_task_id,omitempty"`
 	ProposedProject *domain.ProposedProject `dynamodbav:"proposed_project,omitempty"`
 	CreatedAt       time.Time               `dynamodbav:"created_at"`
 }
@@ -710,6 +711,7 @@ func toChangesetItem(c domain.Changeset) changesetItem {
 		Status:          string(c.Status),
 		ProposedTasks:   c.ProposedTasks,
 		Assumptions:     c.Assumptions,
+		ParentTaskID:    c.ParentTaskID,
 		ProposedProject: c.ProposedProject,
 		CreatedAt:       c.CreatedAt,
 	}
@@ -725,6 +727,7 @@ func (i changesetItem) toDomain() domain.Changeset {
 		Status:          domain.ChangesetStatus(i.Status),
 		ProposedTasks:   i.ProposedTasks,
 		Assumptions:     i.Assumptions,
+		ParentTaskID:    i.ParentTaskID,
 		ProposedProject: i.ProposedProject,
 		CreatedAt:       i.CreatedAt,
 	}
@@ -1423,6 +1426,7 @@ func (r *DynamoRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		tasks = append(tasks, domain.Task{
 			ID:          domain.NewID(),
 			ProjectID:   c.ProjectID,
+			ParentID:    c.ParentTaskID,
 			Title:       pt.Title,
 			Description: pt.Description,
 			// "todo", not some other unstarted value — see the matching

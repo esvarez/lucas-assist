@@ -38,26 +38,10 @@ type Clarification struct {
 type DecomposeInput struct {
 	TaskTitle       string `json:"task_title"`
 	TaskDescription string `json:"task_description"`
-	// Domain selects the system prompt. Empty or unrecognized falls back
-	// to DomainGeneral.
 	Domain Domain `json:"domain"`
-
-	// ProjectID is optional — when set, BuildContext loads the project and
-	// its existing tasks and includes them in the prompt (architecture.md
-	// §7's project card + active task subset), so the model doesn't
-	// propose a subtask duplicating one that already exists. Omit it for
-	// ad-hoc decomposition with no project behind it yet.
 	ProjectID string `json:"project_id"`
-
-	// ClarificationRound is 0 on the first call. A caller resubmitting
-	// with Clarifications answered increments it. Round 1+ must never
-	// come back needs_clarification (see systemPrompt) — asking twice
-	// isn't available to the model.
+	ParentTaskID string `json:"parent_task_id"`
 	ClarificationRound int `json:"clarification_round"`
-
-	// Clarifications are the prior round's questions with answers
-	// attached, so the model sees them as resolved instead of as more
-	// prose to question again.
 	Clarifications []Clarification `json:"clarifications"`
 }
 
@@ -160,6 +144,16 @@ func buildProjectContextMessage(proj domain.Project, tasks []domain.Task) string
 	return b.String()
 }
 
+func childrenOf(tasks []domain.Task, parentID string) []domain.Task {
+	children := make([]domain.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t.ParentID == parentID {
+			children = append(children, t)
+		}
+	}
+	return children
+}
+
 // DecomposeTaskSkill implements agent.Skill for decompose_task.
 type DecomposeTaskSkill struct {
 	repo store.Repository
@@ -195,6 +189,10 @@ func (d DecomposeTaskSkill) BuildContext(ctx context.Context, rawInput json.RawM
 		return nil, fmt.Errorf("decompose_task: unmarshal input: %w: %w", agent.ErrInvalidInput, err)
 	}
 
+	if in.ParentTaskID != "" && in.ProjectID == "" {
+		return nil, fmt.Errorf("decompose_task: parent_task_id requires project_id: %w", agent.ErrInvalidInput)
+	}
+
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(systemPrompt(in.Domain)),
 	}
@@ -216,6 +214,16 @@ func (d DecomposeTaskSkill) BuildContext(ctx context.Context, rawInput json.RawM
 		tasks, err := d.repo.ListTasks(ctx, userID, in.ProjectID)
 		if err != nil {
 			return nil, fmt.Errorf("decompose_task: list tasks: %w", err)
+		}
+
+		if in.ParentTaskID != "" {
+			if _, err := d.repo.GetTask(ctx, userID, in.ProjectID, in.ParentTaskID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("decompose_task: parent task %q not found in project %q: %w: %w", in.ParentTaskID, in.ProjectID, agent.ErrInvalidInput, err)
+				}
+				return nil, fmt.Errorf("decompose_task: get parent task: %w", err)
+			}	
+			tasks = childrenOf(tasks, in.ParentTaskID)
 		}
 
 		messages = append(messages, openai.SystemMessage(buildProjectContextMessage(proj, tasks)))
