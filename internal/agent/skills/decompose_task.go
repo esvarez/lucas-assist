@@ -49,6 +49,14 @@ type DecomposeInput struct {
 	// ad-hoc decomposition with no project behind it yet.
 	ProjectID string `json:"project_id"`
 
+	// ParentTaskID, when set, means this call breaks an existing task down
+	// further rather than proposing root-level tasks for the project
+	// (#199) — requires ProjectID (BuildContext rejects one without the
+	// other with agent.ErrInvalidInput), and must name a task that exists
+	// in that project. The resulting Changeset carries it through so
+	// AcceptChangeset commits each new task as this one's child.
+	ParentTaskID string `json:"parent_task_id"`
+
 	// ClarificationRound is 0 on the first call. A caller resubmitting
 	// with Clarifications answered increments it. Round 1+ must never
 	// come back needs_clarification (see systemPrompt) — asking twice
@@ -160,6 +168,20 @@ func buildProjectContextMessage(proj domain.Project, tasks []domain.Task) string
 	return b.String()
 }
 
+// childrenOf narrows tasks to parentID's direct children (#199) — used
+// when decomposing an existing task further, so the model's
+// duplicate-avoidance context is scoped to that task's own subtasks
+// instead of the whole project's flat task list.
+func childrenOf(tasks []domain.Task, parentID string) []domain.Task {
+	children := make([]domain.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t.ParentID == parentID {
+			children = append(children, t)
+		}
+	}
+	return children
+}
+
 // DecomposeTaskSkill implements agent.Skill for decompose_task.
 type DecomposeTaskSkill struct {
 	repo store.Repository
@@ -195,6 +217,10 @@ func (d DecomposeTaskSkill) BuildContext(ctx context.Context, rawInput json.RawM
 		return nil, fmt.Errorf("decompose_task: unmarshal input: %w: %w", agent.ErrInvalidInput, err)
 	}
 
+	if in.ParentTaskID != "" && in.ProjectID == "" {
+		return nil, fmt.Errorf("decompose_task: parent_task_id requires project_id: %w", agent.ErrInvalidInput)
+	}
+
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(systemPrompt(in.Domain)),
 	}
@@ -216,6 +242,24 @@ func (d DecomposeTaskSkill) BuildContext(ctx context.Context, rawInput json.RawM
 		tasks, err := d.repo.ListTasks(ctx, userID, in.ProjectID)
 		if err != nil {
 			return nil, fmt.Errorf("decompose_task: list tasks: %w", err)
+		}
+
+		if in.ParentTaskID != "" {
+			// Same structural-safety pattern as createTaskHandler's
+			// parent_id validation (#175): GetTask is user+project-scoped,
+			// so this also rejects a parent task id that belongs to
+			// another project or another user, not just one that doesn't
+			// exist at all.
+			if _, err := d.repo.GetTask(ctx, userID, in.ProjectID, in.ParentTaskID); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("decompose_task: parent task %q not found in project %q: %w: %w", in.ParentTaskID, in.ProjectID, agent.ErrInvalidInput, err)
+				}
+				return nil, fmt.Errorf("decompose_task: get parent task: %w", err)
+			}
+			// Narrowed to the parent's own children so "break this down
+			// further" only avoids duplicating siblings under the same
+			// task, not every unrelated task elsewhere in the project.
+			tasks = childrenOf(tasks, in.ParentTaskID)
 		}
 
 		messages = append(messages, openai.SystemMessage(buildProjectContextMessage(proj, tasks)))

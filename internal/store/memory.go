@@ -471,6 +471,7 @@ func (r *MemoryRepository) AcceptChangeset(ctx context.Context, p domain.Project
 		t := domain.Task{
 			ID:          domain.NewID(),
 			ProjectID:   c.ProjectID,
+			ParentID:    c.ParentTaskID,
 			Title:       pt.Title,
 			Description: pt.Description,
 			// "todo", not some other unstarted value: it's the status the

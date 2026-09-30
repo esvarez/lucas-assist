@@ -52,6 +52,13 @@ type Changeset struct {
 	// during changeset review. Empty for create_project changesets.
 	Assumptions []string `json:"assumptions,omitempty"`
 
+	// ParentTaskID, when set, means ProposedTasks break an existing task
+	// down further rather than proposing root-level tasks for the project
+	// (#199) — AcceptChangeset commits each one with ParentID set to this.
+	// Empty for a project-level decompose_task changeset, and always empty
+	// for create_project's (which has no task to attach under).
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+
 	// ProposedProject is create_project's mutation payload (#101) — the
 	// second proposal shape #73 anticipated needing "when actually
 	// needed." A create_project run has no ProjectID yet (that's the

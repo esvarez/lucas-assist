@@ -325,6 +325,18 @@ func changesetFromResult(run domain.AgentRun, result any) (domain.Changeset, err
 		}
 		base.ProposedTasks = r.Subtasks
 		base.Assumptions = r.Assumptions
+
+		// ParentTaskID isn't part of the model's result — it's the
+		// dispatch input's own field (#199), carried from run.Input onto
+		// the Changeset so AcceptChangeset knows to commit these as that
+		// task's children rather than root-level tasks. Decoded loosely,
+		// same reasoning as appendClarificationConstraints above: a
+		// decode failure just means "no parent task id," not a reason to
+		// fail a run that already produced a usable result.
+		var in skills.DecomposeInput
+		if err := json.Unmarshal(run.Input, &in); err == nil {
+			base.ParentTaskID = in.ParentTaskID
+		}
 	case skills.CreateProjectResult:
 		// No Status check here: same reasoning as DecomposeResult above —
 		// ProcessRun already intercepted "needs_clarification" before this

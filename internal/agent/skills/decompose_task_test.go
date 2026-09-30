@@ -364,6 +364,85 @@ func TestDecomposeTaskSkill_BuildContext_ProjectContext_NoTasksYet(t *testing.T)
 	}
 }
 
+// TestDecomposeTaskSkill_BuildContext_ParentTaskID_ScopesToChildren covers
+// #199: when parent_task_id is set, the existing-tasks context must be
+// scoped to that task's own children, not the whole project's flat task
+// list — an unrelated task elsewhere in the project must not appear as a
+// "don't duplicate this" candidate just because it exists.
+func TestDecomposeTaskSkill_BuildContext_ParentTaskID_ScopesToChildren(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	ctx := context.Background()
+	proj, err := repo.CreateProject(ctx, domain.Project{UserID: "user_1", Name: "Nudge", Goal: "Ship the POC"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	parent, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: proj.ID, Title: "Add authentication"})
+	if err != nil {
+		t.Fatalf("CreateTask(parent) error = %v", err)
+	}
+	if _, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: proj.ID, ParentID: parent.ID, Title: "Add login form"}); err != nil {
+		t.Fatalf("CreateTask(child) error = %v", err)
+	}
+	if _, err := repo.CreateTask(ctx, "user_1", domain.Task{ProjectID: proj.ID, Title: "Unrelated root task"}); err != nil {
+		t.Fatalf("CreateTask(unrelated) error = %v", err)
+	}
+
+	userCtx := agent.WithUserID(ctx, "user_1")
+	raw := []byte(`{"task_title": "Add authentication", "project_id": "` + proj.ID + `", "parent_task_id": "` + parent.ID + `"}`)
+
+	messages, err := NewDecomposeTaskSkill(repo).BuildContext(userCtx, raw)
+	if err != nil {
+		t.Fatalf("BuildContext() error = %v", err)
+	}
+
+	projMsg := messages[1].OfSystem.Content.OfString.Value
+	if !strings.Contains(projMsg, "Add login form") {
+		t.Errorf("project context message = %q, want it to list the parent task's own child", projMsg)
+	}
+	if strings.Contains(projMsg, "Unrelated root task") {
+		t.Errorf("project context message = %q, want it to omit an unrelated task elsewhere in the project", projMsg)
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_ParentTaskID_RequiresProjectID
+// covers #199's scope note: a parent task can't be validated (or later
+// attached to) without knowing which project it lives in.
+func TestDecomposeTaskSkill_BuildContext_ParentTaskID_RequiresProjectID(t *testing.T) {
+	raw := []byte(`{"task_title": "Add authentication", "parent_task_id": "task_1"}`)
+
+	_, err := (DecomposeTaskSkill{}).BuildContext(context.Background(), raw)
+	if err == nil {
+		t.Fatal("BuildContext() error = nil, want an error for parent_task_id without project_id")
+	}
+	if !errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it to wrap agent.ErrInvalidInput so callers can map it to 400", err)
+	}
+}
+
+// TestDecomposeTaskSkill_BuildContext_ParentTaskID_UnknownRejected covers
+// #199's acceptance criteria: an unknown (or, since GetTask is
+// user+project-scoped, cross-project/cross-user) parent task id must be
+// rejected before any model call, same structural-safety pattern as
+// createTaskHandler's parent_id validation (#175).
+func TestDecomposeTaskSkill_BuildContext_ParentTaskID_UnknownRejected(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	proj, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	ctx := agent.WithUserID(context.Background(), "user_1")
+	raw := []byte(`{"task_title": "Add authentication", "project_id": "` + proj.ID + `", "parent_task_id": "does-not-exist"}`)
+
+	_, err = NewDecomposeTaskSkill(repo).BuildContext(ctx, raw)
+	if err == nil {
+		t.Fatal("BuildContext() error = nil, want an error for an unknown parent_task_id")
+	}
+	if !errors.Is(err, agent.ErrInvalidInput) {
+		t.Errorf("BuildContext() error = %v, want it to wrap agent.ErrInvalidInput so callers can map it to 400", err)
+	}
+}
+
 // TestDecomposeTaskSkill_BuildContext_ProjectContext_NoUserID is a
 // server-side invariant, not a client mistake: skillsapi always attaches
 // the verified user ID to ctx before calling BuildContext, so a missing
