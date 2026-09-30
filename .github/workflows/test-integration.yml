@@ -1,0 +1,33 @@
+name: Integration Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-integration:
+    name: Integration tests (DynamoDB Local)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start DynamoDB Local
+        run: docker compose up -d
+      - name: Wait for DynamoDB Local
+        run: |
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:8000 && exit 0
+            sleep 1
+          done
+          echo "DynamoDB Local did not become reachable on :8000 in time" >&2
+          exit 1
+      - run: make test-integration
+      - name: Stop DynamoDB Local
+        if: always()
+        run: docker compose down
