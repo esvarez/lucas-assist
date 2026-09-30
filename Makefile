@@ -36,20 +36,8 @@ test-integration:
 local:
 	go run ./cmd/local
 
-# Builds the SPA and syncs it to WebBucket (#71), then invalidates
-# index.html so CloudFront never serves a stale shell after a deploy.
-# Assumes `sam deploy --stack-name $(STACK_NAME)` already provisioned
-# WebBucket/WebDistribution — this only pushes web/dist's contents, it
-# doesn't touch the SAM stack itself.
-#
-# Cache-Control is set here, not in the CloudFront distribution config:
-# Managed-CachingOptimized (the default cache behavior's policy) honors
-# whatever each object's own Cache-Control header says, so hashed assets
-# (immutable, cache them for a year) and index.html (never cache, or a
-# stale shell could reference asset hashes that no longer exist) need
-# different values at upload time.
 deploy-web:
-	npm --prefix web run build
+	npm --prefix web run build -- --mode $(ENVIRONMENT)
 	$(eval WEB_BUCKET := $(shell aws cloudformation describe-stacks --stack-name $(STACK_NAME) --query "Stacks[0].Outputs[?OutputKey=='WebBucketName'].OutputValue" --output text))
 	$(eval DISTRIBUTION_ID := $(shell aws cloudformation describe-stacks --stack-name $(STACK_NAME) --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" --output text))
 	aws s3 sync web/dist s3://$(WEB_BUCKET) --delete --cache-control "public,max-age=31536000,immutable" --exclude index.html
