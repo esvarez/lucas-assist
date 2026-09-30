@@ -64,18 +64,7 @@ type listAgentRunsResponse struct {
 }
 
 // listAgentRunsHandler returns a project's agent runs, optionally
-// filtered to one or more statuses via repeated ?status= params (e.g.
-// ?status=queued&status=running). Added so a client can rediscover a
-// decompose_task run that's still queued/running/needs_input after a
-// page refresh (#169) and resume polling or clarifying it, instead of
-// only ever finding out about a run from the response to the request
-// that created it.
-//
-// The filter is passed to repo.ListAgentRuns rather than applied here
-// after the fact (#183) — pushing it down to the read is what lets the
-// DynamoDB implementation filter server-side instead of a handler
-// discarding most of an unbounded, ever-growing run history on every
-// call.
+// filtered to one or more statuses via repeated ?status= 
 func listAgentRunsHandler(repo ProjectRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
