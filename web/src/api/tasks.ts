@@ -60,6 +60,29 @@ export async function listTasks(projectId: string): Promise<Task[]> {
   return buildTaskTree(body)
 }
 
+// CreateTaskRequest mirrors the POST /projects/:id/tasks body (#175/#185):
+// title is the only required field, matching store.Repository.CreateTask's
+// own validation. parent_id attaches the new task as a subtask instead of
+// a root task.
+export interface CreateTaskRequest {
+  title: string
+  description?: string
+  acceptance_criteria?: string[]
+  parent_id?: string
+}
+
+// createTask persists a single manually-entered task (#175/#185) — POST
+// /projects/:id/tasks, the manual counterpart to decompose_task's
+// propose/review/accept flow. Returns the created task the same way
+// createProject returns the created project: the resource itself, not
+// wrapped in an envelope.
+export function createTask(projectId: string, input: CreateTaskRequest): Promise<FlatTask> {
+  return request<FlatTask>(`/api/projects/${encodeURIComponent(projectId)}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
 // updateTaskStatus persists a task's status (#181) — PATCH
 // /projects/:id/tasks/:taskId, backed by store.Repository.UpdateTaskStatus.
 // Previously the project detail page's done checkbox only ever updated its
