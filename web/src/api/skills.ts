@@ -210,16 +210,6 @@ export async function listChangesets(projectId: string, status?: string): Promis
   )
 }
 
-// listAgentRuns returns a project's agent runs, optionally filtered to
-// one or more statuses (#169, #183) — used to rediscover a decompose_task
-// run that's still queued/running/needs_input after a page refresh, so
-// the client can resume polling or clarifying it instead of the trigger
-// looking idle and letting a second dispatch race the first.
-//
-// statuses is sent as repeated ?status= params rather than fetching every
-// run and filtering client-side (#183) — the backend pushes the same
-// filter into its own read, so a project's ever-growing run history never
-// has to come down over the wire just to check what's currently pending.
 export async function listAgentRuns(
   projectId: string,
   statuses?: AgentRunStatus[]

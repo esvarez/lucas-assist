@@ -530,11 +530,6 @@ function TasksSection({
         return
       }
 
-      // Asks for just the in-flight statuses (#183) instead of fetching a
-      // project's entire, ever-growing run history and filtering it here
-      // — the skill check still happens client-side since the backend
-      // filter is status-only and a project could in principle have
-      // other skills' runs too.
       const { agent_runs: agentRuns } = await listAgentRuns(projectId, ['queued', 'running', 'needs_input'])
       const pendingRun = agentRuns.find((r) => r.skill === 'decompose_task')
       if (pendingRun && !ignore) {
