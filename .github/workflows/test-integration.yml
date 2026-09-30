@@ -9,11 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  # Runs against DynamoDB Local, started from the repo's own
-  # docker-compose.yml (the same way a developer runs it locally, per the
-  # Makefile's own "Requires DynamoDB Local on :8000 (docker compose up
-  # -d)" comment) rather than a second, separately-specified service
-  # container definition.
   test-integration:
     name: Integration tests (DynamoDB Local)
     runs-on: ubuntu-latest
