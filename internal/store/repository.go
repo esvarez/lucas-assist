@@ -111,12 +111,19 @@ type Repository interface {
 	CreateAgentRun(ctx context.Context, r domain.AgentRun) (domain.AgentRun, error)
 	GetAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
 
-	// ListAgentRuns returns every run for a project (any status), scoped
-	// by user the same way GetAgentRun is — used to rediscover a
-	// decompose_task run that's still queued/running after a page refresh
-	// (#169), since a client that didn't create this browser session has
-	// no run id to poll otherwise.
-	ListAgentRuns(ctx context.Context, userID, projectID string) ([]domain.AgentRun, error)
+	// ListAgentRuns returns a project's runs, scoped by user the same way
+	// GetAgentRun is — used to rediscover a decompose_task run that's
+	// still queued/running/needs_input after a page refresh (#169), since
+	// a client that didn't create this browser session has no run id to
+	// poll otherwise.
+	//
+	// statuses, when non-empty, pushes the filter down to the read itself
+	// (#183) rather than fetching a project's entire run history and
+	// filtering client- or handler-side — the common caller only ever
+	// wants the in-flight statuses, and that history only grows over a
+	// project's lifetime. Empty returns every run, any status, same as
+	// before this parameter existed.
+	ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error)
 
 	// LeaseAgentRun conditionally moves a run from queued to running, or
 	// reclaims a running run whose LeaseUntil has already passed — the

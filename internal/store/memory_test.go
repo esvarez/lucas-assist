@@ -1039,7 +1039,7 @@ func TestMemoryRepository_ListAgentRuns(t *testing.T) {
 		t.Fatalf("CreateAgentRun() error = %v", err)
 	}
 
-	got, err := repo.ListAgentRuns(ctx, "user_1", "proj_1")
+	got, err := repo.ListAgentRuns(ctx, "user_1", "proj_1", nil)
 	if err != nil {
 		t.Fatalf("ListAgentRuns() error = %v", err)
 	}
@@ -1051,12 +1051,40 @@ func TestMemoryRepository_ListAgentRuns(t *testing.T) {
 func TestMemoryRepository_ListAgentRuns_Empty(t *testing.T) {
 	repo := NewMemoryRepository()
 
-	got, err := repo.ListAgentRuns(context.Background(), "user_1", "proj_1")
+	got, err := repo.ListAgentRuns(context.Background(), "user_1", "proj_1", nil)
 	if err != nil {
 		t.Fatalf("ListAgentRuns() error = %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("ListAgentRuns() = %+v, want empty", got)
+	}
+}
+
+// TestMemoryRepository_ListAgentRuns_FilteredByStatus documents #183: a
+// non-empty statuses filter is pushed into the read, not applied by the
+// caller afterward.
+func TestMemoryRepository_ListAgentRuns_FilteredByStatus(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	queued, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	failed, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.FailAgentRun(ctx, "user_1", "proj_1", failed.ID, "boom"); err != nil {
+		t.Fatalf("FailAgentRun() error = %v", err)
+	}
+
+	got, err := repo.ListAgentRuns(ctx, "user_1", "proj_1", []domain.AgentRunStatus{domain.AgentRunQueued})
+	if err != nil {
+		t.Fatalf("ListAgentRuns() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != queued.ID {
+		t.Fatalf("ListAgentRuns(statuses=[queued]) = %+v, want just the queued run %+v", got, queued)
 	}
 }
 
