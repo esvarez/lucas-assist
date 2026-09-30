@@ -507,7 +507,7 @@ function TasksSection({
   const flat = flattenTasks(tasks)
   const done = flat.filter((task) => task.status === 'done').length
 
-  const run = useDecomposeRun(projectId, onAccepted)
+  const run = useDecomposeRun(projectId, project.domain, onAccepted)
   // Remembered across the run's lifecycle (a clarify resubmit, an error
   // retry) — whatever form collected it, if any, has already closed by
   // the time those happen.
