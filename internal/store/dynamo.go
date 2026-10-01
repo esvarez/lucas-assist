@@ -929,11 +929,7 @@ func (r *DynamoRepository) UpdateChangesetProposedTasks(ctx context.Context, use
 	return item.toDomain(), nil
 }
 
-// agentRunItem is the DynamoDB item shape for an agent run. GSI1PK/GSI1SK
-// (#207) are sparse — present only while Status is one
-// agentRunInFlightStatuses recognizes — so omitempty drops them entirely
-// from a terminal run's item instead of writing empty-string keys that
-// would still project it into GSI1.
+// agentRunItem is the DynamoDB item shape for an agent run.
 type agentRunItem struct {
 	PK          string          `dynamodbav:"PK"`
 	SK          string          `dynamodbav:"SK"`
@@ -979,30 +975,14 @@ func toAgentRunItem(r domain.AgentRun) agentRunItem {
 	}
 }
 
-// agentRunGSI1Name is GSI1's name in template.yaml / EnsureTable (#207):
-// a sparse index over just in-flight agent runs. GSI1PK reuses the base
-// table's own partition value (USER#<uid>), never a project-scoped key —
-// AGENTS.MD forbids a project-partitioned index, since it would recreate
-// the authorization hole user-partitioning exists to close. A per-project
-// ListAgentRuns call still scopes to one project via a FilterExpression
-// on GSI1's (already sparse, already tiny) result instead.
 const agentRunGSI1Name = "GSI1"
 
-// agentRunInFlightStatuses is GSI1's domain (#207) — the only statuses
-// any caller ever needs to find without reading a project's entire run
-// history: a still-queued run, one a worker is actively running, or one
-// waiting on a clarification answer. A run reaching any other (terminal)
-// status drops out of the index entirely.
 var agentRunInFlightStatuses = map[domain.AgentRunStatus]bool{
 	domain.AgentRunQueued:     true,
 	domain.AgentRunRunning:    true,
 	domain.AgentRunNeedsInput: true,
 }
 
-// agentRunGSI1Key returns GSI1's key attributes for r, or ("", "") when
-// r.Status isn't one agentRunInFlightStatuses recognizes — callers use
-// the empty result to know to REMOVE rather than SET these attributes on
-// an existing item (e.g. a run transitioning from running to completed).
 func agentRunGSI1Key(r domain.AgentRun) (pk, sk string) {
 	if !agentRunInFlightStatuses[r.Status] {
 		return "", ""
@@ -1010,13 +990,6 @@ func agentRunGSI1Key(r domain.AgentRun) (pk, sk string) {
 	return userPK(r.UserID), agentRunGSI1SK(r.Status, r.UpdatedAt, r.ID)
 }
 
-// agentRunGSI1SK builds GSI1's sort key: <status>#<updated_at>#<run_id>,
-// the same "fixed-width timestamp, then id for uniqueness" shape as
-// architecture.md §8's documented GSI2 pattern (<priority>#<updated_at>#
-// <task_id>) — status leads so a caller wanting just one status (e.g.
-// "needs_input") could Query a begins_with prefix on it alone, though
-// today's callers still narrow via FilterExpression instead (see
-// listAgentRunsViaGSI1).
 func agentRunGSI1SK(status domain.AgentRunStatus, updatedAt time.Time, runID string) string {
 	return string(status) + "#" + sortableTimestamp(updatedAt) + "#" + runID
 }
@@ -1108,13 +1081,7 @@ func (r *DynamoRepository) GetAgentRun(ctx context.Context, userID, projectID, r
 }
 
 // ListAgentRuns returns a project's agent runs, filtered to statuses when
-// given. When every requested status is one GSI1 indexes (#207), it
-// queries GSI1 instead of the base table — bounding the read cost to just
-// those in-flight runs rather than every run the project has ever had,
-// however large that history grows. An empty statuses (every caller
-// wanting terminal runs too, e.g. GET /agent-runs/{id} adjacent reads)
-// always falls back to the base table's P#<pid>#RUN# prefix Query, since
-// GSI1 simply doesn't contain terminal runs to return.
+// given.
 func (r *DynamoRepository) ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
 	if allInFlightStatuses(statuses) {
 		return r.listAgentRunsViaGSI1(ctx, userID, projectID, statuses)
