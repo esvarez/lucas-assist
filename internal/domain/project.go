@@ -7,6 +7,14 @@ const (
 	ProjectDomainGeneral  = "general"
 )
 
+// ProjectStatusOnTrack is the default a project is created with (#215) —
+// matches web/src/lib/project-status.ts's canonical "on-track" value,
+// the one PROJECT_STATUS_OPTIONS's edit form already renders as "On
+// track". A freshly started project is presumed on track unless
+// something later says otherwise, the same way Domain defaults to
+// ProjectDomainGeneral rather than being left empty.
+const ProjectStatusOnTrack = "on-track"
+
 // Project is the top-level entity everything else — tasks, decisions,
 // events, notes — hangs off of. It's the "project card" injected into
 // every skill prompt.

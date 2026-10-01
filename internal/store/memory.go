@@ -65,6 +65,11 @@ func (r *MemoryRepository) CreateProject(ctx context.Context, p domain.Project) 
 	if p.Domain == "" {
 		p.Domain = domain.ProjectDomainGeneral
 	}
+	// Same reasoning, for Status (#215): a project created without one is
+	// presumed on track, not left blank.
+	if p.Status == "" {
+		p.Status = domain.ProjectStatusOnTrack
+	}
 
 	now := time.Now().UTC()
 	p.CreatedAt = now
@@ -555,10 +560,14 @@ func (r *MemoryRepository) AcceptCreateProjectChangeset(ctx context.Context, c d
 	now := time.Now().UTC()
 
 	project := domain.Project{
-		UserID:    c.UserID,
-		ID:        domain.NewID(),
-		Name:      c.ProposedProject.Name,
-		Goal:      c.ProposedProject.Goal,
+		UserID: c.UserID,
+		ID:     domain.NewID(),
+		Name:   c.ProposedProject.Name,
+		Goal:   c.ProposedProject.Goal,
+		// Status is repo-owned here, not caller-supplied — ProposedProject
+		// has no status field for create_project to propose one through
+		// (#215: a freshly created project is presumed on track).
+		Status:    domain.ProjectStatusOnTrack,
 		Deadline:  c.ProposedProject.Deadline,
 		CreatedAt: now,
 		UpdatedAt: now,
