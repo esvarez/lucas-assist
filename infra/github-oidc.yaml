@@ -1,0 +1,209 @@
+# GitHub Actions OIDC trust + a federated deploy role for this repo
+# (#191, part of #126). Plain CloudFormation, not SAM — deployed once per
+# AWS account, independently of template.yaml's `sam deploy` pipeline,
+# since the role this stack creates is what *runs* that pipeline.
+# Deploying the app's own stack can't be how this role comes to exist in
+# the first place.
+#
+# Deploy once with:
+#   aws cloudformation deploy \
+#     --template-file infra/github-oidc.yaml \
+#     --stack-name github-oidc \
+#     --capabilities CAPABILITY_NAMED_IAM
+#
+# Then take the printed DeployRoleArn output and put it in the repo's
+# `AWS_DEPLOY_ROLE_ARN` Actions variable (Settings > Secrets and variables
+# > Actions > Variables) — .github/workflows/deploy.yml reads it from
+# there.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: GitHub Actions OIDC provider + federated deploy role for this repo (#191).
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: esvarez
+    Description: GitHub organization/user that owns the repo allowed to assume the deploy role.
+
+  GitHubRepo:
+    Type: String
+    Default: lucas-assist
+    Description: Repo name (without the org prefix) allowed to assume the deploy role.
+
+  CreateOIDCProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Whether to create the token.actions.githubusercontent.com OIDC
+      provider. An AWS account can only have one OIDC provider per issuer
+      URL — set this to "false" (and this stack will reference the
+      existing one instead) if a prior project's CloudFormation/Terraform
+      already created one here.
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
+
+Resources:
+  # GitHub rotates the certificate this thumbprint would otherwise need to
+  # track (it already has once, in 2023); AWS's OIDC provider validates
+  # GitHub's token via its TLS certificate chain regardless of what's
+  # listed here, not by matching this thumbprint, but the resource's
+  # schema still requires a non-empty ThumbprintList. Both of GitHub's
+  # known intermediate-CA thumbprints are listed so a future rotation
+  # doesn't require updating this stack.
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # The role GitHub Actions' aws-actions/configure-aws-credentials assumes
+  # (#191) — no long-lived AWS access keys stored as repo secrets. The
+  # trust policy's sub condition scopes this to *this* repo's `main`
+  # branch specifically (StringLike, not StringEquals, only because
+  # sub's shape requires it; the value itself is literal, not a glob) —
+  # both a push-to-main run and a workflow_dispatch run against main
+  # carry that same sub claim, but a dispatch against any other branch
+  # does not, so this one condition covers both triggers #191's deploy
+  # workflow uses without granting every branch deploy access.
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${GitHubRepo}-github-actions-deploy"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOIDCProvider
+                - !Ref GitHubOIDCProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: SamDeploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CloudFormation: the stack sam deploy creates/updates is
+              # always named nudge-<environment> (samconfig.toml), so this
+              # covers every environment that convention is ever used for
+              # without needing one statement per environment.
+              - Sid: CloudFormationStack
+                Effect: Allow
+                Action: cloudformation:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/nudge-*/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/nudge-*/*
+
+              # S3: samconfig.toml's resolve_s3 means the SAM CLI manages
+              # its own artifacts bucket, named aws-sam-cli-managed-*; the
+              # app's own web bucket (template.yaml's WebBucket) follows
+              # ${Environment}-nudge-web-* across every environment.
+              - Sid: SamArtifactsBucket
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::*-nudge-web-*
+                  - !Sub arn:${AWS::Partition}:s3:::*-nudge-web-*/*
+
+              # Lambda: the three functions template.yaml defines, named
+              # ${Environment}-nudge-{api,skills,worker}.
+              - Sid: LambdaFunctions
+                Effect: Allow
+                Action: lambda:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*-nudge-*
+
+              # DynamoDB: the single table, named ${Environment}-nudge,
+              # plus its indexes (GSI1, #207).
+              - Sid: DynamoDBTable
+                Effect: Allow
+                Action: dynamodb:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-nudge
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-nudge/index/*
+
+              # SQS: AgentJobsQueue + its DLQ, named
+              # ${Environment}-nudge-agent-jobs(-dlq).
+              - Sid: SQSQueues
+                Effect: Allow
+                Action: sqs:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:*-nudge-agent-jobs*
+
+              # CloudWatch Logs: every Lambda's auto-created log group.
+              - Sid: LambdaLogGroups
+                Effect: Allow
+                Action: logs:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-nudge-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-nudge-*:*
+
+              # SSM: read-only (ADR 014 — the OpenAI key is a one-time
+              # out-of-band `aws ssm put-parameter`, never written by this
+              # role or by CloudFormation). Scoped to the one parameter
+              # path AgentWorkerFunction reads, across every environment.
+              - Sid: ReadOpenAIKeyParameter
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nudge/openai-api-key
+
+              # IAM: SAM auto-generates each Lambda's execution role (and
+              # the CloudFront OAC/other service-linked bits) under
+              # CAPABILITY_IAM, named <StackName>-<LogicalId>-<suffix> —
+              # i.e. always prefixed nudge-<environment>-, matching the
+              # stack name. PassRole is what lets this role hand a Lambda
+              # execution role to the Lambda service without holding that
+              # role's own permissions itself.
+              - Sid: LambdaExecutionRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nudge-*
+
+              # Cognito, API Gateway (template.yaml's HttpApi), and
+              # CloudFront (distribution, OAC, Functions) don't support
+              # resource-level permissions for their create/update actions
+              # the way the services above do — AWS's own managed policies
+              # for these (e.g. AmazonCognitoPowerUser) use Resource: "*"
+              # for the same reason. Scoped by service/action instead of
+              # by resource, since resource-ARN scoping isn't available
+              # here; narrow further once the SAM deploy step issue shows
+              # exactly which calls it actually makes.
+              - Sid: CognitoApiGatewayCloudFront
+                Effect: Allow
+                Action:
+                  - cognito-idp:*
+                  - apigateway:*
+                  - cloudfront:*
+                Resource: "*"
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the repo's AWS_DEPLOY_ROLE_ARN Actions variable.
+    Value: !GetAtt GitHubActionsDeployRole.Arn
