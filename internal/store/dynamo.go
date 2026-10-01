@@ -929,10 +929,16 @@ func (r *DynamoRepository) UpdateChangesetProposedTasks(ctx context.Context, use
 	return item.toDomain(), nil
 }
 
-// agentRunItem is the DynamoDB item shape for an agent run.
+// agentRunItem is the DynamoDB item shape for an agent run. GSI1PK/GSI1SK
+// (#207) are sparse — present only while Status is one
+// agentRunInFlightStatuses recognizes — so omitempty drops them entirely
+// from a terminal run's item instead of writing empty-string keys that
+// would still project it into GSI1.
 type agentRunItem struct {
 	PK          string          `dynamodbav:"PK"`
 	SK          string          `dynamodbav:"SK"`
+	GSI1PK      string          `dynamodbav:"GSI1PK,omitempty"`
+	GSI1SK      string          `dynamodbav:"GSI1SK,omitempty"`
 	ID          string          `dynamodbav:"id"`
 	UserID      string          `dynamodbav:"user_id"`
 	ProjectID   string          `dynamodbav:"project_id,omitempty"`
@@ -950,9 +956,12 @@ type agentRunItem struct {
 }
 
 func toAgentRunItem(r domain.AgentRun) agentRunItem {
+	gsi1PK, gsi1SK := agentRunGSI1Key(r)
 	return agentRunItem{
 		PK:          userPK(r.UserID),
 		SK:          agentRunSK(r.ProjectID, r.ID),
+		GSI1PK:      gsi1PK,
+		GSI1SK:      gsi1SK,
 		ID:          r.ID,
 		UserID:      r.UserID,
 		ProjectID:   r.ProjectID,
@@ -968,6 +977,48 @@ func toAgentRunItem(r domain.AgentRun) agentRunItem {
 		CreatedAt:   r.CreatedAt,
 		UpdatedAt:   r.UpdatedAt,
 	}
+}
+
+// agentRunGSI1Name is GSI1's name in template.yaml / EnsureTable (#207):
+// a sparse index over just in-flight agent runs. GSI1PK reuses the base
+// table's own partition value (USER#<uid>), never a project-scoped key —
+// AGENTS.MD forbids a project-partitioned index, since it would recreate
+// the authorization hole user-partitioning exists to close. A per-project
+// ListAgentRuns call still scopes to one project via a FilterExpression
+// on GSI1's (already sparse, already tiny) result instead.
+const agentRunGSI1Name = "GSI1"
+
+// agentRunInFlightStatuses is GSI1's domain (#207) — the only statuses
+// any caller ever needs to find without reading a project's entire run
+// history: a still-queued run, one a worker is actively running, or one
+// waiting on a clarification answer. A run reaching any other (terminal)
+// status drops out of the index entirely.
+var agentRunInFlightStatuses = map[domain.AgentRunStatus]bool{
+	domain.AgentRunQueued:     true,
+	domain.AgentRunRunning:    true,
+	domain.AgentRunNeedsInput: true,
+}
+
+// agentRunGSI1Key returns GSI1's key attributes for r, or ("", "") when
+// r.Status isn't one agentRunInFlightStatuses recognizes — callers use
+// the empty result to know to REMOVE rather than SET these attributes on
+// an existing item (e.g. a run transitioning from running to completed).
+func agentRunGSI1Key(r domain.AgentRun) (pk, sk string) {
+	if !agentRunInFlightStatuses[r.Status] {
+		return "", ""
+	}
+	return userPK(r.UserID), agentRunGSI1SK(r.Status, r.UpdatedAt, r.ID)
+}
+
+// agentRunGSI1SK builds GSI1's sort key: <status>#<updated_at>#<run_id>,
+// the same "fixed-width timestamp, then id for uniqueness" shape as
+// architecture.md §8's documented GSI2 pattern (<priority>#<updated_at>#
+// <task_id>) — status leads so a caller wanting just one status (e.g.
+// "needs_input") could Query a begins_with prefix on it alone, though
+// today's callers still narrow via FilterExpression instead (see
+// listAgentRunsViaGSI1).
+func agentRunGSI1SK(status domain.AgentRunStatus, updatedAt time.Time, runID string) string {
+	return string(status) + "#" + sortableTimestamp(updatedAt) + "#" + runID
 }
 
 func (i agentRunItem) toDomain() domain.AgentRun {
@@ -1056,10 +1107,95 @@ func (r *DynamoRepository) GetAgentRun(ctx context.Context, userID, projectID, r
 	return item.toDomain(), nil
 }
 
-// ListAgentRuns returns every agent run item under a project's
-// P#<pid>#RUN# prefix — callers filter by status themselves (#169's
-// pending-run reload only wants queued/running ones).
+// ListAgentRuns returns a project's agent runs, filtered to statuses when
+// given. When every requested status is one GSI1 indexes (#207), it
+// queries GSI1 instead of the base table — bounding the read cost to just
+// those in-flight runs rather than every run the project has ever had,
+// however large that history grows. An empty statuses (every caller
+// wanting terminal runs too, e.g. GET /agent-runs/{id} adjacent reads)
+// always falls back to the base table's P#<pid>#RUN# prefix Query, since
+// GSI1 simply doesn't contain terminal runs to return.
 func (r *DynamoRepository) ListAgentRuns(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
+	if allInFlightStatuses(statuses) {
+		return r.listAgentRunsViaGSI1(ctx, userID, projectID, statuses)
+	}
+	return r.listAgentRunsViaBaseTable(ctx, userID, projectID, statuses)
+}
+
+// allInFlightStatuses reports whether statuses is non-empty and every
+// entry is one GSI1 indexes — the only case ListAgentRuns can safely
+// answer from GSI1 alone.
+func allInFlightStatuses(statuses []domain.AgentRunStatus) bool {
+	if len(statuses) == 0 {
+		return false
+	}
+	for _, s := range statuses {
+		if !agentRunInFlightStatuses[s] {
+			return false
+		}
+	}
+	return true
+}
+
+// listAgentRunsViaGSI1 queries GSI1 (#207) — PK = the caller's own
+// USER#<uid>, same value as the base table's PK, so this stays
+// structurally scoped to the caller's partition exactly like every other
+// Query in this file. Narrowed to one project via a FilterExpression:
+// GSI1 is sparse (in-flight runs only) and not project-scoped by design
+// (see GSI1's doc comment), so this filters after a read that's already
+// bounded to a small set rather than a project's entire run history.
+func (r *DynamoRepository) listAgentRunsViaGSI1(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
+	runs := make([]domain.AgentRun, 0)
+
+	values := map[string]types.AttributeValue{
+		":pk":         &types.AttributeValueMemberS{Value: userPK(userID)},
+		":project_id": &types.AttributeValueMemberS{Value: projectID},
+	}
+	placeholders := make([]string, len(statuses))
+	for i, s := range statuses {
+		placeholder := fmt.Sprintf(":status%d", i)
+		placeholders[i] = placeholder
+		values[placeholder] = &types.AttributeValueMemberS{Value: string(s)}
+	}
+
+	queryInput := &dynamodb.QueryInput{
+		TableName:              aws.String(r.table),
+		IndexName:              aws.String(agentRunGSI1Name),
+		KeyConditionExpression: aws.String("GSI1PK = :pk"),
+		FilterExpression:       aws.String("project_id = :project_id AND #status IN (" + strings.Join(placeholders, ", ") + ")"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: values,
+	}
+
+	paginator := dynamodb.NewQueryPaginator(r.client, queryInput)
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("query agent run GSI1 items: %w", err)
+		}
+
+		var items []agentRunItem
+		if err := attributevalue.UnmarshalListOfMaps(page.Items, &items); err != nil {
+			return nil, fmt.Errorf("unmarshal agent run GSI1 items: %w", err)
+		}
+		for _, item := range items {
+			runs = append(runs, item.toDomain())
+		}
+	}
+
+	return runs, nil
+}
+
+// listAgentRunsViaBaseTable is #183's original implementation: every item
+// under a project's P#<pid>#RUN# prefix, with statuses (when given)
+// pushed into a FilterExpression. That trims the response but still reads
+// (and is billed for) every run under the prefix — ListAgentRuns only
+// falls back to this when the caller wants at least one terminal status,
+// since GSI1 has nothing to offer there.
+func (r *DynamoRepository) listAgentRunsViaBaseTable(ctx context.Context, userID, projectID string, statuses []domain.AgentRunStatus) ([]domain.AgentRun, error) {
 	runs := make([]domain.AgentRun, 0)
 
 	queryInput := &dynamodb.QueryInput{
@@ -1139,6 +1275,19 @@ func (r *DynamoRepository) LeaseAgentRun(ctx context.Context, userID, projectID,
 	if err != nil {
 		return domain.AgentRun{}, fmt.Errorf("marshal updated_at: %w", err)
 	}
+	// Still in-flight (queued -> running), so GSI1's key attributes move
+	// with it rather than being removed — recomputed from the new status/
+	// timestamp, same as CreateAgentRun's initial write via
+	// toAgentRunItem/agentRunGSI1Key (#207).
+	gsi1PK, gsi1SK := agentRunGSI1Key(domain.AgentRun{UserID: userID, Status: domain.AgentRunRunning, UpdatedAt: now, ID: runID})
+	gsi1PKAV, err := attributevalue.Marshal(gsi1PK)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal GSI1PK: %w", err)
+	}
+	gsi1SKAV, err := attributevalue.Marshal(gsi1SK)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal GSI1SK: %w", err)
+	}
 
 	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(r.table),
@@ -1146,7 +1295,7 @@ func (r *DynamoRepository) LeaseAgentRun(ctx context.Context, userID, projectID,
 			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
 		},
-		UpdateExpression: aws.String("SET #status = :running, #worker_id = :worker_id, #lease_until = :lease_until, #updated_at = :updated_at ADD #attempt :one"),
+		UpdateExpression: aws.String("SET #status = :running, #worker_id = :worker_id, #lease_until = :lease_until, #updated_at = :updated_at, #gsi1_pk = :gsi1_pk, #gsi1_sk = :gsi1_sk ADD #attempt :one"),
 		ConditionExpression: aws.String(
 			"attribute_exists(PK) AND (#status = :queued OR (#status = :running AND attribute_exists(#lease_until) AND #lease_until < :now))",
 		),
@@ -1156,6 +1305,8 @@ func (r *DynamoRepository) LeaseAgentRun(ctx context.Context, userID, projectID,
 			"#lease_until": "lease_until",
 			"#updated_at":  "updated_at",
 			"#attempt":     "attempt",
+			"#gsi1_pk":     "GSI1PK",
+			"#gsi1_sk":     "GSI1SK",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":running":     runningAV,
@@ -1165,6 +1316,8 @@ func (r *DynamoRepository) LeaseAgentRun(ctx context.Context, userID, projectID,
 			":updated_at":  updatedAtAV,
 			":now":         nowAV,
 			":one":         &types.AttributeValueMemberN{Value: "1"},
+			":gsi1_pk":     gsi1PKAV,
+			":gsi1_sk":     gsi1SKAV,
 		},
 		ReturnValues:                        types.ReturnValueAllNew,
 		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
@@ -1230,13 +1383,19 @@ func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID
 			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
 		},
-		UpdateExpression:    aws.String("SET #status = :status, #error = :error, #changeset_id = :changeset_id, #updated_at = :updated_at"),
+		// status here is always terminal (Completed or Failed — see
+		// CompleteAgentRun/FailAgentRun above), so GSI1's key attributes
+		// are unconditionally removed rather than recomputed (#207): a
+		// terminal run has no place in that sparse, in-flight-only index.
+		UpdateExpression:    aws.String("SET #status = :status, #error = :error, #changeset_id = :changeset_id, #updated_at = :updated_at REMOVE #gsi1_pk, #gsi1_sk"),
 		ConditionExpression: aws.String("attribute_exists(PK)"),
 		ExpressionAttributeNames: map[string]string{
 			"#status":       "status",
 			"#error":        "error",
 			"#changeset_id": "changeset_id",
 			"#updated_at":   "updated_at",
+			"#gsi1_pk":      "GSI1PK",
+			"#gsi1_sk":      "GSI1SK",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":status":       statusAV,
@@ -1281,6 +1440,18 @@ func (r *DynamoRepository) NeedsInputAgentRun(ctx context.Context, userID, proje
 	if err != nil {
 		return domain.AgentRun{}, fmt.Errorf("marshal updated_at: %w", err)
 	}
+	// Still in-flight (running -> needs_input), so GSI1's key attributes
+	// move with it rather than being removed (#207) — same reasoning as
+	// LeaseAgentRun's queued -> running transition above.
+	gsi1PK, gsi1SK := agentRunGSI1Key(domain.AgentRun{UserID: userID, Status: domain.AgentRunNeedsInput, UpdatedAt: now, ID: runID})
+	gsi1PKAV, err := attributevalue.Marshal(gsi1PK)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal GSI1PK: %w", err)
+	}
+	gsi1SKAV, err := attributevalue.Marshal(gsi1SK)
+	if err != nil {
+		return domain.AgentRun{}, fmt.Errorf("marshal GSI1SK: %w", err)
+	}
 
 	out, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(r.table),
@@ -1288,17 +1459,21 @@ func (r *DynamoRepository) NeedsInputAgentRun(ctx context.Context, userID, proje
 			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
 			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
 		},
-		UpdateExpression:    aws.String("SET #status = :status, #questions = :questions, #updated_at = :updated_at"),
+		UpdateExpression:    aws.String("SET #status = :status, #questions = :questions, #updated_at = :updated_at, #gsi1_pk = :gsi1_pk, #gsi1_sk = :gsi1_sk"),
 		ConditionExpression: aws.String("attribute_exists(PK)"),
 		ExpressionAttributeNames: map[string]string{
 			"#status":     "status",
 			"#questions":  "questions",
 			"#updated_at": "updated_at",
+			"#gsi1_pk":    "GSI1PK",
+			"#gsi1_sk":    "GSI1SK",
 		},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":status":     statusAV,
 			":questions":  questionsAV,
 			":updated_at": updatedAtAV,
+			":gsi1_pk":    gsi1PKAV,
+			":gsi1_sk":    gsi1SKAV,
 		},
 		ReturnValues: types.ReturnValueAllNew,
 	})

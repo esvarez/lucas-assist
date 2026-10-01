@@ -56,9 +56,18 @@ Resources:
   # ── DynamoDB table ──────────────────────────
   # Single table (architecture.md §7), keyed identically to
   # internal/store/table.go's EnsureTable (used for local dev / DynamoDB
-  # Local), so the same code path works against both. No GSIs yet — added
-  # additively against a live table later (architecture.md §7; AGENTS.MD:
-  # stop and ask before adding a GSI).
+  # Local), so the same code path works against both.
+  #
+  # GSI1 (#207, signed off before adding — see AGENTS.MD: stop and ask
+  # before adding a GSI) is sparse over just in-flight agent runs
+  # (queued/running/needs_input): internal/store/dynamo.go's
+  # agentRunGSI1Key sets GSI1PK/GSI1SK only for those statuses and REMOVEs
+  # them on any terminal transition, so a run's entire lifetime history
+  # never inflates the index. GSI1PK reuses the same value as the base
+  # table's PK (USER#<uid>), not a project-scoped key — AGENTS.MD forbids
+  # a project-partitioned index (it would recreate the authorization hole
+  # user-partitioning exists to close); ListAgentRuns still scopes to one
+  # project via a FilterExpression on the (already tiny, sparse) result.
   #
   # TableName is environment-scoped (matches FunctionName below) so dev/
   # staging/prod deploys in the same account never collide on one table.
@@ -72,11 +81,24 @@ Resources:
           AttributeType: S
         - AttributeName: SK
           AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
       KeySchema:
         - AttributeName: PK
           KeyType: HASH
         - AttributeName: SK
           KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   # ── Cognito User Pool ────────────────────────
   # Sole identity and token provider for both clients (architecture.md
