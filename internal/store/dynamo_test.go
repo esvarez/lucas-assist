@@ -1483,6 +1483,170 @@ func TestDynamoRepository_NeedsInputAgentRun_NotFound(t *testing.T) {
 	}
 }
 
+// getAgentRunItem reads a run's raw item, bypassing domain.AgentRun (which
+// has no GSI1 fields) — the only way for a test to see GSI1PK/GSI1SK's
+// presence or absence directly (#207).
+func getAgentRunItem(t *testing.T, repo *DynamoRepository, userID, projectID, runID string) agentRunItem {
+	t.Helper()
+	out, err := repo.client.GetItem(context.Background(), &dynamodb.GetItemInput{
+		TableName: aws.String(repo.table),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: userPK(userID)},
+			"SK": &types.AttributeValueMemberS{Value: agentRunSK(projectID, runID)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetItem() error = %v", err)
+	}
+	if out.Item == nil {
+		t.Fatalf("GetItem() found no item for run %q", runID)
+	}
+	var item agentRunItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		t.Fatalf("UnmarshalMap() error = %v", err)
+	}
+	return item
+}
+
+// TestDynamoRepository_AgentRun_GSI1Lifecycle covers #207 end to end: a
+// run's GSI1 key attributes appear the moment it's created (queued),
+// follow it through running and needs_input (still in-flight, so the
+// attributes update rather than vanish), and are removed entirely once it
+// reaches a terminal status — never left behind as empty-string keys,
+// which would still project a "terminal" run into a sparse index meant to
+// hold only in-flight ones.
+func TestDynamoRepository_AgentRun_GSI1Lifecycle(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	item := getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK == "" || item.GSI1SK == "" {
+		t.Fatalf("after CreateAgentRun: GSI1PK/GSI1SK = %q/%q, want both set for a queued run", item.GSI1PK, item.GSI1SK)
+	}
+	if item.GSI1PK != userPK(userID) {
+		t.Errorf("GSI1PK = %q, want %q (same value as the base table's PK)", item.GSI1PK, userPK(userID))
+	}
+
+	if _, err := repo.LeaseAgentRun(ctx, userID, projectID, created.ID, "worker_1", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("LeaseAgentRun() error = %v", err)
+	}
+	item = getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK == "" || item.GSI1SK == "" {
+		t.Fatalf("after LeaseAgentRun: GSI1PK/GSI1SK = %q/%q, want both still set for a running run", item.GSI1PK, item.GSI1SK)
+	}
+
+	if _, err := repo.NeedsInputAgentRun(ctx, userID, projectID, created.ID, []string{"?"}); err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+	item = getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK == "" || item.GSI1SK == "" {
+		t.Fatalf("after NeedsInputAgentRun: GSI1PK/GSI1SK = %q/%q, want both still set for a needs_input run", item.GSI1PK, item.GSI1SK)
+	}
+
+	if _, err := repo.CompleteAgentRun(ctx, userID, projectID, created.ID, "changeset-1"); err != nil {
+		t.Fatalf("CompleteAgentRun() error = %v", err)
+	}
+	item = getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK != "" || item.GSI1SK != "" {
+		t.Errorf("after CompleteAgentRun: GSI1PK/GSI1SK = %q/%q, want both removed for a terminal run", item.GSI1PK, item.GSI1SK)
+	}
+}
+
+// TestDynamoRepository_FailAgentRun_RemovesGSI1Attributes covers the
+// other terminal transition setAgentRunTerminalStatus handles — separate
+// from the Complete half of the lifecycle test above since Fail is a
+// distinct call path (FailAgentRun), not just a different status value.
+func TestDynamoRepository_FailAgentRun_RemovesGSI1Attributes(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.FailAgentRun(ctx, userID, projectID, created.ID, "boom"); err != nil {
+		t.Fatalf("FailAgentRun() error = %v", err)
+	}
+
+	item := getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK != "" || item.GSI1SK != "" {
+		t.Errorf("after FailAgentRun: GSI1PK/GSI1SK = %q/%q, want both removed for a terminal run", item.GSI1PK, item.GSI1SK)
+	}
+}
+
+// TestDynamoRepository_ListAgentRuns_ViaGSI1_ScopesToProject is the
+// correctness case GSI1's user-only partitioning (#207, chosen over a
+// project-partitioned key AGENTS.MD forbids) depends on: two projects
+// belonging to the *same* user each have an in-flight run, and a
+// statuses-only-in-flight ListAgentRuns call — which now queries GSI1
+// instead of the base table — must still return only the one requested
+// project's run, via the FilterExpression, not both.
+func TestDynamoRepository_ListAgentRuns_ViaGSI1_ScopesToProject(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+	otherProjectID := "proj-" + domain.NewID()
+
+	inProject, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: otherProjectID}); err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+
+	got, err := repo.ListAgentRuns(ctx, userID, projectID, []domain.AgentRunStatus{domain.AgentRunQueued})
+	if err != nil {
+		t.Fatalf("ListAgentRuns() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != inProject.ID {
+		t.Fatalf("ListAgentRuns() = %+v, want just %+v from %q, not the other project's run", got, inProject, projectID)
+	}
+}
+
+// TestDynamoRepository_ListAgentRuns_ViaGSI1_ExcludesTerminalRuns
+// documents that a statuses-only-in-flight call correctly sees only
+// GSI1's contents — a terminal run in the same project, which GSI1 never
+// indexed in the first place, must not appear even though it'd normally
+// show up in a base-table Query over the same prefix.
+func TestDynamoRepository_ListAgentRuns_ViaGSI1_ExcludesTerminalRuns(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	queued, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	completed, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.CompleteAgentRun(ctx, userID, projectID, completed.ID, "changeset-1"); err != nil {
+		t.Fatalf("CompleteAgentRun() error = %v", err)
+	}
+
+	got, err := repo.ListAgentRuns(ctx, userID, projectID, []domain.AgentRunStatus{
+		domain.AgentRunQueued, domain.AgentRunRunning, domain.AgentRunNeedsInput,
+	})
+	if err != nil {
+		t.Fatalf("ListAgentRuns() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != queued.ID {
+		t.Fatalf("ListAgentRuns() = %+v, want just the queued run %+v, not the completed one", got, queued)
+	}
+}
+
 // newTestAcceptableChangeset creates a project and a proposed changeset
 // against it, ready to accept — shared setup for the AcceptChangeset tests
 // below.
