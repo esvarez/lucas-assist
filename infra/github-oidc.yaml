@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: GitHub Actions OIDC provider + federated deploy role for this repo.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: esvarez
+    Description: GitHub organization/user that owns the repo allowed to assume the deploy role.
+
+  GitHubRepo:
+    Type: String
+    Default: lucas-assist
+    Description: Repo name (without the org prefix) allowed to assume the deploy role.
+
+  CreateOIDCProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Whether to create the token.actions.githubusercontent.com OIDC
+      provider. An AWS account can only have one OIDC provider per issuer
+      URL — set this to "false" (and this stack will reference the
+      existing one instead) if a prior project's CloudFormation/Terraform
+      already created one here.
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, "true"]
+
+Resources:
+  # GitHub rotates the certificate this thumbprint would otherwise need to
+  # track (it already has once, in 2023); AWS's OIDC provider validates
+  # GitHub's token via its TLS certificate chain regardless of what's
+  # listed here, not by matching this thumbprint, but the resource's
+  # schema still requires a non-empty ThumbprintList. Both of GitHub's
+  # known intermediate-CA thumbprints are listed so a future rotation
+  # doesn't require updating this stack.
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${GitHubRepo}-github-actions-deploy"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOIDCProvider
+                - !Ref GitHubOIDCProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:ref:refs/heads/main"
+      Policies:
+        - PolicyName: SamDeploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudFormationStack
+                Effect: Allow
+                Action: cloudformation:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/nudge-*/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/nudge-*/*
+
+              - Sid: SamArtifactsBucket
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*
+                  - !Sub arn:${AWS::Partition}:s3:::aws-sam-cli-managed-*/*
+                  - !Sub arn:${AWS::Partition}:s3:::*-nudge-web-*
+                  - !Sub arn:${AWS::Partition}:s3:::*-nudge-web-*/*
+
+              - Sid: LambdaFunctions
+                Effect: Allow
+                Action: lambda:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*-nudge-*
+
+              - Sid: DynamoDBTable
+                Effect: Allow
+                Action: dynamodb:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-nudge
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*-nudge/index/*
+
+              - Sid: SQSQueues
+                Effect: Allow
+                Action: sqs:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:*-nudge-agent-jobs*
+
+              - Sid: LambdaLogGroups
+                Effect: Allow
+                Action: logs:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-nudge-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*-nudge-*:*
+
+              - Sid: ReadOpenAIKeyParameter
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nudge/openai-api-key
+
+              - Sid: LambdaExecutionRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/nudge-*
+
+              - Sid: CognitoApiGatewayCloudFront
+                Effect: Allow
+                Action:
+                  - cognito-idp:*
+                  - apigateway:*
+                  - cloudfront:*
+                Resource: "*"
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the repo's AWS_DEPLOY_ROLE_ARN Actions variable.
+    Value: !GetAtt GitHubActionsDeployRole.Arn

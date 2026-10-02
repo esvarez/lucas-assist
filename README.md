@@ -92,6 +92,19 @@ Once the stack exists, build and publish the SPA to the bucket CloudFront serves
 make deploy-web STACK_NAME=<your-sam-stack-name>
 ```
 
+### CI deploys (`.github/workflows/deploy.yml`)
+
+Pushing to `main` deploys `dev`; `workflow_dispatch` lets you pick `dev` or `prod` on demand. Both authenticate via GitHub's OIDC provider, not stored AWS keys — one-time setup, per AWS account:
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/github-oidc.yaml \
+  --stack-name github-oidc \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+Then put the stack's `DeployRoleArn` output in the repo's `AWS_DEPLOY_ROLE_ARN` Actions variable (Settings > Secrets and variables > Actions > Variables). The workflow itself only configures credentials today — the `sam build && sam deploy` call is a separate, not-yet-landed step.
+
 ## Repo layout
 
 ```
@@ -109,6 +122,7 @@ internal/queue        SQS client wrapper
 web                   Vite + React SPA (shadcn/ui components)
 docs                  openapi.yaml
 template.yaml         AWS SAM infrastructure definition
+infra                 One-time, account-level bootstrap resources (GitHub OIDC + deploy role) — not part of the SAM app stack
 ```
 
 ## Further reading
