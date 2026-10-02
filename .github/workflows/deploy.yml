@@ -1,12 +1,5 @@
 name: Deploy
 
-# #191 (part of #126): trigger, environment selection, and OIDC
-# credentials only — no `sam build`/`sam deploy` call yet, that's the
-# separately-tracked SAM deploy step issue. Push to main deploys dev,
-# matching #126's "start with deploy-on-merge-to-main for one
-# environment"; workflow_dispatch lets a human pick dev or prod
-# on demand. samconfig.toml has no `staging` entry yet, so that choice
-# isn't offered here either — add it to both when it does.
 on:
   push:
     branches: [main]
@@ -21,9 +14,6 @@ on:
         default: dev
 
 permissions:
-  # id-token: write is what lets aws-actions/configure-aws-credentials
-  # exchange this run's OIDC token for temporary AWS credentials — no
-  # long-lived access keys stored as repo secrets.
   id-token: write
   contents: read
 
@@ -32,21 +22,11 @@ jobs:
     name: Deploy (${{ inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: us-east-1 # matches samconfig.toml's region for every environment
-      # push has no `inputs` context (that only exists for
-      # workflow_dispatch), so this falls back to dev — the one
-      # environment #126 says to start deploying on every merge to main.
-      # Set at job level, not the workflow root: `inputs` isn't reliably
-      # available there.
+      AWS_REGION: us-east-1
       ENVIRONMENT: ${{ inputs.environment || 'dev' }}
     steps:
       - uses: actions/checkout@v4
 
-      # role-to-assume comes from a repo Actions *variable*, not a
-      # secret — it's a role ARN, not a credential; the trust policy on
-      # the role itself (infra/github-oidc.yaml) is what actually
-      # restricts who can assume it. Set AWS_DEPLOY_ROLE_ARN to that
-      # template's DeployRoleArn output after deploying it once.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -54,9 +34,5 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-Deploy-${{ github.run_id }}
 
-      # Placeholder confirming credentials actually work end to end
-      # (OIDC trust + role permissions) ahead of the SAM deploy step
-      # issue wiring in the real `sam build && sam deploy` — remove once
-      # that step exists and makes this redundant.
       - name: Verify AWS credentials
         run: aws sts get-caller-identity
