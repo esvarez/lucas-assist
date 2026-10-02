@@ -588,7 +588,7 @@ function TasksSection({
           description: pendingRun.input?.task_description ?? '',
         })
         if (pendingRun.status === 'needs_input') {
-          run.resumeClarify(pendingRun.questions ?? [])
+          run.resumeClarify(pendingRun.id, pendingRun.questions ?? [])
         } else {
           run.resumePoll(pendingRun.id)
         }

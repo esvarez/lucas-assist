@@ -1324,6 +1324,16 @@ func (r *DynamoRepository) FailAgentRun(ctx context.Context, userID, projectID, 
 	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunFailed, errMsg, "")
 }
 
+// CancelAgentRun sets a run's status to cancelled via the same
+// setAgentRunTerminalStatus as CompleteAgentRun/FailAgentRun (#219) — a
+// cancelled run is just as terminal as those, so it's removed from GSI1
+// (the sparse in-flight index, #207) the same way. errMsg and changesetID
+// are always empty: a cancelled run neither failed with a reason nor
+// produced a changeset.
+func (r *DynamoRepository) CancelAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	return r.setAgentRunTerminalStatus(ctx, userID, projectID, runID, domain.AgentRunCancelled, "", "")
+}
+
 func (r *DynamoRepository) setAgentRunTerminalStatus(ctx context.Context, userID, projectID, runID string, status domain.AgentRunStatus, errMsg, changesetID string) (domain.AgentRun, error) {
 	now := time.Now().UTC()
 

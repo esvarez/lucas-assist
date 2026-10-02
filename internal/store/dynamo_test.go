@@ -1483,6 +1483,52 @@ func TestDynamoRepository_NeedsInputAgentRun_NotFound(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_CancelAgentRun documents #219: answering a
+// needs_input run's questions cancels the run that asked, rather than
+// leaving it needs_input (and so still matching a future
+// ListAgentRuns(statuses=[...needs_input...]) rediscovery scan, #182)
+// forever.
+func TestDynamoRepository_CancelAgentRun(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.NeedsInputAgentRun(ctx, userID, projectID, created.ID, []string{"?"}); err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+
+	got, err := repo.CancelAgentRun(ctx, userID, projectID, created.ID)
+	if err != nil {
+		t.Fatalf("CancelAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunCancelled {
+		t.Errorf("Status = %q, want %q", got.Status, domain.AgentRunCancelled)
+	}
+
+	runs, err := repo.ListAgentRuns(ctx, userID, projectID, []domain.AgentRunStatus{domain.AgentRunNeedsInput})
+	if err != nil {
+		t.Fatalf("ListAgentRuns() error = %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("ListAgentRuns(statuses=[needs_input]) = %+v, want empty — the run was cancelled", runs)
+	}
+}
+
+func TestDynamoRepository_CancelAgentRun_NotFound(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	_, err := repo.CancelAgentRun(ctx, testUserID(), "proj-"+domain.NewID(), "missing-"+domain.NewID())
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CancelAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
 // getAgentRunItem reads a run's raw item, bypassing domain.AgentRun (which
 // has no GSI1 fields) — the only way for a test to see GSI1PK/GSI1SK's
 // presence or absence directly (#207).
@@ -1555,6 +1601,36 @@ func TestDynamoRepository_AgentRun_GSI1Lifecycle(t *testing.T) {
 	item = getAgentRunItem(t, repo, userID, projectID, created.ID)
 	if item.GSI1PK != "" || item.GSI1SK != "" {
 		t.Errorf("after CompleteAgentRun: GSI1PK/GSI1SK = %q/%q, want both removed for a terminal run", item.GSI1PK, item.GSI1SK)
+	}
+}
+
+// TestDynamoRepository_AgentRun_GSI1Lifecycle_Cancel covers the other
+// terminal transition GSI1 needs to drop out for (#219): a needs_input
+// run that gets cancelled instead of completed/failed.
+func TestDynamoRepository_AgentRun_GSI1Lifecycle_Cancel(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+	userID := testUserID()
+	projectID := "proj-" + domain.NewID()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: userID, ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.NeedsInputAgentRun(ctx, userID, projectID, created.ID, []string{"?"}); err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+	item := getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK == "" || item.GSI1SK == "" {
+		t.Fatalf("after NeedsInputAgentRun: GSI1PK/GSI1SK = %q/%q, want both set for a needs_input run", item.GSI1PK, item.GSI1SK)
+	}
+
+	if _, err := repo.CancelAgentRun(ctx, userID, projectID, created.ID); err != nil {
+		t.Fatalf("CancelAgentRun() error = %v", err)
+	}
+	item = getAgentRunItem(t, repo, userID, projectID, created.ID)
+	if item.GSI1PK != "" || item.GSI1SK != "" {
+		t.Errorf("after CancelAgentRun: GSI1PK/GSI1SK = %q/%q, want both removed for a terminal run", item.GSI1PK, item.GSI1SK)
 	}
 }
 

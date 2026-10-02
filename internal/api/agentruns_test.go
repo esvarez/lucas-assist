@@ -331,3 +331,59 @@ func TestListAgentRuns_ProjectNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
+
+// TestCancelAgentRun documents #219: a client that answers a needs_input
+// run's questions (via a fresh dispatch) cancels the run that asked, so
+// it stops matching a later rediscovery scan for pending runs.
+func TestCancelAgentRun(t *testing.T) {
+	repo := store.NewMemoryRepository()
+	router := NewRouter(repo)
+
+	project, err := repo.CreateProject(context.Background(), domain.Project{UserID: "user_1", Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	run, err := repo.CreateAgentRun(context.Background(), domain.AgentRun{UserID: "user_1", ProjectID: project.ID, Skill: "decompose_task"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.NeedsInputAgentRun(context.Background(), "user_1", project.ID, run.ID, []string{"what stack?"}); err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/"+project.ID+"/agent-runs/"+run.ID+"/cancel", nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got cancelAgentRunResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.AgentRun.Status != domain.AgentRunCancelled {
+		t.Errorf("AgentRun.Status = %q, want %q", got.AgentRun.Status, domain.AgentRunCancelled)
+	}
+
+	stored, err := repo.GetAgentRun(context.Background(), "user_1", project.ID, run.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if stored.Status != domain.AgentRunCancelled {
+		t.Errorf("stored Status = %q, want %q — cancel didn't persist", stored.Status, domain.AgentRunCancelled)
+	}
+}
+
+func TestCancelAgentRun_NotFound(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects/proj_1/agent-runs/does-not-exist/cancel", nil), "user_1")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}

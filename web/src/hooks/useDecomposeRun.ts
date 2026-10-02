@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError, type ProjectDomain } from '@/src/api/projects'
 import {
   acceptChangeset,
+  cancelAgentRun,
   dispatchDecomposeTask,
   pollAgentRun,
   updateChangesetTasks,
@@ -54,6 +55,13 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
   // decomposing. start()'s scope param is how a fresh dispatch sets or
   // clears this; omitting it (every resubmit/retry call) leaves it as-is.
   const parentTaskIdRef = useRef<string | undefined>(undefined)
+  // The id of the needs_input run currently being clarified, if any (#219)
+  // — 'clarify' RunState itself carries only the questions, not the run's
+  // id, so this is what handleClarifySubmit's resubmit uses to cancel the
+  // run that asked once it's been answered. Set on entry to 'clarify'
+  // (pollAndResolve or resumeClarify), cleared on a clarification
+  // resubmit or reset().
+  const clarifyRunIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     return () => pollAbort.current?.abort()
@@ -63,6 +71,7 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
     pollAbort.current?.abort()
     pollAbort.current = null
     parentTaskIdRef.current = undefined
+    clarifyRunIdRef.current = undefined
     setState({ name: 'idle' })
   }
 
@@ -76,8 +85,10 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
   // resumeClarify puts an already-needs_input run's questions (e.g. one
   // rediscovered via listAgentRuns after a page refresh, #182) straight
   // into 'clarify' — no dispatch, no poll. Mirrors resumeReview: the run
-  // that asked is terminal, so there's nothing left to poll.
-  function resumeClarify(questions: string[]) {
+  // that asked is terminal, so there's nothing left to poll. runId is
+  // remembered (#219) so answering it can cancel the run it came from.
+  function resumeClarify(runId: string, questions: string[]) {
+    clarifyRunIdRef.current = runId
     setState({ name: 'clarify', questions })
   }
 
@@ -99,6 +110,7 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
         return
       }
       if (run.status === 'needs_input') {
+        clarifyRunIdRef.current = run.id
         setState({ name: 'clarify', questions: run.questions ?? [] })
         return
       }
@@ -129,6 +141,18 @@ export function useDecomposeRun(projectId: string, domain: ProjectDomain, onAcce
   ) {
     if (scope) {
       parentTaskIdRef.current = scope.parentTaskId ?? undefined
+    }
+    // A clarification resubmit answers (and so supersedes) the run
+    // currently being clarified — cancel it so it stops looking pending
+    // to a later rediscovery scan (#219). Best-effort: a failure here
+    // must not block the resubmit the user is actually waiting on, and
+    // there's nothing more useful to do with it than log it.
+    if (clarification && clarifyRunIdRef.current) {
+      const runIdToCancel = clarifyRunIdRef.current
+      clarifyRunIdRef.current = undefined
+      cancelAgentRun(projectId, runIdToCancel).catch((err) => {
+        console.error('Failed to cancel the superseded agent run', err)
+      })
     }
     setState({ name: 'working', label: 'Starting decomposition…' })
     try {

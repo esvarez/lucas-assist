@@ -64,7 +64,8 @@ type listAgentRunsResponse struct {
 }
 
 // listAgentRunsHandler returns a project's agent runs, optionally
-// filtered to one or more statuses via repeated ?status= 
+// filtered to one or more statuses via repeated ?status= params (e.g.
+// ?status=queued&status=needs_input).
 func listAgentRunsHandler(repo ProjectRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, _ := auth.UserIDFromContext(r.Context())
@@ -92,5 +93,41 @@ func listAgentRunsHandler(repo ProjectRepository) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, listAgentRunsResponse{AgentRuns: runs})
+	}
+}
+
+type cancelAgentRunResponse struct {
+	AgentRun domain.AgentRun `json:"agent_run"`
+}
+
+// cancelAgentRunHandler backs POST /projects/{id}/agent-runs/{runId}/cancel
+// (#219): marks a run cancelled so it stops looking pending. Its one caller
+// today is a decompose_task clarification resubmit — answering a
+// needs_input run's questions dispatches a brand-new run rather than
+// resuming this one (useDecomposeRun.ts), and nothing previously told the
+// original run it had been superseded, so a later rediscovery scan
+// (listAgentRuns(statuses=[...needs_input...]), #182) kept resurfacing its
+// already-answered questions.
+//
+// Unconditional, same as CompleteAgentRun/FailAgentRun — enforcing which
+// prior status may be cancelled is presentation logic, not this
+// primitive's job.
+func cancelAgentRunHandler(repo ProjectRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := auth.UserIDFromContext(r.Context())
+		projectID := r.PathValue("id")
+		runID := r.PathValue("runId")
+
+		run, err := repo.CancelAgentRun(r.Context(), userID, projectID, runID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, cancelAgentRunResponse{AgentRun: run})
 	}
 }

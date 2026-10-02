@@ -246,6 +246,10 @@ func (s stubRepository) ListAgentRuns(ctx context.Context, userID, projectID str
 	return nil, s.getRunErr
 }
 
+func (s stubRepository) CancelAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	return domain.AgentRun{}, s.getRunErr
+}
+
 func (s stubRepository) GetChangeset(ctx context.Context, userID, projectID, changesetID string) (domain.Changeset, error) {
 	return domain.Changeset{}, s.getChangeErr
 }

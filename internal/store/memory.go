@@ -431,6 +431,22 @@ func (r *MemoryRepository) NeedsInputAgentRun(ctx context.Context, userID, proje
 	return run, nil
 }
 
+func (r *MemoryRepository) CancelAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	run, ok := r.agentRuns[runID]
+	if !ok || run.UserID != userID || run.ProjectID != projectID {
+		return domain.AgentRun{}, ErrNotFound
+	}
+
+	run.Status = domain.AgentRunCancelled
+	run.UpdatedAt = time.Now().UTC()
+
+	r.agentRuns[runID] = run
+	return run, nil
+}
+
 // AcceptChangeset holds r.mu for the whole operation, which is what makes
 // it atomic here — there's no separate transaction primitive to reach for
 // in a single in-memory map, unlike DynamoRepository's TransactWriteItems.

@@ -128,6 +128,18 @@ export async function getAgentRun(runId: string, projectId: string): Promise<Age
   return request<AgentRunResult>(`/api/agent-runs/${encodeURIComponent(runId)}?${params}`)
 }
 
+// cancelAgentRun marks a run cancelled (#219) — used when a needs_input
+// run's questions are answered via a fresh dispatch, so the run that
+// asked stops looking pending (e.g. to a later listAgentRuns rediscovery
+// scan, #182) instead of resurfacing its already-answered questions
+// forever.
+export async function cancelAgentRun(projectId: string, runId: string): Promise<{ agent_run: AgentRun }> {
+  return request<{ agent_run: AgentRun }>(
+    `/api/projects/${encodeURIComponent(projectId)}/agent-runs/${encodeURIComponent(runId)}/cancel`,
+    { method: 'POST' }
+  )
+}
+
 // PollOptions bounds pollAgentRun (architecture.md §10 step 8: "poll ...
 // with bounded backoff") — it must not poll forever against a stuck or
 // lost run.
