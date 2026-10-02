@@ -94,6 +94,23 @@ func TestDynamoRepository_CreateProject(t *testing.T) {
 	}
 }
 
+// TestDynamoRepository_CreateProject_DefaultsStatusToOnTrack documents
+// issue #215: a project created without a status is presumed on track,
+// not left blank — same place and reasoning as Domain's existing
+// create-time default.
+func TestDynamoRepository_CreateProject_DefaultsStatusToOnTrack(t *testing.T) {
+	repo := newTestDynamoRepository(t)
+	ctx := context.Background()
+
+	created, err := repo.CreateProject(ctx, domain.Project{UserID: testUserID(), Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if created.Status != domain.ProjectStatusOnTrack {
+		t.Errorf("Status = %q, want %q (the default)", created.Status, domain.ProjectStatusOnTrack)
+	}
+}
+
 func TestDynamoRepository_CreateProject_DuplicateID(t *testing.T) {
 	repo := newTestDynamoRepository(t)
 	ctx := context.Background()
@@ -2133,6 +2150,12 @@ func TestDynamoRepository_AcceptCreateProjectChangeset(t *testing.T) {
 	if result.Project.Version != 1 {
 		t.Errorf("Project.Version = %d, want 1", result.Project.Version)
 	}
+	// #215: create_project has no status field for the model to propose
+	// one through, so a project accepted via this path is presumed on
+	// track, same as one created directly via CreateProject.
+	if result.Project.Status != domain.ProjectStatusOnTrack {
+		t.Errorf("Project.Status = %q, want %q (the default)", result.Project.Status, domain.ProjectStatusOnTrack)
+	}
 
 	gotProject, err := repo.GetProject(ctx, userID, result.Project.ID)
 	if err != nil {
@@ -2140,6 +2163,9 @@ func TestDynamoRepository_AcceptCreateProjectChangeset(t *testing.T) {
 	}
 	if gotProject.Name != "Tidepool Sync" {
 		t.Errorf("stored Project.Name = %q, want %q", gotProject.Name, "Tidepool Sync")
+	}
+	if gotProject.Status != domain.ProjectStatusOnTrack {
+		t.Errorf("stored Project.Status = %q, want %q", gotProject.Status, domain.ProjectStatusOnTrack)
 	}
 
 	gotChangeset, err := repo.GetChangeset(ctx, userID, "", changeset.ID)

@@ -55,6 +55,36 @@ func TestMemoryRepository_CreateProject_DefaultsDomainToGeneral(t *testing.T) {
 	}
 }
 
+// TestMemoryRepository_CreateProject_DefaultsStatusToOnTrack documents
+// issue #215: a project created without a status is presumed on track,
+// not left blank, same reasoning and same place as Domain's default
+// above.
+func TestMemoryRepository_CreateProject_DefaultsStatusToOnTrack(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateProject(context.Background(), domain.Project{Name: "Nudge"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if created.Status != domain.ProjectStatusOnTrack {
+		t.Errorf("Status = %q, want %q (the default)", created.Status, domain.ProjectStatusOnTrack)
+	}
+}
+
+// TestMemoryRepository_CreateProject_PreservesExplicitStatus guards the
+// default above against overriding a caller-supplied status.
+func TestMemoryRepository_CreateProject_PreservesExplicitStatus(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	created, err := repo.CreateProject(context.Background(), domain.Project{Name: "Nudge", Status: "blocked"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if created.Status != "blocked" {
+		t.Errorf("Status = %q, want the caller-supplied %q preserved", created.Status, "blocked")
+	}
+}
+
 func TestMemoryRepository_CreateProject_ExplicitID(t *testing.T) {
 	repo := NewMemoryRepository()
 
@@ -1790,6 +1820,12 @@ func TestMemoryRepository_AcceptCreateProjectChangeset(t *testing.T) {
 	}
 	if result.Project.Version != 1 {
 		t.Errorf("Project.Version = %d, want 1", result.Project.Version)
+	}
+	// #215: create_project has no status field for the model to propose
+	// one through, so a project accepted via this path is presumed on
+	// track, same as one created directly via CreateProject.
+	if result.Project.Status != domain.ProjectStatusOnTrack {
+		t.Errorf("Project.Status = %q, want %q (the default)", result.Project.Status, domain.ProjectStatusOnTrack)
 	}
 
 	gotProject, err := repo.GetProject(ctx, "user_1", result.Project.ID)

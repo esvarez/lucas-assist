@@ -84,6 +84,31 @@ func TestCreateProject_DefaultsDomainToGeneral(t *testing.T) {
 	}
 }
 
+// TestCreateProject_DefaultsStatusToOnTrack documents issue #215: a
+// create request that doesn't specify a status gets "on-track", not an
+// empty string — same place and reasoning as Domain's default above.
+func TestCreateProject_DefaultsStatusToOnTrack(t *testing.T) {
+	router := NewRouter(store.NewMemoryRepository())
+
+	body := `{"name": "Nudge", "goal": "Ship the POC"}`
+	req := withUserID(httptest.NewRequest(http.MethodPost, "/projects", bytes.NewBufferString(body)), "user_1")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var got domain.Project
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Status != domain.ProjectStatusOnTrack {
+		t.Errorf("Status = %q, want %q (the default)", got.Status, domain.ProjectStatusOnTrack)
+	}
+}
+
 // TestCreateProject_SoftwareDomain documents that an explicit "software"
 // domain is preserved rather than overridden by the default (issue #150).
 func TestCreateProject_SoftwareDomain(t *testing.T) {

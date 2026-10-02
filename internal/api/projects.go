@@ -37,6 +37,9 @@ func createProjectHandler(repo ProjectRepository) http.HandlerFunc {
 		if req.Domain == "" {
 			req.Domain = domain.ProjectDomainGeneral
 		}
+		if req.Status == "" {
+			req.Status = domain.ProjectStatusOnTrack
+		}
 
 		userID, _ := auth.UserIDFromContext(r.Context())
 		created, err := repo.CreateProject(r.Context(), domain.Project{
