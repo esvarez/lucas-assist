@@ -63,6 +63,13 @@ type Repository interface {
 	CompleteAgentRun(ctx context.Context, userID, projectID, runID, changesetID string) (domain.AgentRun, error)
 	FailAgentRun(ctx context.Context, userID, projectID, runID, errMsg string) (domain.AgentRun, error)
 	NeedsInputAgentRun(ctx context.Context, userID, projectID, runID string, questions []string) (domain.AgentRun, error)
+	// CancelAgentRun sets a run's status to cancelled unconditionally, the
+	// same unconditional-status-set pattern CompleteAgentRun/FailAgentRun
+	// use (#219) — called when a needs_input run's questions are answered
+	// via a fresh dispatch, so the run that asked stops looking pending
+	// (e.g. to a later ListAgentRuns(statuses=[...needs_input...]) scan)
+	// once it's actually been superseded.
+	CancelAgentRun(ctx context.Context, userID, projectID, runID string) (domain.AgentRun, error)
 	AcceptChangeset(ctx context.Context, p domain.Project, c domain.Changeset, remainingProposedTasks []domain.ProposedTask, requestFingerprint, idempotencyKey string) (AcceptChangesetResult, error)
 	AcceptCreateProjectChangeset(ctx context.Context, c domain.Changeset, idempotencyKey string) (AcceptCreateProjectResult, error)
 }

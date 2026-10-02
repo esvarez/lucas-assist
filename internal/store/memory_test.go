@@ -1344,6 +1344,47 @@ func TestMemoryRepository_NeedsInputAgentRun_NotFound(t *testing.T) {
 	}
 }
 
+// TestMemoryRepository_CancelAgentRun documents #219: answering a
+// needs_input run's questions cancels the run that asked, rather than
+// leaving it needs_input forever.
+func TestMemoryRepository_CancelAgentRun(t *testing.T) {
+	repo := NewMemoryRepository()
+	ctx := context.Background()
+
+	created, err := repo.CreateAgentRun(ctx, domain.AgentRun{UserID: "user_1", ProjectID: "proj_1"})
+	if err != nil {
+		t.Fatalf("CreateAgentRun() error = %v", err)
+	}
+	if _, err := repo.NeedsInputAgentRun(ctx, "user_1", "proj_1", created.ID, []string{"What is the task actually about?"}); err != nil {
+		t.Fatalf("NeedsInputAgentRun() error = %v", err)
+	}
+
+	got, err := repo.CancelAgentRun(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("CancelAgentRun() error = %v", err)
+	}
+	if got.Status != domain.AgentRunCancelled {
+		t.Errorf("Status = %q, want %q", got.Status, domain.AgentRunCancelled)
+	}
+
+	stored, err := repo.GetAgentRun(ctx, "user_1", "proj_1", created.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRun() error = %v", err)
+	}
+	if stored.Status != domain.AgentRunCancelled {
+		t.Errorf("stored Status = %q, want %q — cancel didn't persist", stored.Status, domain.AgentRunCancelled)
+	}
+}
+
+func TestMemoryRepository_CancelAgentRun_NotFound(t *testing.T) {
+	repo := NewMemoryRepository()
+
+	_, err := repo.CancelAgentRun(context.Background(), "user_1", "proj_1", "does-not-exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CancelAgentRun() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
 // newAcceptableChangeset creates a project and a proposed changeset against
 // it, ready to accept — shared setup for the AcceptChangeset tests below.
 func newAcceptableChangeset(t *testing.T, repo *MemoryRepository, userID string, proposedTasks []domain.ProposedTask) (domain.Project, domain.Changeset) {
