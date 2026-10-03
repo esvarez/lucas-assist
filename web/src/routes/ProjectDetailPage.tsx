@@ -537,13 +537,28 @@ function projectSeed(project: Project): { title: string; description: string } {
   return { title: project.name, description }
 }
 
+// TasksSectionSkeleton covers the window where we genuinely don't yet know
+// whether the project has tasks — mirrors ProjectDetailPage's own !project
+// skeleton rather than introducing a second loading look.
+function TasksSectionSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      <Skeleton className="h-6 w-32" />
+      <Skeleton className="h-16 w-full" />
+      <Skeleton className="h-16 w-full" />
+    </div>
+  )
+}
+
 function TasksSection({
   project,
   tasks,
+  tasksLoaded,
   onAccepted,
 }: {
   project: Project
   tasks: Task[]
+  tasksLoaded: boolean
   onAccepted: () => void
 }) {
   const projectId = project.id
@@ -560,6 +575,10 @@ function TasksSection({
   // trigger shows a spinner; useDecomposeRun itself is what actually
   // remembers the run's scope across a clarify resubmit or error retry.
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  // False until rediscoverPending below has actually resolved — gates the
+  // empty state (#213) so a project with 0 committed tasks doesn't flash
+  // "No tasks yet" while an in-flight run might still be out there.
+  const [pendingChecked, setPendingChecked] = useState(false)
 
   // Rediscovers a pending proposal, or failing that a still-running
   // dispatch, on mount — so both survive a page refresh (#169) instead of
@@ -595,10 +614,14 @@ function TasksSection({
       }
     }
 
-    rediscoverPending().catch(() => {
-      // Best-effort: a fresh page still works without a rediscovered
-      // proposal or run, just as if neither existed.
-    })
+    rediscoverPending()
+      .catch(() => {
+        // Best-effort: a fresh page still works without a rediscovered
+        // proposal or run, just as if neither existed.
+      })
+      .finally(() => {
+        if (!ignore) setPendingChecked(true)
+      })
 
     return () => {
       ignore = true
@@ -628,6 +651,10 @@ function TasksSection({
     setRunSeed({ title: task.title, description: task.description })
     setActiveTaskId(task.id)
     void run.start(task.title, task.description, undefined, { parentTaskId: task.id })
+  }
+
+  if (!tasksLoaded || !pendingChecked) {
+    return <TasksSectionSkeleton />
   }
 
   if (tasks.length === 0 && !pending) {
@@ -743,6 +770,9 @@ function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [project, setProject] = useState<Project | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
+  // False until the first listTasks call settles — lets TasksSection tell
+  // "haven't checked yet" apart from "checked, genuinely empty" (#213).
+  const [tasksLoaded, setTasksLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Bumped after a decompose_task changeset is accepted, so the task list
   // is refetched and picks up the newly committed tasks.
@@ -765,6 +795,9 @@ function ProjectDetailPage() {
       .catch(() => {
         // A failed task fetch shouldn't fail the whole page — hide the list instead.
         if (!ignore) setTasks([])
+      })
+      .finally(() => {
+        if (!ignore) setTasksLoaded(true)
       })
     return () => {
       ignore = true
@@ -805,6 +838,7 @@ function ProjectDetailPage() {
           <TasksSection
             project={project}
             tasks={tasks}
+            tasksLoaded={tasksLoaded}
             onAccepted={() => setTaskRefreshKey((k) => k + 1)}
           />
         </div>
